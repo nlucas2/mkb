@@ -172,7 +172,10 @@ fn cmd_daemon(args: &[String]) -> Result<(), String> {
         }
         "stats" => {
             let s = client.stats().map_err(|e| e.to_string())?;
-            println!("pages: {}  blocks: {}  embedded: {}", s.pages, s.blocks, s.embedded);
+            println!(
+                "pages: {}  blocks: {}  embedded: {}",
+                s.pages, s.blocks, s.embedded
+            );
             Ok(())
         }
         "list" => {

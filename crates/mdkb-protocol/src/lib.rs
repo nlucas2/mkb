@@ -11,6 +11,9 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
+pub mod paths;
+pub use paths::DaemonPaths;
+
 use mdkb_core::{
     BlockId, BlockRecord, Index, IndexStats, LinkRow, RequestContext, SearchHit, SearchQuery,
     Service,

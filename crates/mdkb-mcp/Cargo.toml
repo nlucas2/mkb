@@ -1,6 +1,6 @@
 [package]
 name = "mdkb-mcp"
-description = "mdkb MCP server: thin client exposing core tools over MCP."
+description = "mdkb MCP server: exposes the mdkb tools over MCP (stdio), as a thin client of the daemon."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,4 +12,10 @@ name = "mdkb-mcp"
 path = "src/main.rs"
 
 [dependencies]
-mdkb-core.workspace = true
+mdkb-core = { workspace = true, features = ["serde"] }
+mdkb-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

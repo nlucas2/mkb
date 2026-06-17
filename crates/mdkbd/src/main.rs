@@ -41,27 +41,27 @@ fn run() -> Result<(), String> {
     cfg.ensure_dirs().map_err(|e| e.to_string())?;
 
     // Refuse to start a second daemon on the same socket.
-    if cfg.socket.exists() {
-        let probe = mdkb_protocol::Client::new(&cfg.socket);
+    if cfg.socket().exists() {
+        let probe = mdkb_protocol::Client::new(cfg.socket());
         if probe.ping() {
             return Err(format!(
                 "a daemon is already running on {}",
-                cfg.socket.display()
+                cfg.socket().display()
             ));
         }
         // Stale socket from a previous run; remove it.
-        let _ = std::fs::remove_file(&cfg.socket);
+        let _ = std::fs::remove_file(cfg.socket());
     }
 
     eprintln!(
         "mdkbd: vault={} db={} socket={}",
-        cfg.vault.display(),
-        cfg.db.display(),
-        cfg.socket.display()
+        cfg.vault().display(),
+        cfg.db().display(),
+        cfg.socket().display()
     );
 
-    let index = SqliteIndex::open(&cfg.db).map_err(|e| e.to_string())?;
-    let engine = SyncEngine::new(&cfg.vault, index).with_embedder(mdkb_embed::recommended());
+    let index = SqliteIndex::open(cfg.db()).map_err(|e| e.to_string())?;
+    let engine = SyncEngine::new(cfg.vault(), index).with_embedder(mdkb_embed::recommended());
     let mut service = Service::new(engine);
 
     // Initial reconcile so the index reflects the vault before serving.
@@ -76,9 +76,9 @@ fn run() -> Result<(), String> {
     let shared: SharedService = Arc::new(Mutex::new(service));
 
     // Start the watcher (keeps the index in sync with external edits).
-    watcher::spawn(cfg.vault.clone(), Arc::clone(&shared));
+    watcher::spawn(cfg.vault().to_path_buf(), Arc::clone(&shared));
 
     // Serve requests until interrupted.
-    server::serve(&cfg.socket, shared).map_err(|e| e.to_string())?;
+    server::serve(cfg.socket(), shared).map_err(|e| e.to_string())?;
     Ok(())
 }

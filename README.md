@@ -35,7 +35,7 @@ clients, not part of the store.
 | `crates/mdkb-embed` | lib | Embedder backends: offline hash embedder + optional local ONNX (`fastembed`). |
 | `crates/mdkb-protocol` | lib | Wire protocol: request/response types, blocking client, shared dispatcher. |
 | `crates/mdkbd` | bin | Headless daemon: owns the watcher, index, and writes; serves a local Unix socket. |
-| `crates/mdkb-mcp` | bin (`mdkb-mcp`) | MCP server, thin client of core/daemon. *(scaffold)* |
+| `crates/mdkb-mcp` | bin (`mdkb-mcp`) | MCP server (stdio); thin client that forwards tool calls to the daemon. |
 | `crates/mdkb-cli` | bin (`mdkb`) | CLI for scripting/manual ops, thin client. |
 | `app/mdkb-tauri` | app | Desktop UI, thin client. *(not started)* |
 
@@ -91,6 +91,10 @@ cargo run -p mdkb-cli
   local socket only (fail-closed; no network listener).
 - `mdkb` CLI commands: `render`, `assign-ids`, `list`, `search` (keyword + semantic),
   `stats`, and `daemon` (talk to a running `mdkbd`).
+- `mdkb-mcp` — an MCP server (JSON-RPC 2.0 over stdio) exposing the knowledge base as tools
+  (`search`, `get_block`, `get_page`, `render_page`, `list_pages`, `backlinks`,
+  `links_from`, `upsert_block`, `save_page`, `delete_page`, `link_blocks`, `stats`). It is a
+  thin client that forwards every call to the daemon and auto-starts `mdkbd` if needed.
 
 ## Usage (current)
 
@@ -134,6 +138,19 @@ semantic embeddings via a local ONNX model, build with the `onnx` feature:
 cargo run -p mdkb-cli --features onnx -- search ./my-vault "restart the web server"
 ```
 
+### Using mdkb from an AI agent (MCP)
+
+`mdkb-mcp` speaks MCP over stdio and exposes the knowledge base as tools. Point any MCP
+client at it; it auto-starts the daemon for the given vault.
+
+```jsonc
+// example MCP client config entry
+{
+  "command": "mdkb-mcp",
+  "args": ["--vault", "/path/to/my-vault"]
+}
+```
+
 ## Roadmap
 
 - **Phase 0 — Scaffold** *(done)*: workspace, crates, governance docs.
@@ -146,7 +163,9 @@ cargo run -p mdkb-cli --features onnx -- search ./my-vault "restart the web serv
   optional `fastembed` ONNX), vector storage, hybrid keyword+vector ranking.
 - **Phase 4 — Daemon + API** *(done)*: shared `Service` API + `RequestContext`, JSON wire
   protocol, `mdkbd` with a local Unix-socket server and `notify` file watcher.
-- **Phase 5 — MCP server** *(next)*: expose search / upsert / link tools.
+- **Phase 5 — MCP server** *(done)*: `mdkb-mcp` exposes search / get / render / upsert /
+  link / stats as MCP tools over stdio; thin client of the daemon.
+- **Phase 6 — Tauri frontend** *(next)*: render Markdown + resolved transclusions.
 - **Phase 6 — Tauri frontend**: render Markdown + resolved transclusions.
 - **Phase 7 — Sync UX & packaging**: OneDrive conflict surfacing, index rebuild, packaging.
 
