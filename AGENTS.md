@@ -1,0 +1,99 @@
+# AGENTS.md — working rules for mdkb
+
+This file governs how any agent (or human) contributes to **mdkb**. These rules are
+**mandatory**, not suggestions. If a change cannot satisfy them, stop and fix the
+approach before continuing.
+
+The architecture rationale lives in the session plan; the short version is below.
+
+---
+
+## What mdkb is
+
+A **personal Markdown knowledge base that is a tool, not an agent.** Two equal consumers:
+a human (desktop UI) and AI clients (via an MCP server). Markdown files are the single
+source of truth; a local index is a rebuildable cache. See `README.md` for the full
+overview and `docs/` (as it grows) for details.
+
+---
+
+## 🥇 Golden rules
+
+### 1. Tests are mandatory
+- Every behavior change ships with tests in the **same change**. No "I'll add tests later."
+- New modules with logic are not "done" until they have unit tests covering the happy path
+  **and** the meaningful edge cases.
+- Bug fixes start by adding a test that reproduces the bug, then fixing it.
+
+### 2. Always run the full suite before every commit — and it must be green
+- Run **`cargo test --workspace`** before *every* commit. Zero failures, zero ignored-without-reason.
+- Never commit with a red or skipped suite. If a test is legitimately pending, it is the
+  task — don't commit around it.
+
+### 3. Update the README before every commit
+- `README.md` must reflect the **current** state of the project at the moment of commit:
+  what exists, how to build it, how to run it, how to test it.
+- If your change adds/removes a crate, command, config key, or workflow, the README update
+  is part of that same commit.
+
+### 4. Do not duplicate code — always look for reuse
+- Before writing new logic, search for an existing implementation to call or extend.
+- If the same logic is needed in two places, **extract it into `mdkb-core`** (or a shared
+  module) and call it from both. Copy-paste of logic is a defect.
+- Prefer extending a shared function over forking a near-duplicate.
+
+### 5. One shared core — the UI and the MCP server must never diverge  ⚠️ critical
+- **All** behavior that touches blocks, transclusion, indexing, search, parsing, or writes
+  **MUST** live in `mdkb-core` and be invoked through the daemon/core API.
+- The **MCP server, the Tauri UI, and the CLI are thin clients.** They contain presentation
+  and transport glue only — **never** a second copy of core behavior.
+- Rationale: if the same surface is implemented twice, a bug can be fixed in one and left
+  broken in the other. A bug fixed once must be fixed everywhere. If you find yourself about
+  to implement the same thing in both the UI and the MCP server, **stop** and put it in core.
+- When you add a capability, expose it from core first, then wire the clients to that single
+  entry point.
+
+### 6. Keep the seams clean
+- Pluggable boundaries are traits (`Index`, `Embedder`, `IdCodec`, transport). Program to the
+  trait, not the concrete type, so engines/encodings can be swapped without touching callers.
+- Don't leak storage/encoding details past their trait boundary.
+
+---
+
+## ✅ Pre-commit checklist (run top to bottom)
+
+1. `cargo fmt --all` — code is formatted.
+2. `cargo clippy --workspace --all-targets -- -D warnings` — no lints.
+3. `cargo test --workspace` — **all green**.
+4. `README.md` updated to match the current state.
+5. New/changed logic has tests committed alongside it.
+6. No duplicated logic; shared behavior lives in `mdkb-core`.
+7. Commit message explains the *why*, not just the *what*.
+
+Only commit when **all** boxes are satisfied.
+
+---
+
+## Workspace layout
+
+```
+crates/
+  mdkb-core/   # the shared engine — ALL block/transclusion/index/search logic
+  mdkbd/       # headless daemon: owns watcher + index + writes
+  mdkb-mcp/    # MCP server (thin client of core/daemon)
+  mdkb-cli/    # CLI (thin client of core/daemon)
+app/
+  mdkb-tauri/  # desktop UI (thin client of core/daemon) — added in a later phase
+```
+
+If a piece of behavior doesn't clearly belong to transport or presentation, it belongs in
+`mdkb-core`.
+
+---
+
+## Commit hygiene
+
+- Small, focused commits. One logical change each.
+- Never commit secrets, the local `.mdkb/` index, or `/target`.
+- The vault's Markdown is the source of truth; the index is always rebuildable — never treat
+  the index as authoritative in code.

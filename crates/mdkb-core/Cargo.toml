@@ -1,0 +1,12 @@
+[package]
+name = "mdkb-core"
+description = "Shared engine for mdkb: block model, transclusion, indexing, search."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+regex.workspace = true
+ulid.workspace = true

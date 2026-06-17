@@ -1,0 +1,15 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# mdkb local index (never synced, never committed)
+.mdkb/
+
+# Tauri / node (added in later phases)
+app/**/node_modules/
+app/**/dist/
+src-tauri/target/
+
+# OS
+.DS_Store
+Thumbs.db

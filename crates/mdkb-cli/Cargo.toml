@@ -1,0 +1,15 @@
+[package]
+name = "mdkb-cli"
+description = "mdkb CLI: thin client for scripting and manual operations."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mdkb"
+path = "src/main.rs"
+
+[dependencies]
+mdkb-core.workspace = true
