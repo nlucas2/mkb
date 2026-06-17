@@ -1,0 +1,17 @@
+[package]
+name = "mdkb-protocol"
+description = "Wire protocol (request/response types, client, dispatch) shared by the mdkb daemon and its clients."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mdkb-core = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+mdkb-index.workspace = true
+tempfile.workspace = true

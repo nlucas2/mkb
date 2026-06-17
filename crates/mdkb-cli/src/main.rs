@@ -26,6 +26,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("list") => cmd_list(&args[1..]),
         Some("search") => cmd_search(&args[1..]),
         Some("stats") => cmd_stats(&args[1..]),
+        Some("daemon") => cmd_daemon(&args[1..]),
         Some("--version") | Some("-V") => {
             println!("mdkb {}", mdkb_core::VERSION);
             Ok(())
@@ -43,9 +44,11 @@ usage:
   mdkb render <vault-dir> <page>            render a page with transclusions resolved
   mdkb assign-ids <vault-dir>               assign ids to all un-id'd blocks (writes files)
   mdkb list <vault-dir>                     list pages in the vault
-  mdkb search <vault-dir> <query> [flags]   keyword search across the vault
+  mdkb search <vault-dir> <query> [flags]   search across the vault (keyword + semantic)
        flags: --lang=<lang> --tag=<tag> (repeatable) --page=<path> --limit=<n>
   mdkb stats <vault-dir>                    index statistics
+  mdkb daemon <socket> <subcmd> [args]      talk to a running mdkbd over its socket
+       subcmds: ping | stats | list | search <query> | render <page>
   mdkb --version                            print version";
 
 fn print_help() {
@@ -156,4 +159,61 @@ fn cmd_stats(args: &[String]) -> Result<(), String> {
     println!("blocks:   {}", s.blocks);
     println!("embedded: {}", s.embedded);
     Ok(())
+}
+
+fn cmd_daemon(args: &[String]) -> Result<(), String> {
+    let socket = args.first().ok_or("missing <socket>")?;
+    let sub = args.get(1).ok_or("missing <subcmd>")?;
+    let client = mdkb_protocol::Client::new(socket);
+    match sub.as_str() {
+        "ping" => {
+            println!("{}", if client.ping() { "ok" } else { "no response" });
+            Ok(())
+        }
+        "stats" => {
+            let s = client.stats().map_err(|e| e.to_string())?;
+            println!("pages: {}  blocks: {}  embedded: {}", s.pages, s.blocks, s.embedded);
+            Ok(())
+        }
+        "list" => {
+            let resp = client
+                .call(&mdkb_protocol::Request::ListPages)
+                .map_err(|e| e.to_string())?;
+            if let mdkb_protocol::Response::Pages(pages) = resp {
+                for p in pages {
+                    println!("{p}");
+                }
+            }
+            Ok(())
+        }
+        "search" => {
+            let text = args.get(2..).map(|s| s.join(" ")).unwrap_or_default();
+            if text.is_empty() {
+                return Err("search requires a query".into());
+            }
+            let query = SearchQuery {
+                text: Some(text),
+                ..Default::default()
+            };
+            let hits = client.search(query).map_err(|e| e.to_string())?;
+            if hits.is_empty() {
+                println!("(no matches)");
+            }
+            for h in hits {
+                let preview = h.block.content.replace('\n', " ");
+                let preview = preview.chars().take(80).collect::<String>();
+                println!("{}  {}\n    {}", h.block.page_path, h.block.id, preview);
+            }
+            Ok(())
+        }
+        "render" => {
+            let page = args.get(2).ok_or("render requires a <page>")?;
+            match client.render_page(page).map_err(|e| e.to_string())? {
+                Some(text) => println!("{text}"),
+                None => return Err(format!("page not found: {page}")),
+            }
+            Ok(())
+        }
+        other => Err(format!("unknown daemon subcommand: {other}")),
+    }
 }

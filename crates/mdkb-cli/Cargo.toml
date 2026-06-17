@@ -19,3 +19,4 @@ onnx = ["mdkb-embed/onnx"]
 mdkb-core.workspace = true
 mdkb-index.workspace = true
 mdkb-embed.workspace = true
+mdkb-protocol.workspace = true

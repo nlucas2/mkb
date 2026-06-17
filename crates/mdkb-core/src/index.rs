@@ -19,6 +19,7 @@ use crate::vault::{Page, Vault};
 
 /// An owned, index-friendly snapshot of a block and the page it lives on.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockRecord {
     /// Stable block id.
     pub id: BlockId,
@@ -59,6 +60,7 @@ impl BlockRecord {
 
 /// The relationship a link expresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LinkKind {
     /// `![[...]]` — an embed/transclusion.
     Transcludes,
@@ -78,6 +80,7 @@ impl LinkKind {
 
 /// A directed edge from one block to a target (resolved page path + optional block id).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LinkRow {
     /// The block that contains the reference.
     pub source_id: BlockId,
@@ -93,6 +96,8 @@ pub struct LinkRow {
 
 /// A keyword/tag/lang search request.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct SearchQuery {
     /// Full-text query (FTS). `None` matches everything (subject to filters).
     pub text: Option<String>,
@@ -130,6 +135,7 @@ impl SearchQuery {
 
 /// A single search result.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SearchHit {
     /// The matching block.
     pub block: BlockRecord,
@@ -139,6 +145,7 @@ pub struct SearchHit {
 
 /// Lightweight index statistics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IndexStats {
     /// Number of indexed pages.
     pub pages: usize,
@@ -300,6 +307,111 @@ pub fn reciprocal_rank_fusion(
     let mut fused: Vec<(BlockId, f64)> = scores.into_iter().collect();
     fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     fused
+}
+
+/// A minimal in-memory [`Index`] for tests across the crate (no storage backend).
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// In-memory index: enough to exercise sync/service logic without SQLite.
+    #[derive(Default)]
+    pub(crate) struct MemIndex {
+        blocks: HashMap<BlockId, BlockRecord>,
+        page_blocks: HashMap<String, Vec<BlockId>>,
+        links: Vec<LinkRow>,
+        embeddings: HashMap<BlockId, Vec<f32>>,
+    }
+
+    impl Index for MemIndex {
+        fn reindex_page(&mut self, page: &Page, links: &[LinkRow]) -> Result<()> {
+            self.remove_page(&page.path)?;
+            let mut ids = Vec::new();
+            for b in &page.doc.blocks {
+                ids.push(b.id.clone());
+                self.blocks
+                    .insert(b.id.clone(), BlockRecord::from_block(&page.path, b));
+            }
+            self.page_blocks.insert(page.path.clone(), ids);
+            self.links.extend_from_slice(links);
+            Ok(())
+        }
+        fn remove_page(&mut self, page_path: &str) -> Result<()> {
+            if let Some(ids) = self.page_blocks.remove(page_path) {
+                for id in &ids {
+                    self.blocks.remove(id);
+                    self.embeddings.remove(id);
+                }
+                self.links.retain(|l| !ids.contains(&l.source_id));
+            }
+            Ok(())
+        }
+        fn clear(&mut self) -> Result<()> {
+            self.blocks.clear();
+            self.page_blocks.clear();
+            self.links.clear();
+            self.embeddings.clear();
+            Ok(())
+        }
+        fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>> {
+            // Substring keyword match; enough for tests.
+            let mut hits: Vec<SearchHit> = self
+                .blocks
+                .values()
+                .filter(|b| match &query.text {
+                    Some(t) => b.content.to_lowercase().contains(&t.to_lowercase()),
+                    None => true,
+                })
+                .filter(|b| {
+                    query
+                        .lang
+                        .as_ref()
+                        .is_none_or(|l| b.lang.as_deref() == Some(l))
+                })
+                .filter(|b| query.tags.iter().all(|t| b.tags.contains(t)))
+                .map(|b| SearchHit {
+                    block: b.clone(),
+                    score: 1.0,
+                })
+                .collect();
+            hits.truncate(query.effective_limit());
+            Ok(hits)
+        }
+        fn block(&self, id: &BlockId) -> Result<Option<BlockRecord>> {
+            Ok(self.blocks.get(id).cloned())
+        }
+        fn links_from(&self, id: &BlockId) -> Result<Vec<LinkRow>> {
+            Ok(self
+                .links
+                .iter()
+                .filter(|l| &l.source_id == id)
+                .cloned()
+                .collect())
+        }
+        fn backlinks(&self, id: &BlockId) -> Result<Vec<LinkRow>> {
+            Ok(self
+                .links
+                .iter()
+                .filter(|l| l.target_id.as_ref() == Some(id))
+                .cloned()
+                .collect())
+        }
+        fn stats(&self) -> Result<IndexStats> {
+            Ok(IndexStats {
+                pages: self.page_blocks.len(),
+                blocks: self.blocks.len(),
+                embedded: self.embeddings.len(),
+            })
+        }
+        fn set_embedding(&mut self, id: &BlockId, vector: &[f32]) -> Result<()> {
+            self.embeddings.insert(id.clone(), vector.to_vec());
+            Ok(())
+        }
+        fn has_embedding(&self, id: &BlockId) -> Result<bool> {
+            Ok(self.embeddings.contains_key(id))
+        }
+    }
 }
 
 #[cfg(test)]

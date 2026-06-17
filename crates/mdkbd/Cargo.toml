@@ -7,5 +7,16 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+onnx = ["mdkb-embed/onnx"]
+
 [dependencies]
 mdkb-core.workspace = true
+mdkb-index.workspace = true
+mdkb-embed.workspace = true
+mdkb-protocol.workspace = true
+notify = "6"
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -4,6 +4,7 @@ members = [
     "crates/mdkb-core",
     "crates/mdkb-index",
     "crates/mdkb-embed",
+    "crates/mdkb-protocol",
     "crates/mdkbd",
     "crates/mdkb-mcp",
     "crates/mdkb-cli",
@@ -20,7 +21,10 @@ rust-version = "1.80"
 mdkb-core = { path = "crates/mdkb-core" }
 mdkb-index = { path = "crates/mdkb-index" }
 mdkb-embed = { path = "crates/mdkb-embed" }
+mdkb-protocol = { path = "crates/mdkb-protocol" }
 regex = "1"
 ulid = "1"
 rusqlite = "0.32"
 tempfile = "3"
+serde = "1"
+serde_json = "1"

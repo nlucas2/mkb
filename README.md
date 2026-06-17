@@ -33,9 +33,10 @@ clients, not part of the store.
 | `crates/mdkb-core` | lib | Shared engine: block model, ids, transclusion, indexing, search. |
 | `crates/mdkb-index` | lib | SQLite (FTS5 + sqlite-vec) implementation of the core `Index` trait. |
 | `crates/mdkb-embed` | lib | Embedder backends: offline hash embedder + optional local ONNX (`fastembed`). |
-| `crates/mdkbd` | bin | Headless daemon: owns the watcher, index, and writes. *(scaffold)* |
+| `crates/mdkb-protocol` | lib | Wire protocol: request/response types, blocking client, shared dispatcher. |
+| `crates/mdkbd` | bin | Headless daemon: owns the watcher, index, and writes; serves a local Unix socket. |
 | `crates/mdkb-mcp` | bin (`mdkb-mcp`) | MCP server, thin client of core/daemon. *(scaffold)* |
-| `crates/mdkb-cli` | bin (`mdkb`) | CLI for scripting/manual ops, thin client. *(scaffold)* |
+| `crates/mdkb-cli` | bin (`mdkb`) | CLI for scripting/manual ops, thin client. |
 | `app/mdkb-tauri` | app | Desktop UI, thin client. *(not started)* |
 
 ## Requirements
@@ -80,8 +81,16 @@ cargo run -p mdkb-cli
   stats). Bundled SQLite, no system dependency.
 - `mdkb-embed` — `Embedder` backends: the offline deterministic `HashEmbedder` (default)
   and an optional local ONNX model via `fastembed` (build with `--features onnx`).
+- `mdkb-core::service` — the shared `Service` API (search / get / render / upsert / link /
+  delete / reconcile) with a `RequestContext` + capability gate on every call. Every client
+  goes through this; behavior is never reimplemented per client.
+- `mdkb-protocol` — newline-delimited JSON wire types, a blocking Unix-socket `Client`, and
+  the shared `dispatch` request handler.
+- `mdkbd` — the headless daemon: owns a `SyncEngine` over SQLite + the vault, a `notify`
+  file watcher that auto-reconciles external edits, and a local Unix-socket server. Binds a
+  local socket only (fail-closed; no network listener).
 - `mdkb` CLI commands: `render`, `assign-ids`, `list`, `search` (keyword + semantic),
-  `stats`.
+  `stats`, and `daemon` (talk to a running `mdkbd`).
 
 ## Usage (current)
 
@@ -102,6 +111,22 @@ cargo run -p mdkb-cli -- list ./my-vault
 cargo run -p mdkb-cli -- stats ./my-vault
 ```
 
+### Running the daemon
+
+`mdkbd` owns the index and a file watcher, and serves a local Unix socket. Markdown is the
+source of truth; the index lives in `<vault>/.mdkb/` and is local-only (exclude it from
+cloud sync).
+
+```sh
+# start the daemon (defaults: vault ~/mdkb-vault, socket <vault>/.mdkb/mdkbd.sock)
+cargo run -p mdkbd -- --vault ./my-vault
+
+# from another shell, talk to it
+cargo run -p mdkb-cli -- daemon ./my-vault/.mdkb/mdkbd.sock ping
+cargo run -p mdkb-cli -- daemon ./my-vault/.mdkb/mdkbd.sock stats
+cargo run -p mdkb-cli -- daemon ./my-vault/.mdkb/mdkbd.sock search "restart the web server"
+```
+
 By default the offline hash embedder is used (deterministic, no downloads). For real
 semantic embeddings via a local ONNX model, build with the `onnx` feature:
 
@@ -119,8 +144,9 @@ cargo run -p mdkb-cli --features onnx -- search ./my-vault "restart the web serv
   search, `SyncEngine` reconcile. *(Live `notify` event loop lands with the daemon.)*
 - **Phase 3 — Semantic search** *(done)*: local embeddings (`mdkb-embed`: offline hash +
   optional `fastembed` ONNX), vector storage, hybrid keyword+vector ranking.
-- **Phase 4 — Daemon + API** *(next)*: `mdkbd` owns watcher/index/writes; clients talk to it.
-- **Phase 5 — MCP server**: expose search / upsert / link tools.
+- **Phase 4 — Daemon + API** *(done)*: shared `Service` API + `RequestContext`, JSON wire
+  protocol, `mdkbd` with a local Unix-socket server and `notify` file watcher.
+- **Phase 5 — MCP server** *(next)*: expose search / upsert / link tools.
 - **Phase 6 — Tauri frontend**: render Markdown + resolved transclusions.
 - **Phase 7 — Sync UX & packaging**: OneDrive conflict surfacing, index rebuild, packaging.
 

@@ -16,6 +16,8 @@ use regex::Regex;
 /// Generated as a ULID (26-character Crockford base32). Treated as an opaque token by
 /// the rest of the system — never parse meaning out of it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct BlockId(String);
 
 /// Error produced when a string is not a valid [`BlockId`].

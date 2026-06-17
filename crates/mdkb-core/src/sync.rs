@@ -222,66 +222,67 @@ impl<I: Index> SyncEngine<I> {
         }
         self.index.search(&query)
     }
+
+    /// Update an existing block's text by id, persisting the change to disk and reindexing
+    /// (and re-embedding) its page. Returns `false` if the id is unknown.
+    pub fn update_block(
+        &mut self,
+        id: &crate::id::BlockId,
+        new_text: &str,
+    ) -> Result<bool, IndexError> {
+        let path = match self.vault.block(id) {
+            Some((p, _)) => p.path.clone(),
+            None => return Ok(false),
+        };
+        let new_source = self
+            .vault
+            .update_block(id, new_text)
+            .ok_or_else(|| IndexError::new("block vanished during update"))?;
+        self.save_page(&path, new_source)?;
+        Ok(true)
+    }
+
+    /// Append a new block of `text` to a page, creating the page if it does not exist.
+    /// Returns the id assigned to the new block.
+    pub fn append_block(
+        &mut self,
+        page: &str,
+        text: &str,
+    ) -> Result<crate::id::BlockId, IndexError> {
+        let mut source = self
+            .vault
+            .page(page)
+            .map(|p| p.doc.source.clone())
+            .unwrap_or_default();
+        if !source.is_empty() {
+            if !source.ends_with('\n') {
+                source.push('\n');
+            }
+            source.push('\n');
+        }
+        source.push_str(text.trim_end());
+        source.push('\n');
+        self.save_page(page, source)?;
+        // The new block is the last one on the page after re-parse.
+        let id = self
+            .vault
+            .page(page)
+            .and_then(|p| p.doc.blocks.last())
+            .map(|b| b.id.clone())
+            .ok_or_else(|| IndexError::new("append produced no block"))?;
+        Ok(id)
+    }
+
+    /// List vault-relative page paths.
+    pub fn page_paths(&self) -> Vec<String> {
+        self.vault.pages().iter().map(|p| p.path.clone()).collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::{IndexStats, LinkRow, Result as IxResult, SearchHit, SearchQuery};
-    use crate::{BlockId, BlockRecord, Page};
-
-    /// A minimal in-memory Index used to test the sync engine without a storage backend.
-    #[derive(Default)]
-    struct MemIndex {
-        blocks: HashMap<BlockId, BlockRecord>,
-        page_blocks: HashMap<String, Vec<BlockId>>,
-    }
-
-    impl Index for MemIndex {
-        fn reindex_page(&mut self, page: &Page, _links: &[LinkRow]) -> IxResult<()> {
-            self.remove_page(&page.path)?;
-            let mut ids = Vec::new();
-            for b in &page.doc.blocks {
-                let rec = BlockRecord::from_block(&page.path, b);
-                ids.push(b.id.clone());
-                self.blocks.insert(b.id.clone(), rec);
-            }
-            self.page_blocks.insert(page.path.clone(), ids);
-            Ok(())
-        }
-        fn remove_page(&mut self, page_path: &str) -> IxResult<()> {
-            if let Some(ids) = self.page_blocks.remove(page_path) {
-                for id in ids {
-                    self.blocks.remove(&id);
-                }
-            }
-            Ok(())
-        }
-        fn clear(&mut self) -> IxResult<()> {
-            self.blocks.clear();
-            self.page_blocks.clear();
-            Ok(())
-        }
-        fn search(&self, _q: &SearchQuery) -> IxResult<Vec<SearchHit>> {
-            Ok(Vec::new())
-        }
-        fn block(&self, id: &BlockId) -> IxResult<Option<BlockRecord>> {
-            Ok(self.blocks.get(id).cloned())
-        }
-        fn links_from(&self, _id: &BlockId) -> IxResult<Vec<LinkRow>> {
-            Ok(Vec::new())
-        }
-        fn backlinks(&self, _id: &BlockId) -> IxResult<Vec<LinkRow>> {
-            Ok(Vec::new())
-        }
-        fn stats(&self) -> IxResult<IndexStats> {
-            Ok(IndexStats {
-                pages: self.page_blocks.len(),
-                blocks: self.blocks.len(),
-                embedded: 0,
-            })
-        }
-    }
+    use crate::index::testing::MemIndex;
 
     fn temp_root() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()

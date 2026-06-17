@@ -11,6 +11,7 @@ pub mod id;
 pub mod index;
 pub mod link;
 pub mod render;
+pub mod service;
 pub mod sync;
 pub mod vault;
 
@@ -26,6 +27,7 @@ pub use index::{
 };
 pub use link::{extract_references, Anchor, LinkTarget, Reference};
 pub use render::{render_block, render_page};
+pub use service::{Caller, Capability, RequestContext, Service};
 pub use sync::{SyncEngine, SyncReport};
 pub use vault::{markdown_files, Page, Vault};
 
