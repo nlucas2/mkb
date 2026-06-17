@@ -12,6 +12,10 @@ use mdkb_protocol::DaemonPaths;
 pub struct Config {
     /// Resolved paths.
     pub paths: DaemonPaths,
+    /// Optional network listen address (e.g. `0.0.0.0:7820`). `None` = local socket only.
+    pub listen: Option<String>,
+    /// Shared token for network auth (required when `listen` is set).
+    pub token: Option<String>,
     /// Whether `--help` was requested.
     pub help: bool,
 }
@@ -23,16 +27,21 @@ impl Config {
 mdkbd — mdkb headless daemon
 
 usage:
-  mdkbd [--vault <dir>] [--db <path>] [--socket <path>]
+  mdkbd [--vault <dir>] [--db <path>] [--socket <path>] [--listen <addr>] [--token <tok>]
 
 options:
   --vault <dir>     vault directory (default: $MDKB_VAULT or ~/mdkb-vault)
   --db <path>       index database (default: <vault>/.mdkb/index.db)
   --socket <path>   unix socket (default: <vault>/.mdkb/mdkbd.sock)
+  --listen <addr>   ALSO serve over TCP at <addr> (e.g. 0.0.0.0:7820); requires a token
+  --token <tok>     shared token network clients must present ($MDKB_TOKEN also accepted)
   --help            show this help
 
 The index and socket directory (<vault>/.mdkb) is local-only and must be excluded
-from cloud sync; only the Markdown files are meant to sync."
+from cloud sync; only the Markdown files are meant to sync.
+
+The network listener is opt-in and fails closed: without a valid token, remote callers
+are rejected. The Unix socket remains local-only and trusted."
     }
 
     /// Vault directory.
@@ -55,6 +64,8 @@ from cloud sync; only the Markdown files are meant to sync."
         let mut vault: Option<PathBuf> = None;
         let mut db: Option<PathBuf> = None;
         let mut socket: Option<PathBuf> = None;
+        let mut listen: Option<String> = None;
+        let mut token: Option<String> = std::env::var("MDKB_TOKEN").ok().filter(|s| !s.is_empty());
         let mut help = false;
 
         let mut it = args.peekable();
@@ -64,6 +75,8 @@ from cloud sync; only the Markdown files are meant to sync."
                 "--vault" => vault = Some(require_value(&mut it, "--vault")?.into()),
                 "--db" => db = Some(require_value(&mut it, "--db")?.into()),
                 "--socket" => socket = Some(require_value(&mut it, "--socket")?.into()),
+                "--listen" => listen = Some(require_value(&mut it, "--listen")?),
+                "--token" => token = Some(require_value(&mut it, "--token")?),
                 other => {
                     if let Some(v) = other.strip_prefix("--vault=") {
                         vault = Some(v.into());
@@ -71,11 +84,23 @@ from cloud sync; only the Markdown files are meant to sync."
                         db = Some(v.into());
                     } else if let Some(v) = other.strip_prefix("--socket=") {
                         socket = Some(v.into());
+                    } else if let Some(v) = other.strip_prefix("--listen=") {
+                        listen = Some(v.into());
+                    } else if let Some(v) = other.strip_prefix("--token=") {
+                        token = Some(v.into());
                     } else {
                         return Err(format!("unknown argument: {other}"));
                     }
                 }
             }
+        }
+
+        if listen.is_some() && token.as_deref().unwrap_or("").is_empty() {
+            return Err(
+                "--listen requires a token (set --token or $MDKB_TOKEN); refusing to expose \
+                 the network listener without auth"
+                    .to_string(),
+            );
         }
 
         let vault = vault.unwrap_or_else(DaemonPaths::default_vault);
@@ -87,7 +112,12 @@ from cloud sync; only the Markdown files are meant to sync."
             paths.socket = socket;
         }
 
-        Ok(Config { paths, help })
+        Ok(Config {
+            paths,
+            listen,
+            token,
+            help,
+        })
     }
 
     /// Create the vault and the local `.mdkb` directories if missing.
@@ -140,5 +170,20 @@ mod tests {
     #[test]
     fn unknown_arg_errors() {
         assert!(Config::from_args(["--nope".into()].into_iter()).is_err());
+    }
+
+    #[test]
+    fn listen_requires_a_token() {
+        // --listen without a token must fail closed.
+        std::env::remove_var("MDKB_TOKEN");
+        let err = Config::from_args(["--listen=0.0.0.0:7820".into()].into_iter()).unwrap_err();
+        assert!(err.contains("token"));
+        // With a token it succeeds.
+        let cfg = Config::from_args(
+            ["--listen=0.0.0.0:7820".into(), "--token=secret".into()].into_iter(),
+        )
+        .unwrap();
+        assert_eq!(cfg.listen.as_deref(), Some("0.0.0.0:7820"));
+        assert_eq!(cfg.token.as_deref(), Some("secret"));
     }
 }

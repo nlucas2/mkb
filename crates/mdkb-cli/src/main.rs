@@ -48,7 +48,7 @@ usage:
        flags: --lang=<lang> --tag=<tag> (repeatable) --page=<path> --limit=<n>
   mdkb stats <vault-dir>                    index statistics
   mdkb daemon <socket> <subcmd> [args]      talk to a running mdkbd over its socket
-       subcmds: ping | stats | list | search <query> | render <page>
+       subcmds: ping | stats | list | search <query> | render <page> | rebuild | conflicts
   mdkb --version                            print version";
 
 fn print_help() {
@@ -217,6 +217,34 @@ fn cmd_daemon(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "rebuild" => match client
+            .call(&mdkb_protocol::Request::Rebuild)
+            .map_err(|e| e.to_string())?
+        {
+            mdkb_protocol::Response::Ok => {
+                println!("index rebuilt");
+                Ok(())
+            }
+            mdkb_protocol::Response::Error { message } => Err(message),
+            other => Err(format!("unexpected response: {other:?}")),
+        },
+        "conflicts" => match client
+            .call(&mdkb_protocol::Request::Conflicts)
+            .map_err(|e| e.to_string())?
+        {
+            mdkb_protocol::Response::Pages(files) if files.is_empty() => {
+                println!("no conflict files");
+                Ok(())
+            }
+            mdkb_protocol::Response::Pages(files) => {
+                for f in files {
+                    println!("{f}");
+                }
+                Ok(())
+            }
+            mdkb_protocol::Response::Error { message } => Err(message),
+            other => Err(format!("unexpected response: {other:?}")),
+        },
         other => Err(format!("unknown daemon subcommand: {other}")),
     }
 }

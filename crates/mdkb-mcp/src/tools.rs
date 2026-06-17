@@ -140,6 +140,16 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             description: "Index statistics: page, block, and embedding counts.",
             schema: json!({"type": "object", "properties": {}}),
         },
+        ToolDef {
+            name: "rebuild",
+            description: "Rebuild the entire search index from the vault's Markdown files (the source of truth). Use after corruption or to force a full re-index.",
+            schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
+            name: "conflicts",
+            description: "List cloud-sync conflict files (e.g. OneDrive copies) detected in the vault. These are surfaced but not indexed; resolve them in plain text.",
+            schema: json!({"type": "object", "properties": {}}),
+        },
     ]
 }
 
@@ -219,6 +229,8 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             embed: args.get("embed").and_then(|v| v.as_bool()).unwrap_or(false),
         },
         "stats" => Request::Stats,
+        "rebuild" => Request::Rebuild,
+        "conflicts" => Request::Conflicts,
         other => return Err(format!("unknown tool: {other}")),
     })
 }

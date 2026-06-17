@@ -27,10 +27,12 @@ pub struct SyncReport {
     pub changed: Vec<String>,
     /// Pages removed.
     pub removed: Vec<String>,
+    /// Cloud-sync conflict files detected (surfaced, not indexed).
+    pub conflicts: Vec<String>,
 }
 
 impl SyncReport {
-    /// Whether anything changed.
+    /// Whether anything changed (conflicts are informational, not a change).
     pub fn is_empty(&self) -> bool {
         self.changed.is_empty() && self.removed.is_empty()
     }
@@ -44,6 +46,7 @@ pub struct SyncEngine<I: Index> {
     hashes: HashMap<String, u64>,
     assign_ids: bool,
     embedder: Option<Box<dyn Embedder>>,
+    conflicts: Vec<String>,
 }
 
 fn hash_bytes(b: &[u8]) -> u64 {
@@ -66,6 +69,7 @@ impl<I: Index> SyncEngine<I> {
             hashes: HashMap::new(),
             assign_ids: true,
             embedder: None,
+            conflicts: Vec::new(),
         }
     }
 
@@ -107,7 +111,18 @@ impl<I: Index> SyncEngine<I> {
         let files = markdown_files(&self.root).map_err(io_err)?;
         let mut report = SyncReport::default();
         let mut seen = HashSet::new();
+        let mut conflicts = Vec::new();
         for (rel, abs) in files {
+            // Cloud-sync conflict copies are surfaced, never indexed (would duplicate /
+            // stale-pollute search). The human resolves them in plain text.
+            if crate::conflict::is_conflict_path(&rel) {
+                conflicts.push(rel.clone());
+                if self.hashes.contains_key(&rel) {
+                    // It was previously a normal file that got mangled; drop its old index.
+                    self.drop_page(&rel)?;
+                }
+                continue;
+            }
             seen.insert(rel.clone());
             let bytes = std::fs::read(&abs).map_err(io_err)?;
             if self.hashes.get(&rel) == Some(&hash_bytes(&bytes)) {
@@ -127,9 +142,28 @@ impl<I: Index> SyncEngine<I> {
             self.drop_page(&rel)?;
             report.removed.push(rel);
         }
+        conflicts.sort();
+        self.conflicts = conflicts;
         report.changed.sort();
         report.removed.sort();
+        report.conflicts = self.conflicts.clone();
         Ok(report)
+    }
+
+    /// Cloud-sync conflict files detected at the last reconcile (surfaced, not indexed).
+    pub fn conflicts(&self) -> &[String] {
+        &self.conflicts
+    }
+
+    /// Rebuild the entire index from scratch off the current vault files. Clears the index,
+    /// forgets cached hashes, and re-ingests everything. Use after corruption or a model
+    /// change. The Markdown is untouched (it is the source of truth).
+    pub fn rebuild(&mut self) -> Result<SyncReport, IndexError> {
+        self.index.clear()?;
+        self.vault = Vault::new();
+        self.hashes.clear();
+        self.conflicts.clear();
+        self.reconcile()
     }
 
     /// Ingest a single page from disk (reading `root/rel`).
@@ -332,5 +366,37 @@ mod tests {
         engine.save_page("topic/new.md", "fresh note\n").unwrap();
         assert!(root.path().join("topic/new.md").exists());
         assert_eq!(engine.index().stats().unwrap().blocks, 1);
+    }
+
+    #[test]
+    fn conflict_files_are_surfaced_not_indexed() {
+        let root = temp_root();
+        std::fs::write(root.path().join("arch.md"), "the real note\n").unwrap();
+        std::fs::write(
+            root.path().join("arch-DESKTOP-AB12CD.md"),
+            "a stale conflict copy\n",
+        )
+        .unwrap();
+        let mut engine = SyncEngine::new(root.path(), MemIndex::default());
+        let report = engine.reconcile().unwrap();
+        // Only the real file is indexed; the conflict copy is reported separately.
+        assert_eq!(report.changed, vec!["arch.md".to_string()]);
+        assert_eq!(engine.conflicts(), &["arch-DESKTOP-AB12CD.md".to_string()]);
+        assert_eq!(report.conflicts, vec!["arch-DESKTOP-AB12CD.md".to_string()]);
+        assert_eq!(engine.index().stats().unwrap().pages, 1);
+    }
+
+    #[test]
+    fn rebuild_reconstructs_index_from_vault() {
+        let root = temp_root();
+        std::fs::write(root.path().join("a.md"), "alpha\n\nbeta\n").unwrap();
+        let mut engine = SyncEngine::new(root.path(), MemIndex::default());
+        engine.reconcile().unwrap();
+        let before = engine.index().stats().unwrap().blocks;
+        assert!(before >= 2);
+        let report = engine.rebuild().unwrap();
+        // Everything is re-ingested; counts match.
+        assert_eq!(engine.index().stats().unwrap().blocks, before);
+        assert!(report.changed.contains(&"a.md".to_string()));
     }
 }

@@ -96,6 +96,15 @@ pub enum Request {
     },
     /// Reconcile the vault directory with the index.
     Reconcile,
+    /// Rebuild the entire index from the vault files (clear + re-ingest).
+    Rebuild,
+    /// List cloud-sync conflict files detected at the last reconcile.
+    Conflicts,
+    /// Authenticate this connection with a shared token (network transport).
+    Authenticate {
+        /// The shared token.
+        token: String,
+    },
 }
 
 /// A response from the daemon.
@@ -205,6 +214,16 @@ fn handle<I: Index>(
             service.reconcile(ctx).map_err(to_str)?;
             Response::Ok
         }
+        Request::Rebuild => {
+            service.rebuild(ctx).map_err(to_str)?;
+            Response::Ok
+        }
+        Request::Conflicts => Response::Pages(service.conflicts(ctx).map_err(to_str)?),
+        // Authentication is handled by the transport layer (the server upgrades the
+        // connection's context); reaching dispatch means it was used out of place.
+        Request::Authenticate { .. } => Response::Error {
+            message: "authenticate is handled by the transport layer".to_string(),
+        },
     })
 }
 
@@ -228,46 +247,98 @@ pub fn decode_response(line: &str) -> serde_json::Result<Response> {
     serde_json::from_str(line.trim())
 }
 
-/// A blocking client over a Unix-domain socket.
+/// Write a request (newline-terminated) to a stream and flush.
+fn send(writer: &mut impl Write, request: &Request) -> io::Result<()> {
+    writer.write_all(encode_request(request)?.as_bytes())?;
+    writer.flush()
+}
+
+/// Read exactly one newline-delimited response from a buffered reader.
+fn read_one(reader: &mut impl BufRead) -> io::Result<Response> {
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    if line.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "empty response from daemon",
+        ));
+    }
+    Ok(serde_json::from_str(line.trim_end())?)
+}
+
+/// The transport a [`Client`] uses to reach the daemon.
+#[derive(Debug, Clone)]
+enum Transport {
+    /// Local Unix-domain socket (trusted).
+    Unix(PathBuf),
+    /// TCP with a shared auth token presented on each connection.
+    Tcp { addr: String, token: String },
+}
+
+/// A blocking client over a [`Transport`].
 ///
-/// One request per connection (simple and robust). A future network transport implements
-/// the same surface behind this type (plan Decision #9).
+/// One request per connection (simple and robust). Programs against the `Transport` enum so
+/// the same surface works locally (Unix socket) or over the network (TCP + token).
 #[derive(Debug, Clone)]
 pub struct Client {
-    socket: PathBuf,
+    transport: Transport,
 }
 
 impl Client {
-    /// Point a client at a daemon socket path.
+    /// Point a client at a daemon Unix socket path.
     pub fn new(socket: impl Into<PathBuf>) -> Self {
         Client {
-            socket: socket.into(),
+            transport: Transport::Unix(socket.into()),
         }
     }
 
-    /// The socket path.
+    /// Point a client at a daemon TCP address, authenticating with `token`.
+    pub fn tcp(addr: impl Into<String>, token: impl Into<String>) -> Self {
+        Client {
+            transport: Transport::Tcp {
+                addr: addr.into(),
+                token: token.into(),
+            },
+        }
+    }
+
+    /// The socket path, if this is a Unix-socket client.
     pub fn socket(&self) -> &Path {
-        &self.socket
+        match &self.transport {
+            Transport::Unix(p) => p,
+            Transport::Tcp { .. } => Path::new(""),
+        }
     }
 
     /// Send one request and read one response.
     pub fn call(&self, request: &Request) -> io::Result<Response> {
-        let stream = UnixStream::connect(&self.socket)?;
-        let mut writer = stream.try_clone()?;
-        writer.write_all(encode_request(request)?.as_bytes())?;
-        writer.flush()?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        if line.trim().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "empty response from daemon",
-            ));
+        match &self.transport {
+            Transport::Unix(socket) => {
+                let stream = UnixStream::connect(socket)?;
+                let mut writer = stream.try_clone()?;
+                let mut reader = BufReader::new(stream);
+                send(&mut writer, request)?;
+                read_one(&mut reader)
+            }
+            Transport::Tcp { addr, token } => {
+                let stream = std::net::TcpStream::connect(addr)?;
+                let mut writer = stream.try_clone()?;
+                // A single reader for the whole connection so no response bytes are lost
+                // between the auth handshake and the actual request.
+                let mut reader = BufReader::new(stream);
+                send(
+                    &mut writer,
+                    &Request::Authenticate {
+                        token: token.clone(),
+                    },
+                )?;
+                if let Response::Error { message } = read_one(&mut reader)? {
+                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, message));
+                }
+                send(&mut writer, request)?;
+                read_one(&mut reader)
+            }
         }
-        let resp: Response = serde_json::from_str(line.trim_end())?;
-        Ok(resp)
     }
 
     /// Convenience: search.

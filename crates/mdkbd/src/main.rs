@@ -78,7 +78,13 @@ fn run() -> Result<(), String> {
     // Start the watcher (keeps the index in sync with external edits).
     watcher::spawn(cfg.vault().to_path_buf(), Arc::clone(&shared));
 
+    // Optional network listener (opt-in, token-gated, fail-closed).
+    let net = cfg.listen.as_ref().map(|addr| server::NetConfig {
+        addr: addr.clone(),
+        token: cfg.token.clone().unwrap_or_default(),
+    });
+
     // Serve requests until interrupted.
-    server::serve(cfg.socket(), shared).map_err(|e| e.to_string())?;
+    server::serve(cfg.socket(), net, shared).map_err(|e| e.to_string())?;
     Ok(())
 }

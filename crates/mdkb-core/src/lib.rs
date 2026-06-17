@@ -5,6 +5,7 @@
 //! of this crate so a bug fixed once is fixed everywhere. See `AGENTS.md`.
 
 pub mod block;
+pub mod conflict;
 pub mod document;
 pub mod embed;
 pub mod id;
@@ -16,6 +17,7 @@ pub mod sync;
 pub mod vault;
 
 pub use block::{Block, BlockKind, Tag, TagSource};
+pub use conflict::{is_conflict_path, CONFLICT_MARKERS};
 pub use document::{Document, Frontmatter};
 pub use embed::{
     bytes_to_vector, cosine_similarity, vector_to_bytes, EmbedError, Embedder, HashEmbedder,

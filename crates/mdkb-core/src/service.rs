@@ -20,7 +20,9 @@ use crate::sync::SyncEngine;
 pub enum Caller {
     /// A local, fully-trusted caller (same machine, Unix socket / in-process).
     Local,
-    /// A remote caller identified by some opaque principal (network deployments).
+    /// A network caller that presented a valid shared token (opaque principal).
+    Authenticated(String),
+    /// A remote caller that has not authenticated (network deployments).
     Remote(String),
 }
 
@@ -55,14 +57,21 @@ impl RequestContext {
         }
     }
 
-    /// Authorize `cap` for this caller. Local callers are permitted everything today; this
-    /// is the single choke point where network authz will be enforced later.
+    /// A network context that has presented a valid shared token.
+    pub fn authenticated(id: impl Into<String>) -> Self {
+        RequestContext {
+            caller: Caller::Authenticated(id.into()),
+        }
+    }
+
+    /// Authorize `cap` for this caller. Local and token-authenticated callers are permitted
+    /// everything today; un-authenticated remote callers fail closed. This is the single
+    /// choke point where finer-grained (e.g. read-only token) authz will be enforced later.
     pub fn authorize(&self, _cap: Capability) -> Result<(), IndexError> {
         match &self.caller {
-            Caller::Local => Ok(()),
-            // Network callers are not yet supported; deny by default (fail closed).
+            Caller::Local | Caller::Authenticated(_) => Ok(()),
             Caller::Remote(id) => Err(IndexError::new(format!(
-                "unauthorized: remote caller {id} (network auth not yet configured)"
+                "unauthorized: remote caller {id} (authenticate with a token first)"
             ))),
         }
     }
@@ -243,6 +252,18 @@ impl<I: Index> Service<I> {
     ) -> Result<crate::sync::SyncReport, IndexError> {
         ctx.authorize(Capability::Write)?;
         self.engine.reconcile()
+    }
+
+    /// Rebuild the entire index from the vault files (clear + re-ingest everything).
+    pub fn rebuild(&mut self, ctx: &RequestContext) -> Result<crate::sync::SyncReport, IndexError> {
+        ctx.authorize(Capability::Write)?;
+        self.engine.rebuild()
+    }
+
+    /// Cloud-sync conflict files detected at the last reconcile (surfaced, not indexed).
+    pub fn conflicts(&self, ctx: &RequestContext) -> Result<Vec<String>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(self.engine.conflicts().to_vec())
     }
 }
 

@@ -92,7 +92,8 @@ cargo run -p mdkb-cli
   file watcher that auto-reconciles external edits, and a local Unix-socket server. Binds a
   local socket only (fail-closed; no network listener).
 - `mdkb` CLI commands: `render`, `assign-ids`, `list`, `search` (keyword + semantic),
-  `stats`, and `daemon` (talk to a running `mdkbd`).
+  `stats`, and `daemon` (talk to a running `mdkbd`: `ping`/`stats`/`list`/`search`/`render`/
+  `rebuild`/`conflicts`).
 - `mdkb-mcp` — an MCP server (JSON-RPC 2.0 over stdio) exposing the knowledge base as tools
   (`search`, `get_block`, `get_page`, `render_page`, `list_pages`, `backlinks`,
   `links_from`, `upsert_block`, `save_page`, `delete_page`, `link_blocks`, `stats`). It is a
@@ -184,8 +185,16 @@ Two front-ends share the same `mdkb-view` rendering layer (so they can't drift a
 - **Phase 6 — Tauri frontend** *(next)*: render Markdown + resolved transclusions.
 - **Phase 6 — Tauri frontend** *(done)*: shared `mdkb-view` (Markdown→HTML), runnable
   `mdkb-web` local UI, and a `app/mdkb-tauri` desktop shell over the same view layer.
-- **Phase 7 — Sync UX & packaging** *(next)*: OneDrive conflict surfacing, index rebuild,
-  network transport for cluster deploy, packaging.
+- **Phase 7 — Sync UX & packaging** *(done)*: cloud-sync conflict detection (surfaced, not
+  indexed), index `rebuild`, token-gated TCP transport for cluster deploy, Dockerfile + k8s
+  manifest + example MCP config (`deploy/`).
+
+## Deployment
+
+See [`deploy/README.md`](./deploy/README.md). In short: run `mdkbd --vault <dir>` locally,
+or deploy the daemon to k3s/Kubernetes as a single writer (`replicas: 1`) serving a
+token-gated TCP API (`deploy/k8s.yaml`, `Dockerfile`). Sync only the Markdown vault across
+machines; each daemon keeps its own local, rebuildable index.
 
 ## License
 
