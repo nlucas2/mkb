@@ -5,7 +5,7 @@
 
 use std::process::ExitCode;
 
-use mdkb_core::{render_page, Index, SearchQuery, Vault};
+use mdkb_core::{render_page, Index, SearchQuery, SyncEngine, Vault};
 use mdkb_index::SqliteIndex;
 
 fn main() -> ExitCode {
@@ -59,10 +59,16 @@ fn load_vault(dir: &str) -> Result<Vault, String> {
     Vault::from_dir(dir).map_err(|e| format!("loading vault: {e}"))
 }
 
-fn build_index(vault: &Vault) -> Result<SqliteIndex, String> {
-    let mut idx = SqliteIndex::open_in_memory().map_err(|e| e.to_string())?;
-    idx.rebuild(vault).map_err(|e| e.to_string())?;
-    Ok(idx)
+/// Build a read-only, in-memory engine over the vault: it reconciles (without rewriting
+/// files) and embeds blocks, so both keyword and semantic search work. This reuses the
+/// exact ingest/embed/search path the daemon uses — no duplicated logic.
+fn readonly_engine(dir: &str) -> Result<SyncEngine<SqliteIndex>, String> {
+    let index = SqliteIndex::open_in_memory().map_err(|e| e.to_string())?;
+    let mut engine = SyncEngine::new(dir, index)
+        .without_id_assignment()
+        .with_embedder(mdkb_embed::recommended());
+    engine.reconcile().map_err(|e| e.to_string())?;
+    Ok(engine)
 }
 
 fn cmd_render(args: &[String]) -> Result<(), String> {
@@ -122,9 +128,8 @@ fn cmd_search(args: &[String]) -> Result<(), String> {
         query.text = Some(text_parts.join(" "));
     }
 
-    let vault = load_vault(dir)?;
-    let idx = build_index(&vault)?;
-    let hits = idx.search(&query).map_err(|e| e.to_string())?;
+    let engine = readonly_engine(dir)?;
+    let hits = engine.search(query).map_err(|e| e.to_string())?;
     if hits.is_empty() {
         println!("(no matches)");
         return Ok(());
@@ -145,9 +150,8 @@ fn cmd_search(args: &[String]) -> Result<(), String> {
 
 fn cmd_stats(args: &[String]) -> Result<(), String> {
     let dir = args.first().ok_or("missing <vault-dir>")?;
-    let vault = load_vault(dir)?;
-    let idx = build_index(&vault)?;
-    let s = idx.stats().map_err(|e| e.to_string())?;
+    let engine = readonly_engine(dir)?;
+    let s = engine.index().stats().map_err(|e| e.to_string())?;
     println!("pages:    {}", s.pages);
     println!("blocks:   {}", s.blocks);
     println!("embedded: {}", s.embedded);

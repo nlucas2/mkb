@@ -1,0 +1,18 @@
+[package]
+name = "mdkb-embed"
+description = "Embedder backends for mdkb: offline hash embedder, optional local ONNX (fastembed)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Enables the local ONNX embedding model via fastembed. Off by default so the standard
+# build/test path stays fully offline and light; the daemon opts in.
+onnx = ["dep:fastembed"]
+
+[dependencies]
+mdkb-core.workspace = true
+fastembed = { version = "5", optional = true }

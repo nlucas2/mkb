@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/mdkb-core",
     "crates/mdkb-index",
+    "crates/mdkb-embed",
     "crates/mdkbd",
     "crates/mdkb-mcp",
     "crates/mdkb-cli",
@@ -18,6 +19,7 @@ rust-version = "1.80"
 [workspace.dependencies]
 mdkb-core = { path = "crates/mdkb-core" }
 mdkb-index = { path = "crates/mdkb-index" }
+mdkb-embed = { path = "crates/mdkb-embed" }
 regex = "1"
 ulid = "1"
 rusqlite = "0.32"

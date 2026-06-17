@@ -6,6 +6,7 @@
 
 pub mod block;
 pub mod document;
+pub mod embed;
 pub mod id;
 pub mod index;
 pub mod link;
@@ -15,6 +16,9 @@ pub mod vault;
 
 pub use block::{Block, BlockKind, Tag, TagSource};
 pub use document::{Document, Frontmatter};
+pub use embed::{
+    bytes_to_vector, cosine_similarity, vector_to_bytes, EmbedError, Embedder, HashEmbedder,
+};
 pub use id::{BlockId, IdCodec, IdError, MarkerMatch, NativeIdCodec};
 pub use index::{
     page_links, reciprocal_rank_fusion, BlockRecord, Index, IndexError, IndexStats, LinkKind,

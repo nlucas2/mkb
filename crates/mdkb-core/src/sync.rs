@@ -15,8 +15,9 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use crate::document::Document;
+use crate::embed::Embedder;
 use crate::id::NativeIdCodec;
-use crate::index::{page_links, Index, IndexError};
+use crate::index::{page_links, Index, IndexError, SearchHit, SearchQuery};
 use crate::vault::{markdown_files, Vault};
 
 /// Result of a reconcile pass.
@@ -42,6 +43,7 @@ pub struct SyncEngine<I: Index> {
     index: I,
     hashes: HashMap<String, u64>,
     assign_ids: bool,
+    embedder: Option<Box<dyn Embedder>>,
 }
 
 fn hash_bytes(b: &[u8]) -> u64 {
@@ -63,12 +65,19 @@ impl<I: Index> SyncEngine<I> {
             index,
             hashes: HashMap::new(),
             assign_ids: true,
+            embedder: None,
         }
     }
 
     /// Disable eager id assignment (the engine will not modify files on ingest).
     pub fn without_id_assignment(mut self) -> Self {
         self.assign_ids = false;
+        self
+    }
+
+    /// Attach an embedder so blocks get embeddings on ingest and queries become semantic.
+    pub fn with_embedder(mut self, embedder: Box<dyn Embedder>) -> Self {
+        self.embedder = Some(embedder);
         self
     }
 
@@ -182,9 +191,36 @@ impl<I: Index> SyncEngine<I> {
             .clone();
         let links = page_links(&self.vault, &page);
         self.index.reindex_page(&page, &links)?;
+
+        if let Some(embedder) = &self.embedder {
+            let texts: Vec<String> = page
+                .doc
+                .blocks
+                .iter()
+                .map(|b| b.contextual_text())
+                .collect();
+            let vectors = embedder.embed(&texts).map_err(IndexError::new)?;
+            for (block, vector) in page.doc.blocks.iter().zip(vectors) {
+                self.index.set_embedding(&block.id, &vector)?;
+            }
+        }
+
         self.hashes
             .insert(rel.to_string(), hash_bytes(final_source.as_bytes()));
         Ok(())
+    }
+
+    /// Search the index, embedding the query text first when an embedder is attached and the
+    /// query does not already carry a vector. This is the entry point a daemon/UI uses so
+    /// keyword and semantic search are fused automatically.
+    pub fn search(&self, mut query: SearchQuery) -> Result<Vec<SearchHit>, IndexError> {
+        if query.vector.is_none() {
+            if let (Some(embedder), Some(text)) = (&self.embedder, &query.text) {
+                let vector = embedder.embed_one(text).map_err(IndexError::new)?;
+                query.vector = Some(vector);
+            }
+        }
+        self.index.search(&query)
     }
 }
 

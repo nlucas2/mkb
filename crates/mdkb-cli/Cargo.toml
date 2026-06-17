@@ -11,6 +11,11 @@ rust-version.workspace = true
 name = "mdkb"
 path = "src/main.rs"
 
+[features]
+default = []
+onnx = ["mdkb-embed/onnx"]
+
 [dependencies]
 mdkb-core.workspace = true
 mdkb-index.workspace = true
+mdkb-embed.workspace = true

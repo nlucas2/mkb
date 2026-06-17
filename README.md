@@ -32,6 +32,7 @@ clients, not part of the store.
 |-------|------|------|
 | `crates/mdkb-core` | lib | Shared engine: block model, ids, transclusion, indexing, search. |
 | `crates/mdkb-index` | lib | SQLite (FTS5 + sqlite-vec) implementation of the core `Index` trait. |
+| `crates/mdkb-embed` | lib | Embedder backends: offline hash embedder + optional local ONNX (`fastembed`). |
 | `crates/mdkbd` | bin | Headless daemon: owns the watcher, index, and writes. *(scaffold)* |
 | `crates/mdkb-mcp` | bin (`mdkb-mcp`) | MCP server, thin client of core/daemon. *(scaffold)* |
 | `crates/mdkb-cli` | bin (`mdkb`) | CLI for scripting/manual ops, thin client. *(scaffold)* |
@@ -75,8 +76,12 @@ cargo run -p mdkb-cli
   - `sync` — `SyncEngine`: reconciles a vault directory with an index (hash-skip unchanged
     files, eager id assignment, incremental reindex, deletion detection).
 - `mdkb-index` — SQLite + FTS5 implementation of `Index` (keyword search, tag/lang/page
-  filters, backlinks, stats). Bundled SQLite, no system dependency.
-- `mdkb` CLI commands: `render`, `assign-ids`, `list`, `search`, `stats`.
+  filters, vector storage, brute-force cosine, hybrid keyword+vector fusion, backlinks,
+  stats). Bundled SQLite, no system dependency.
+- `mdkb-embed` — `Embedder` backends: the offline deterministic `HashEmbedder` (default)
+  and an optional local ONNX model via `fastembed` (build with `--features onnx`).
+- `mdkb` CLI commands: `render`, `assign-ids`, `list`, `search` (keyword + semantic),
+  `stats`.
 
 ## Usage (current)
 
@@ -87,14 +92,21 @@ cargo run -p mdkb-cli -- assign-ids ./my-vault
 # render a page with all transclusions resolved
 cargo run -p mdkb-cli -- render ./my-vault useful-queries
 
-# keyword search, with optional filters
-cargo run -p mdkb-cli -- search ./my-vault "restart nginx"
+# search — combines keyword (FTS) and semantic (vector) ranking, with optional filters
+cargo run -p mdkb-cli -- search ./my-vault "how do I restart nginx"
 cargo run -p mdkb-cli -- search ./my-vault --lang=kusto
 cargo run -p mdkb-cli -- search ./my-vault --tag=ops --limit=10
 
 # list pages / index stats
 cargo run -p mdkb-cli -- list ./my-vault
 cargo run -p mdkb-cli -- stats ./my-vault
+```
+
+By default the offline hash embedder is used (deterministic, no downloads). For real
+semantic embeddings via a local ONNX model, build with the `onnx` feature:
+
+```sh
+cargo run -p mdkb-cli --features onnx -- search ./my-vault "restart the web server"
 ```
 
 ## Roadmap
@@ -105,10 +117,9 @@ cargo run -p mdkb-cli -- stats ./my-vault
   extraction, CLI render.
 - **Phase 2 — Index + watcher** *(done)*: SQLite (FTS5) index, keyword + tag/lang-filtered
   search, `SyncEngine` reconcile. *(Live `notify` event loop lands with the daemon.)*
-- **Phase 3 — Semantic search** *(next)*: local `fastembed` embeddings, sqlite-vec, hybrid
-  ranking.
-- **Phase 3 — Semantic search**: local `fastembed` embeddings, hybrid ranking.
-- **Phase 4 — Daemon + API**: `mdkbd` owns watcher/index/writes; clients talk to it.
+- **Phase 3 — Semantic search** *(done)*: local embeddings (`mdkb-embed`: offline hash +
+  optional `fastembed` ONNX), vector storage, hybrid keyword+vector ranking.
+- **Phase 4 — Daemon + API** *(next)*: `mdkbd` owns watcher/index/writes; clients talk to it.
 - **Phase 5 — MCP server**: expose search / upsert / link tools.
 - **Phase 6 — Tauri frontend**: render Markdown + resolved transclusions.
 - **Phase 7 — Sync UX & packaging**: OneDrive conflict surfacing, index rebuild, packaging.

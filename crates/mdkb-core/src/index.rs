@@ -96,6 +96,9 @@ pub struct LinkRow {
 pub struct SearchQuery {
     /// Full-text query (FTS). `None` matches everything (subject to filters).
     pub text: Option<String>,
+    /// Query embedding for semantic search. When present alongside `text`, results are
+    /// fused (keyword + vector) via reciprocal rank fusion.
+    pub vector: Option<Vec<f32>>,
     /// Tags that must all be present (AND).
     pub tags: Vec<String>,
     /// Required fence language (e.g. `kusto`).
@@ -194,6 +197,17 @@ pub trait Index {
 
     /// Index statistics.
     fn stats(&self) -> Result<IndexStats>;
+
+    /// Store (or replace) the embedding for a block. Default: a no-op for engines without
+    /// vector support.
+    fn set_embedding(&mut self, _id: &BlockId, _vector: &[f32]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Whether a block already has a stored embedding. Default: `false`.
+    fn has_embedding(&self, _id: &BlockId) -> Result<bool> {
+        Ok(false)
+    }
 
     /// Rebuild the entire index from a vault (clear + reindex every page).
     fn rebuild(&mut self, vault: &Vault) -> Result<()> {
