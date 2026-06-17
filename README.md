@@ -58,16 +58,40 @@ cargo run -p mdkb-cli
 ## Implemented so far
 
 - Workspace scaffold with the four crates above.
-- `mdkb-core::id` — `BlockId` (ULID-based) and the `IdCodec` trait with the native
-  `<!-- mdkb:<ulid> -->` encoding, plus unit tests.
+- `mdkb-core`:
+  - `id` — `BlockId` (ULID) + `IdCodec` trait with the native `<!-- mdkb:<ulid> -->` encoding.
+  - `block` / `document` — a fidelity-preserving Markdown parser producing block-level
+    nodes (headings, paragraphs, code fences, quotes, list items, thematic breaks, HTML),
+    with heading lineage, code-fence `lang`, and tags (inline `#tag`, frontmatter, lang).
+    Eager id assignment splices invisible markers in without reformatting the file.
+  - `link` — `[[...]]` / `![[...]]` reference parsing (page, id/heading anchor, display).
+  - `vault` — in-memory or directory-backed page collection with name/id resolution,
+    id assignment, and fidelity-preserving block edits.
+  - `render` — transclusion resolver: inlines `![[...]]` embeds (the "update once,
+    reflects everywhere" guarantee), renders links, breaks cycles.
+- `mdkb` CLI commands: `render`, `assign-ids`, `list`.
+
+## Usage (current)
+
+```sh
+# assign stable ids to every block (writes invisible markers into your .md files)
+cargo run -p mdkb-cli -- assign-ids ./my-vault
+
+# render a page with all transclusions resolved
+cargo run -p mdkb-cli -- render ./my-vault useful-queries
+
+# list pages
+cargo run -p mdkb-cli -- list ./my-vault
+```
 
 ## Roadmap
 
-- **Phase 0 — Scaffold** *(in progress)*: workspace, crates, governance docs.
-- **Phase 1 — Core SSOT (no AI)**: Markdown parser, block model (incl. code-fence `lang`),
-  block-id assignment, transclusion/reference resolver, `#tag` + frontmatter extraction.
-- **Phase 2 — Index + watcher**: SQLite (`sqlite-vec` + FTS5), file watcher, keyword and
-  tag/lang-filtered search.
+- **Phase 0 — Scaffold** *(done)*: workspace, crates, governance docs.
+- **Phase 1 — Core SSOT (no AI)** *(done)*: Markdown parser, block model (incl. code-fence
+  `lang`), eager block-id assignment, transclusion/reference resolver, `#tag` + frontmatter
+  extraction, CLI render.
+- **Phase 2 — Index + watcher** *(in progress)*: SQLite (`sqlite-vec` + FTS5), file
+  watcher, keyword and tag/lang-filtered search.
 - **Phase 3 — Semantic search**: local `fastembed` embeddings, hybrid ranking.
 - **Phase 4 — Daemon + API**: `mdkbd` owns watcher/index/writes; clients talk to it.
 - **Phase 5 — MCP server**: expose search / upsert / link tools.
