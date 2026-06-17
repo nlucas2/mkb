@@ -7,16 +7,23 @@
 pub mod block;
 pub mod document;
 pub mod id;
+pub mod index;
 pub mod link;
 pub mod render;
+pub mod sync;
 pub mod vault;
 
 pub use block::{Block, BlockKind, Tag, TagSource};
 pub use document::{Document, Frontmatter};
 pub use id::{BlockId, IdCodec, IdError, MarkerMatch, NativeIdCodec};
+pub use index::{
+    page_links, reciprocal_rank_fusion, BlockRecord, Index, IndexError, IndexStats, LinkKind,
+    LinkRow, SearchHit, SearchQuery,
+};
 pub use link::{extract_references, Anchor, LinkTarget, Reference};
 pub use render::{render_block, render_page};
-pub use vault::{Page, Vault};
+pub use sync::{SyncEngine, SyncReport};
+pub use vault::{markdown_files, Page, Vault};
 
 /// Crate version, surfaced to clients for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

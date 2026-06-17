@@ -27,6 +27,29 @@ pub enum BlockKind {
     ThematicBreak,
 }
 
+impl BlockKind {
+    /// The structural kind as a short stable string (for indexing/filtering).
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            BlockKind::Heading { .. } => "heading",
+            BlockKind::Paragraph => "paragraph",
+            BlockKind::CodeFence => "code",
+            BlockKind::Quote => "quote",
+            BlockKind::ListItem => "list",
+            BlockKind::Html => "html",
+            BlockKind::ThematicBreak => "break",
+        }
+    }
+
+    /// The heading level, if this is a heading.
+    pub fn heading_level(&self) -> Option<u8> {
+        match self {
+            BlockKind::Heading { level } => Some(*level),
+            _ => None,
+        }
+    }
+}
+
 /// Where a tag came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagSource {

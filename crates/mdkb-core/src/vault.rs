@@ -73,28 +73,24 @@ impl Vault {
     pub fn from_dir(root: impl AsRef<Path>) -> io::Result<Vault> {
         let root = root.as_ref();
         let mut vault = Vault::new();
-        let mut stack = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir)? {
-                let entry = entry?;
-                let p = entry.path();
-                if p.is_dir() {
-                    if !p
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with('.'))
-                    {
-                        stack.push(p);
-                    }
-                } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-                    let rel = p.strip_prefix(root).unwrap_or(&p);
-                    let rel = rel.to_string_lossy().replace('\\', "/");
-                    let source = std::fs::read_to_string(&p)?;
-                    vault.insert(rel, source);
-                }
-            }
+        for (rel, abs) in markdown_files(root)? {
+            let source = std::fs::read_to_string(&abs)?;
+            vault.insert(rel, source);
         }
         Ok(vault)
+    }
+
+    /// Remove a page from the in-memory vault (does not touch the filesystem).
+    pub fn remove(&mut self, path: &str) -> bool {
+        let k = key(&normalize_path(path));
+        match self.by_path.get(&k).copied() {
+            Some(i) => {
+                self.pages.remove(i);
+                self.reindex();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Resolve a page by name or relative path (case-insensitive).
@@ -181,6 +177,39 @@ fn normalize_path(p: &str) -> String {
 
 fn key(s: &str) -> String {
     s.to_lowercase()
+}
+
+/// Recursively list `.md` files under `root`, returning `(vault-relative path, absolute
+/// path)` pairs. Hidden directories (those starting with `.`) are skipped.
+pub fn markdown_files(root: impl AsRef<Path>) -> io::Result<Vec<(String, std::path::PathBuf)>> {
+    let root = root.as_ref();
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries {
+            let entry = entry?;
+            let p = entry.path();
+            if p.is_dir() {
+                if !p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.'))
+                {
+                    stack.push(p);
+                }
+            } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
+                let rel = p.strip_prefix(root).unwrap_or(&p);
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                out.push((rel, p));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
 }
 
 #[cfg(test)]

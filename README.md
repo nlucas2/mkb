@@ -31,6 +31,7 @@ clients, not part of the store.
 | Crate | Kind | Role |
 |-------|------|------|
 | `crates/mdkb-core` | lib | Shared engine: block model, ids, transclusion, indexing, search. |
+| `crates/mdkb-index` | lib | SQLite (FTS5 + sqlite-vec) implementation of the core `Index` trait. |
 | `crates/mdkbd` | bin | Headless daemon: owns the watcher, index, and writes. *(scaffold)* |
 | `crates/mdkb-mcp` | bin (`mdkb-mcp`) | MCP server, thin client of core/daemon. *(scaffold)* |
 | `crates/mdkb-cli` | bin (`mdkb`) | CLI for scripting/manual ops, thin client. *(scaffold)* |
@@ -69,7 +70,13 @@ cargo run -p mdkb-cli
     id assignment, and fidelity-preserving block edits.
   - `render` — transclusion resolver: inlines `![[...]]` embeds (the "update once,
     reflects everywhere" guarantee), renders links, breaks cycles.
-- `mdkb` CLI commands: `render`, `assign-ids`, `list`.
+  - `index` — storage-agnostic `Index` trait, owned records, search query/hit types, link
+    extraction, and pure hybrid ranking (reciprocal rank fusion).
+  - `sync` — `SyncEngine`: reconciles a vault directory with an index (hash-skip unchanged
+    files, eager id assignment, incremental reindex, deletion detection).
+- `mdkb-index` — SQLite + FTS5 implementation of `Index` (keyword search, tag/lang/page
+  filters, backlinks, stats). Bundled SQLite, no system dependency.
+- `mdkb` CLI commands: `render`, `assign-ids`, `list`, `search`, `stats`.
 
 ## Usage (current)
 
@@ -80,8 +87,14 @@ cargo run -p mdkb-cli -- assign-ids ./my-vault
 # render a page with all transclusions resolved
 cargo run -p mdkb-cli -- render ./my-vault useful-queries
 
-# list pages
+# keyword search, with optional filters
+cargo run -p mdkb-cli -- search ./my-vault "restart nginx"
+cargo run -p mdkb-cli -- search ./my-vault --lang=kusto
+cargo run -p mdkb-cli -- search ./my-vault --tag=ops --limit=10
+
+# list pages / index stats
 cargo run -p mdkb-cli -- list ./my-vault
+cargo run -p mdkb-cli -- stats ./my-vault
 ```
 
 ## Roadmap
@@ -90,8 +103,10 @@ cargo run -p mdkb-cli -- list ./my-vault
 - **Phase 1 — Core SSOT (no AI)** *(done)*: Markdown parser, block model (incl. code-fence
   `lang`), eager block-id assignment, transclusion/reference resolver, `#tag` + frontmatter
   extraction, CLI render.
-- **Phase 2 — Index + watcher** *(in progress)*: SQLite (`sqlite-vec` + FTS5), file
-  watcher, keyword and tag/lang-filtered search.
+- **Phase 2 — Index + watcher** *(done)*: SQLite (FTS5) index, keyword + tag/lang-filtered
+  search, `SyncEngine` reconcile. *(Live `notify` event loop lands with the daemon.)*
+- **Phase 3 — Semantic search** *(next)*: local `fastembed` embeddings, sqlite-vec, hybrid
+  ranking.
 - **Phase 3 — Semantic search**: local `fastembed` embeddings, hybrid ranking.
 - **Phase 4 — Daemon + API**: `mdkbd` owns watcher/index/writes; clients talk to it.
 - **Phase 5 — MCP server**: expose search / upsert / link tools.

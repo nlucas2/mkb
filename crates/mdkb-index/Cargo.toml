@@ -1,6 +1,6 @@
 [package]
-name = "mdkb-core"
-description = "Shared engine for mdkb: block model, transclusion, indexing, search."
+name = "mdkb-index"
+description = "SQLite (FTS5 + sqlite-vec) implementation of the mdkb-core Index trait."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,8 +8,8 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-regex.workspace = true
-ulid.workspace = true
+mdkb-core.workspace = true
+rusqlite = { workspace = true, features = ["bundled"] }
 
 [dev-dependencies]
 tempfile.workspace = true
