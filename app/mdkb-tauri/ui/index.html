@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mdkb</title>
+    <style>
+      :root { --bg:#1e1e2e; --fg:#cdd6f4; --muted:#9399b2; --accent:#89b4fa; --panel:#181825; --border:#313244; }
+      * { box-sizing: border-box; }
+      body { margin:0; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
+      .layout { display:flex; min-height:100vh; }
+      nav { width:260px; flex:0 0 260px; background:var(--panel); border-right:1px solid var(--border); padding:1rem; overflow-y:auto; }
+      nav input { width:100%; padding:.5rem .6rem; margin-bottom:1rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
+      nav ul { list-style:none; margin:0; padding:0; }
+      nav li a { display:block; padding:.3rem .5rem; border-radius:6px; color:var(--fg); text-decoration:none; cursor:pointer; }
+      nav li a:hover { background:var(--border); }
+      nav li.active a { background:var(--accent); color:var(--panel); font-weight:600; }
+      main { flex:1; padding:2rem 3rem; max-width:60rem; }
+      a { color:var(--accent); }
+      code { background:var(--panel); padding:.1rem .35rem; border-radius:4px; }
+      pre { background:var(--panel); border:1px solid var(--border); padding:1rem; border-radius:8px; overflow-x:auto; }
+      pre code { background:none; padding:0; }
+      blockquote { border-left:3px solid var(--accent); margin:0; padding-left:1rem; color:var(--muted); }
+      .muted { color:var(--muted); } .crumb { color:var(--muted); margin-left:.5rem; font-size:.85em; }
+      .results { list-style:none; padding:0; } .results li { padding:.6rem 0; border-bottom:1px solid var(--border); }
+      .preview { color:var(--muted); font-size:.9em; margin-top:.2rem; }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <nav>
+        <input id="search" type="search" placeholder="Search…" />
+        <ul id="pages"></ul>
+      </nav>
+      <main id="content"><p class="muted">Loading…</p></main>
+    </div>
+    <script type="module">
+      const { invoke } = window.__TAURI__.core;
+      const pagesEl = document.getElementById("pages");
+      const contentEl = document.getElementById("content");
+      const searchEl = document.getElementById("search");
+      let pages = [];
+      let active = null;
+
+      async function loadPages() {
+        pages = await invoke("list_pages");
+        renderNav();
+        if (pages.length) openPage(pages[0]);
+        else contentEl.innerHTML = '<p class="muted">No pages yet.</p>';
+      }
+
+      function renderNav() {
+        pagesEl.innerHTML = "";
+        for (const p of pages) {
+          const li = document.createElement("li");
+          if (p === active) li.className = "active";
+          const a = document.createElement("a");
+          a.textContent = p.replace(/.*\//, "").replace(/\.md$/, "").replace(/[-_]/g, " ");
+          a.onclick = () => openPage(p);
+          li.appendChild(a);
+          pagesEl.appendChild(li);
+        }
+      }
+
+      async function openPage(p) {
+        active = p;
+        renderNav();
+        try {
+          contentEl.innerHTML = await invoke("render_page", { page: p });
+        } catch (e) {
+          contentEl.innerHTML = `<h1>Error</h1><p class="muted">${e}</p>`;
+        }
+      }
+
+      let timer = null;
+      searchEl.addEventListener("input", () => {
+        clearTimeout(timer);
+        const q = searchEl.value.trim();
+        timer = setTimeout(async () => {
+          if (!q) return;
+          active = null;
+          renderNav();
+          try {
+            contentEl.innerHTML = await invoke("search", { query: q });
+          } catch (e) {
+            contentEl.innerHTML = `<h1>Error</h1><p class="muted">${e}</p>`;
+          }
+        }, 200);
+      });
+
+      loadPages();
+    </script>
+  </body>
+</html>

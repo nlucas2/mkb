@@ -1,0 +1,20 @@
+[package]
+name = "mdkb-web"
+description = "Local web UI for mdkb: a thin HTTP server over the daemon + the shared view layer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mdkb-web"
+path = "src/main.rs"
+
+[dependencies]
+mdkb-core = { workspace = true, features = ["serde"] }
+mdkb-protocol.workspace = true
+mdkb-view.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

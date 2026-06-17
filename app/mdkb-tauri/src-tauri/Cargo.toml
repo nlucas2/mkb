@@ -1,0 +1,31 @@
+[package]
+name = "mdkb-tauri"
+version = "0.0.0"
+description = "mdkb desktop shell (Tauri) — a thin client over mdkb-view + the daemon."
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.80"
+
+# Independent workspace: not part of the main cargo workspace (needs the Tauri toolchain).
+[workspace]
+
+[lib]
+name = "mdkb_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Reuse the shared mdkb crates so the desktop UI renders identically to the web UI and can
+# never diverge from the rest of the product.
+mdkb-core = { path = "../../../crates/mdkb-core", features = ["serde"] }
+mdkb-protocol = { path = "../../../crates/mdkb-protocol" }
+mdkb-view = { path = "../../../crates/mdkb-view" }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

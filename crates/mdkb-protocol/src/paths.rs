@@ -23,7 +23,8 @@ pub struct DaemonPaths {
 
 impl DaemonPaths {
     /// Derive the standard paths from a vault directory.
-    pub fn from_vault(vault: impl Into<PathBuf>) -> Self {        let vault = vault.into();
+    pub fn from_vault(vault: impl Into<PathBuf>) -> Self {
+        let vault = vault.into();
         let mdkb_dir = vault.join(".mdkb");
         DaemonPaths {
             db: mdkb_dir.join("index.db"),

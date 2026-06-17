@@ -37,7 +37,9 @@ clients, not part of the store.
 | `crates/mdkbd` | bin | Headless daemon: owns the watcher, index, and writes; serves a local Unix socket. |
 | `crates/mdkb-mcp` | bin (`mdkb-mcp`) | MCP server (stdio); thin client that forwards tool calls to the daemon. |
 | `crates/mdkb-cli` | bin (`mdkb`) | CLI for scripting/manual ops, thin client. |
-| `app/mdkb-tauri` | app | Desktop UI, thin client. *(not started)* |
+| `crates/mdkb-view` | lib | Shared presentation: Markdown→HTML rendering + page templating for any UI. |
+| `crates/mdkb-web` | bin (`mdkb-web`) | Local web UI: thin HTTP server over the daemon + `mdkb-view`. |
+| `app/mdkb-tauri` | app | Desktop shell (Tauri); thin client over `mdkb-view` + daemon. *(separate workspace)* |
 
 ## Requirements
 
@@ -151,6 +153,20 @@ client at it; it auto-starts the daemon for the given vault.
 }
 ```
 
+### Browsing in a UI
+
+Two front-ends share the same `mdkb-view` rendering layer (so they can't drift apart):
+
+- **Local web UI** (`mdkb-web`) — runnable anywhere:
+
+  ```sh
+  mdkbd --vault ./my-vault &                 # daemon must be running
+  cargo run -p mdkb-web -- --vault ./my-vault # serves http://127.0.0.1:7878
+  ```
+
+- **Desktop shell** (`app/mdkb-tauri`) — a Tauri app over the same crates. It lives in its
+  own workspace (needs the Tauri toolchain); see `app/mdkb-tauri/README.md`.
+
 ## Roadmap
 
 - **Phase 0 — Scaffold** *(done)*: workspace, crates, governance docs.
@@ -166,8 +182,10 @@ client at it; it auto-starts the daemon for the given vault.
 - **Phase 5 — MCP server** *(done)*: `mdkb-mcp` exposes search / get / render / upsert /
   link / stats as MCP tools over stdio; thin client of the daemon.
 - **Phase 6 — Tauri frontend** *(next)*: render Markdown + resolved transclusions.
-- **Phase 6 — Tauri frontend**: render Markdown + resolved transclusions.
-- **Phase 7 — Sync UX & packaging**: OneDrive conflict surfacing, index rebuild, packaging.
+- **Phase 6 — Tauri frontend** *(done)*: shared `mdkb-view` (Markdown→HTML), runnable
+  `mdkb-web` local UI, and a `app/mdkb-tauri` desktop shell over the same view layer.
+- **Phase 7 — Sync UX & packaging** *(next)*: OneDrive conflict surfacing, index rebuild,
+  network transport for cluster deploy, packaging.
 
 ## License
 

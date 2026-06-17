@@ -5,10 +5,17 @@ members = [
     "crates/mdkb-index",
     "crates/mdkb-embed",
     "crates/mdkb-protocol",
+    "crates/mdkb-view",
     "crates/mdkbd",
     "crates/mdkb-mcp",
     "crates/mdkb-cli",
+    "crates/mdkb-web",
 ]
+
+# The Tauri desktop shell is an independent workspace: it needs the Tauri toolchain and
+# system webview, which aren't required to build/test the core product. Excluded so
+# `cargo test --workspace` stays green everywhere.
+exclude = ["app/mdkb-tauri/src-tauri"]
 
 [workspace.package]
 version = "0.0.0"
@@ -22,6 +29,7 @@ mdkb-core = { path = "crates/mdkb-core" }
 mdkb-index = { path = "crates/mdkb-index" }
 mdkb-embed = { path = "crates/mdkb-embed" }
 mdkb-protocol = { path = "crates/mdkb-protocol" }
+mdkb-view = { path = "crates/mdkb-view" }
 regex = "1"
 ulid = "1"
 rusqlite = "0.32"
