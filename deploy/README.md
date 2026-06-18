@@ -45,24 +45,26 @@ Clients connect with `mdkbd`'s TCP transport and the token:
 
 ### Connecting a UI to the deployed daemon
 
-Both UIs resolve their connection the same way (shared `Client::from_env` / `--remote`):
+The `mdkbd` Service is a `LoadBalancer`, so it gets an address reachable from outside the
+cluster. Point a UI at it (both UIs resolve the same way — shared `Client::from_env` /
+`--remote`):
 
 ```sh
+# Find the daemon's external address:
+kubectl -n mdkb get svc mdkbd          # note EXTERNAL-IP
+
 # Desktop app (Tauri) — environment-driven:
-export MDKB_REMOTE=mdkbd.example:7820   # or the in-cluster Service address / port-forward
+export MDKB_REMOTE=<EXTERNAL-IP>:7820
 export MDKB_TOKEN=<token>
 cargo tauri dev        # from app/mdkb-tauri
 
 # Web UI — flags or env:
-mdkb-web --remote mdkbd.example:7820 --token <token> --addr 127.0.0.1:7878
-
-# e.g. against the cluster via a port-forward:
-kubectl -n mdkb port-forward svc/mdkbd 7820:7820 &
-MDKB_REMOTE=127.0.0.1:7820 MDKB_TOKEN=<token> mdkb-web
+mdkb-web --remote <EXTERNAL-IP>:7820 --token <token> --addr 127.0.0.1:7878
 ```
 
-The CLI can also talk to the daemon directly; for remote use, `kubectl port-forward` and
-point a client at the forwarded port.
+If your cluster has no LoadBalancer provider, switch the Service to `ClusterIP` and reach it
+for a quick test with `kubectl -n mdkb port-forward svc/mdkbd 7820:7820`, then point
+`MDKB_REMOTE` at `127.0.0.1:7820`.
 
 ### Why single-writer
 
