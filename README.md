@@ -13,8 +13,42 @@ equal consumers:
 The store works fully with all AI turned off. It is decoupled from any agent: agents are
 clients, not part of the store.
 
-> Status: **early scaffold (Phase 0).** The workspace builds and tests pass, but most
-> functionality is not implemented yet. See "Roadmap" below.
+> Status: **feature-complete** across all planned phases (parser, transclusion, index,
+> semantic search, daemon, MCP, web + desktop UIs, cluster deploy). Versioned `0.0.0` /
+> pre-release. See "Roadmap" for what each phase delivered.
+
+## Two ways to run it
+
+mdkb supports two deployment paradigms. The Markdown vault is the source of truth in both;
+the difference is *where the daemon runs* and *how clients reach it*.
+
+### 1. Local-first (single machine)
+
+Everything runs on your machine. `mdkbd` owns the vault and a local **Unix socket**; the
+index lives in `<vault>/.mdkb/` (local-only, rebuildable). The CLI, MCP server, web UI, and
+desktop app all connect to that socket. To use multiple machines, **sync only the Markdown**
+(OneDrive, etc.) — each machine runs its own daemon and keeps its own local index. This is
+the default and needs no configuration.
+
+```sh
+mdkbd --vault ~/mdkb-vault          # serves ~/mdkb-vault/.mdkb/mdkbd.sock
+```
+
+### 2. Remote / shared daemon (e.g. in a cluster)
+
+One `mdkbd` runs centrally (e.g. a `replicas: 1` Deployment in k3s) and serves a
+**token-gated TCP** API. Thin clients — desktop app, web UI, CLI, MCP — connect over the
+network by setting `MDKB_REMOTE=host:port` and `MDKB_TOKEN=<token>` (resolved by the shared
+`Client::from_env`). The daemon stays a single writer; you scale *clients*, not the daemon.
+Network access is opt-in and fails closed without a valid token.
+
+```sh
+mdkbd --vault /vault --listen 0.0.0.0:7820 --token "$MDKB_TOKEN"   # on the server
+export MDKB_REMOTE=mdkbd.example:7820 MDKB_TOKEN=…                 # on each client
+```
+
+See [`deploy/README.md`](./deploy/README.md) for the Kubernetes manifest and end-to-end
+remote setup.
 
 ## Core principles
 
@@ -54,15 +88,12 @@ cargo build --workspace
 # run the test suite (must be green before every commit — see AGENTS.md)
 cargo test --workspace
 
-# run the scaffold binaries
-cargo run -p mdkbd
-cargo run -p mdkb-mcp
-cargo run -p mdkb-cli
+# see CLI usage
+cargo run -p mdkb-cli -- --help
 ```
 
-## Implemented so far
+## Components
 
-- Workspace scaffold with the four crates above.
 - `mdkb-core`:
   - `id` — `BlockId` (ULID) + `IdCodec` trait with the native `<!-- mdkb:<ulid> -->` encoding.
   - `block` / `document` — a fidelity-preserving Markdown parser producing block-level
@@ -89,8 +120,9 @@ cargo run -p mdkb-cli
 - `mdkb-protocol` — newline-delimited JSON wire types, a blocking Unix-socket `Client`, and
   the shared `dispatch` request handler.
 - `mdkbd` — the headless daemon: owns a `SyncEngine` over SQLite + the vault, a `notify`
-  file watcher that auto-reconciles external edits, and a local Unix-socket server. Binds a
-  local socket only (fail-closed; no network listener).
+  file watcher that auto-reconciles external edits, and a local Unix-socket server. Can also
+  serve a **token-gated TCP** listener (opt-in via `--listen`, fail-closed) for remote/cluster
+  clients.
 - `mdkb` CLI commands: `render`, `assign-ids`, `list`, `search` (keyword + semantic),
   `stats`, and `daemon` (talk to a running `mdkbd`: `ping`/`stats`/`list`/`search`/`render`/
   `rebuild`/`conflicts`).
@@ -156,17 +188,23 @@ client at it; it auto-starts the daemon for the given vault.
 
 ### Browsing in a UI
 
-Two front-ends share the same `mdkb-view` rendering layer (so they can't drift apart):
+Two front-ends share the same `mdkb-view` rendering layer (so they can't drift apart), and
+both connect using the two paradigms above — a **local** socket or a **remote** TCP daemon:
 
-- **Local web UI** (`mdkb-web`) — runnable anywhere:
+- **Local web UI** (`mdkb-web`):
 
   ```sh
-  mdkbd --vault ./my-vault &                 # daemon must be running
-  cargo run -p mdkb-web -- --vault ./my-vault # serves http://127.0.0.1:7878
+  # local daemon:
+  mdkbd --vault ./my-vault &
+  cargo run -p mdkb-web -- --vault ./my-vault          # http://127.0.0.1:7878
+
+  # remote daemon:
+  cargo run -p mdkb-web -- --remote mdkbd.example:7820 --token "$MDKB_TOKEN"
   ```
 
-- **Desktop shell** (`app/mdkb-tauri`) — a Tauri app over the same crates. It lives in its
-  own workspace (needs the Tauri toolchain); see `app/mdkb-tauri/README.md`.
+- **Desktop shell** (`app/mdkb-tauri`) — a Tauri app over the same crates; environment-driven
+  (`MDKB_REMOTE` + `MDKB_TOKEN` for a remote daemon, else the local socket). Lives in its own
+  workspace (needs the Tauri toolchain); see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
 
 ## Roadmap
 
@@ -182,8 +220,7 @@ Two front-ends share the same `mdkb-view` rendering layer (so they can't drift a
   protocol, `mdkbd` with a local Unix-socket server and `notify` file watcher.
 - **Phase 5 — MCP server** *(done)*: `mdkb-mcp` exposes search / get / render / upsert /
   link / stats as MCP tools over stdio; thin client of the daemon.
-- **Phase 6 — Tauri frontend** *(next)*: render Markdown + resolved transclusions.
-- **Phase 6 — Tauri frontend** *(done)*: shared `mdkb-view` (Markdown→HTML), runnable
+- **Phase 6 — Frontends** *(done)*: shared `mdkb-view` (Markdown→HTML), runnable
   `mdkb-web` local UI, and a `app/mdkb-tauri` desktop shell over the same view layer.
 - **Phase 7 — Sync UX & packaging** *(done)*: cloud-sync conflict detection (surfaced, not
   indexed), index `rebuild`, token-gated TCP transport for cluster deploy, Dockerfile + k8s
