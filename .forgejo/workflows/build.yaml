@@ -61,7 +61,7 @@ jobs:
         run: |
           docker buildx build \
             --platform linux/amd64 \
-            --target final \
+            --target final-amd64 \
             --tag registry.example/containers/mdkb:latest-amd64 \
             --tag registry.example/containers/mdkb:${{ steps.ver.outputs.version }}-amd64 \
             --cache-from type=registry,ref=registry.example/containers/mdkb:cache-amd64 \
@@ -69,11 +69,13 @@ jobs:
             --push \
             .
 
+      # arm64 is cross-compiled in the builder stage (native runner speed, not QEMU); only
+      # the trivial runtime layer resolves to arm64.
       - name: Build and push daemon image (arm64)
         run: |
           docker buildx build \
             --platform linux/arm64 \
-            --target final \
+            --target final-arm64 \
             --tag registry.example/containers/mdkb:latest-arm64 \
             --tag registry.example/containers/mdkb:${{ steps.ver.outputs.version }}-arm64 \
             --cache-from type=registry,ref=registry.example/containers/mdkb:cache-arm64 \
@@ -100,8 +102,7 @@ jobs:
         run: |
           for arch in amd64 arm64; do
             docker buildx build \
-              --platform linux/$arch \
-              --target artifacts \
+              --target artifacts-$arch \
               --cache-from type=registry,ref=registry.example/containers/mdkb:cache-$arch \
               --output type=local,dest=out/$arch \
               .

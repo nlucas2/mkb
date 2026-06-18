@@ -1,0 +1,29 @@
+# Build artifacts (the giant one — never ship the local target/ into the build context)
+target/
+**/target/
+app/mdkb-tauri/src-tauri/target/
+
+# Git metadata
+.git/
+.gitignore
+
+# IDE / editor / OS cruft
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Local config / scratch
+.env
+.env.*
+.copilot/
+plan.md
+Dockerfile.trixie
+
+# Docker / CI files aren't needed inside the build context
+Dockerfile
+.dockerignore
+.forgejo/
+
+# The Tauri desktop shell is built separately, not in the daemon image
+app/mdkb-tauri/

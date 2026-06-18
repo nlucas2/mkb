@@ -58,8 +58,8 @@ COPY . .
 RUN cargo test --workspace
 
 
-# -- Builder (target platform; native under emulation) ------------------------
-FROM rust:slim-trixie AS builder
+# -- amd64 builder (native on the runner) -------------------------------------
+FROM --platform=$BUILDPLATFORM rust:slim-trixie AS builder-amd64
 ARG ONNX
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkg-config ca-certificates libssl-dev \
@@ -94,11 +94,69 @@ RUN if [ "$ONNX" = "true" ]; then \
         cargo build --release -p mdkbd --features onnx ; \
     else \
         cargo build --release -p mdkbd ; \
-    fi
-RUN cargo build --release -p mdkb-cli -p mdkb-mcp -p mdkb-web
+    fi \
+    && cargo build --release -p mdkb-cli -p mdkb-mcp -p mdkb-web
+# Normalise output location so final/artifacts stages are arch-agnostic.
+RUN mkdir -p /out && cp target/release/mdkbd target/release/mdkb \
+        target/release/mdkb-mcp target/release/mdkb-web /out/
 
 
-# -- Runtime base -------------------------------------------------------------
+# -- arm64 builder (cross-compiled, native speed on the runner) ----------------
+# Cross-compilation (not QEMU emulation) keeps the build fast. ort downloads a prebuilt
+# aarch64 onnxruntime static lib (it is listed in ort's dist.txt), so onnxruntime is never
+# compiled from source here — only linked with the cross toolchain.
+FROM --platform=$BUILDPLATFORM rust:slim-trixie AS builder-arm64
+ARG ONNX
+RUN dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config ca-certificates \
+    gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
+    libssl-dev:arm64 \
+    && rm -rf /var/lib/apt/lists/*
+RUN rustup target add aarch64-unknown-linux-gnu
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
+    PKG_CONFIG_ALLOW_CROSS=1 \
+    PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu=/usr/aarch64-linux-gnu \
+    PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/mdkb-core/Cargo.toml     crates/mdkb-core/
+COPY crates/mdkb-index/Cargo.toml    crates/mdkb-index/
+COPY crates/mdkb-embed/Cargo.toml    crates/mdkb-embed/
+COPY crates/mdkb-protocol/Cargo.toml crates/mdkb-protocol/
+COPY crates/mdkb-view/Cargo.toml     crates/mdkb-view/
+COPY crates/mdkbd/Cargo.toml         crates/mdkbd/
+COPY crates/mdkb-mcp/Cargo.toml      crates/mdkb-mcp/
+COPY crates/mdkb-cli/Cargo.toml      crates/mdkb-cli/
+COPY crates/mdkb-web/Cargo.toml      crates/mdkb-web/
+RUN mkdir -p \
+        crates/mdkb-core/src crates/mdkb-index/src crates/mdkb-embed/src \
+        crates/mdkb-protocol/src crates/mdkb-view/src \
+        crates/mdkbd/src crates/mdkb-mcp/src crates/mdkb-cli/src crates/mdkb-web/src \
+    && touch \
+        crates/mdkb-core/src/lib.rs crates/mdkb-index/src/lib.rs \
+        crates/mdkb-embed/src/lib.rs crates/mdkb-protocol/src/lib.rs \
+        crates/mdkb-view/src/lib.rs \
+    && for b in mdkbd mdkb-mcp mdkb-cli mdkb-web; do echo 'fn main(){}' > crates/$b/src/main.rs; done
+RUN cargo fetch --target aarch64-unknown-linux-gnu
+
+COPY . .
+RUN if [ "$ONNX" = "true" ]; then \
+        cargo build --release --target aarch64-unknown-linux-gnu -p mdkbd --features onnx ; \
+    else \
+        cargo build --release --target aarch64-unknown-linux-gnu -p mdkbd ; \
+    fi \
+    && cargo build --release --target aarch64-unknown-linux-gnu -p mdkb-cli -p mdkb-mcp -p mdkb-web
+RUN mkdir -p /out && cp \
+        target/aarch64-unknown-linux-gnu/release/mdkbd \
+        target/aarch64-unknown-linux-gnu/release/mdkb \
+        target/aarch64-unknown-linux-gnu/release/mdkb-mcp \
+        target/aarch64-unknown-linux-gnu/release/mdkb-web /out/
+
+
+# -- Runtime base (resolves to the target platform) ---------------------------
 FROM debian:trixie-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -114,13 +172,24 @@ ENTRYPOINT ["mdkbd"]
 CMD ["--vault", "/vault", "--listen", "0.0.0.0:7820"]
 
 
-# -- Final daemon image (one per architecture, selected by --platform) --------
-FROM runtime AS final
-COPY --from=builder /app/target/release/mdkbd /usr/local/bin/mdkbd
+# -- Final daemon images (one per architecture) -------------------------------
+# Build with `--platform linux/amd64 --target final-amd64` / `linux/arm64 final-arm64`.
+# The runtime base inherits the target platform; the heavy compile already happened
+# natively in the matching builder stage.
+FROM runtime AS final-amd64
+COPY --from=builder-amd64 /out/mdkbd /usr/local/bin/mdkbd
+
+FROM runtime AS final-arm64
+COPY --from=builder-arm64 /out/mdkbd /usr/local/bin/mdkbd
 
 
-# -- Client binaries, for extraction to the host (not a runnable image) -------
-FROM scratch AS artifacts
-COPY --from=builder /app/target/release/mdkb     /mdkb
-COPY --from=builder /app/target/release/mdkb-mcp /mdkb-mcp
-COPY --from=builder /app/target/release/mdkb-web /mdkb-web
+# -- Client binaries, for extraction to the host (not runnable images) --------
+FROM scratch AS artifacts-amd64
+COPY --from=builder-amd64 /out/mdkb     /mdkb
+COPY --from=builder-amd64 /out/mdkb-mcp /mdkb-mcp
+COPY --from=builder-amd64 /out/mdkb-web /mdkb-web
+
+FROM scratch AS artifacts-arm64
+COPY --from=builder-arm64 /out/mdkb     /mdkb
+COPY --from=builder-arm64 /out/mdkb-mcp /mdkb-mcp
+COPY --from=builder-arm64 /out/mdkb-web /mdkb-web
