@@ -1,0 +1,18 @@
+# BuildKit GC policy for the shared CI builder.
+#
+# Every repo that builds on this Forgejo runner does
+# `docker buildx create --use --name multiarch`, which reuses one persistent
+# builder + state volume on the runner's dind PVC. Without a GC cap the local
+# cache grew unbounded (~22G) and eventually exhausted the volume mid-build
+# ("no space left on device" at image export).
+#
+# Durable cross-run caching already lives in the registry (the workflow pushes
+# `--cache-to type=registry,mode=max`), so the local cache only needs to speed
+# up layer reuse within a single run. Cap it well under the volume size.
+#
+# reservedSpace: floor BuildKit always keeps; maxUsedSpace: hard ceiling that
+# triggers GC. Requires BuildKit >= 0.16 (moby/buildkit:buildx-stable-1).
+[worker.oci]
+  gc = true
+  reservedSpace = "8GB"
+  maxUsedSpace  = "24GB"

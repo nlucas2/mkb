@@ -1,0 +1,138 @@
+name: Build and Release
+
+# Build the multi-arch mdkbd image on every push to main. When the push is a version tag
+# (v*), additionally cut a Forgejo release with the client binaries attached.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: docker
+    # Emulated (QEMU) arm64 Rust builds are slow, and the daemon links a statically-built
+    # onnxruntime; give a cold cache room to finish.
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Docker CLI and buildx plugin
+        run: |
+          apt-get update -qq && apt-get install -y -qq docker.io
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -sL https://github.com/docker/buildx/releases/download/v0.19.3/buildx-v0.19.3.linux-amd64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-buildx
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+          docker buildx create --use --name multiarch --buildkitd-config .forgejo/buildkitd.toml
+          docker buildx inspect --bootstrap
+
+      - name: Log in to Forgejo registry
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login registry.example -u "${{ github.actor }}" --password-stdin
+
+      # Registry-based cache: slow on first run, fast on subsequent builds.
+      - name: Run tests
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --target tester \
+            --cache-from type=registry,ref=registry.example/containers/mdkb:cache-tester \
+            --cache-to   type=registry,ref=registry.example/containers/mdkb:cache-tester,mode=max \
+            .
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push daemon image (amd64)
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --target final \
+            --tag registry.example/containers/mdkb:latest-amd64 \
+            --tag registry.example/containers/mdkb:${{ steps.ver.outputs.version }}-amd64 \
+            --cache-from type=registry,ref=registry.example/containers/mdkb:cache-amd64 \
+            --cache-to   type=registry,ref=registry.example/containers/mdkb:cache-amd64,mode=max \
+            --push \
+            .
+
+      - name: Build and push daemon image (arm64)
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --target final \
+            --tag registry.example/containers/mdkb:latest-arm64 \
+            --tag registry.example/containers/mdkb:${{ steps.ver.outputs.version }}-arm64 \
+            --cache-from type=registry,ref=registry.example/containers/mdkb:cache-arm64 \
+            --cache-to   type=registry,ref=registry.example/containers/mdkb:cache-arm64,mode=max \
+            --push \
+            .
+
+      # The manifest is a virtual tag so `docker pull :latest` (or :<version>) resolves to
+      # the correct architecture automatically.
+      - name: Create and push manifests
+        run: |
+          V=${{ steps.ver.outputs.version }}
+          docker buildx imagetools create \
+            --tag registry.example/containers/mdkb:latest \
+            registry.example/containers/mdkb:latest-amd64 \
+            registry.example/containers/mdkb:latest-arm64
+          docker buildx imagetools create \
+            --tag registry.example/containers/mdkb:${V} \
+            registry.example/containers/mdkb:${V}-amd64 \
+            registry.example/containers/mdkb:${V}-arm64
+
+      # ── Client binaries (only when cutting a tagged release) ──────────────────
+      - name: Extract client binaries
+        if: steps.ver.outputs.release == 'true'
+        run: |
+          for arch in amd64 arm64; do
+            docker buildx build \
+              --platform linux/$arch \
+              --target artifacts \
+              --cache-from type=registry,ref=registry.example/containers/mdkb:cache-$arch \
+              --output type=local,dest=out/$arch \
+              .
+            tar -C out/$arch -czf mdkb-clients-${{ steps.ver.outputs.version }}-linux-$arch.tar.gz \
+              mdkb mdkb-mcp mdkb-web
+          done
+          sha256sum mdkb-clients-*.tar.gz > SHA256SUMS.txt
+
+      # Create the release and attach the client tarballs via the Forgejo API.
+      - name: Publish Forgejo release
+        if: steps.ver.outputs.release == 'true'
+        env:
+          TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          API: https://registry.example/api/v1/repos/${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.version }}
+        run: |
+          set -e
+          apt-get install -y -qq jq
+          BODY="mdkb ${TAG}\n\nClient binaries for Linux (amd64/arm64). The daemon ships as the container image registry.example/containers/mdkb:${TAG}."
+          # Create the release; if the tag already has one, fall back to looking it up.
+          REL_ID=$(curl -s -X POST "$API/releases" \
+            -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
+            -d "$(jq -nc --arg t "$TAG" --arg b "$BODY" '{tag_name:$t, name:$t, body:$b}')" \
+            | jq -r '.id // empty')
+          if [ -z "$REL_ID" ]; then
+            REL_ID=$(curl -sf "$API/releases/tags/$TAG" -H "Authorization: token $TOKEN" | jq -r '.id')
+          fi
+          echo "release id: $REL_ID"
+          for f in mdkb-clients-*.tar.gz SHA256SUMS.txt; do
+            curl -sf -X POST "$API/releases/$REL_ID/assets?name=$f" \
+              -H "Authorization: token $TOKEN" \
+              -F "attachment=@$f" >/dev/null
+            echo "uploaded $f"
+          done

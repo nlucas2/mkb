@@ -43,6 +43,14 @@ Clients connect with `mdkbd`'s TCP transport and the token:
 - A networked client authenticates first (`authenticate { token }`), then issues requests.
 - Without a valid token, every data request is rejected.
 
+> **First-run model download.** The image is built with the local ONNX embedder. On first
+> use the daemon downloads the embedding model (~100 MB) from Hugging Face before it begins
+> serving, so the first startup is slower and the pod needs egress to `huggingface.co`. If
+> egress is unavailable the daemon logs a warning and degrades to the offline hash embedder
+> (keyword search and everything else still work; semantic ranking is weaker). The
+> readiness probe is a plain TCP check, so the pod only reports Ready once the daemon is
+> actually listening.
+
 ### Connecting a UI to the deployed daemon
 
 The `mdkbd` Service is a `LoadBalancer`, so it gets an address reachable from outside the
@@ -77,3 +85,30 @@ the daemon.
 If a synced vault produces conflict copies (e.g. `note-DESKTOP-AB12.md`), the daemon
 **does not index them** — they are surfaced via the `conflicts` tool / `mdkb daemon …
 conflicts` so you can resolve them in plain text. The Markdown stays authoritative.
+
+## Continuous build & releases
+
+`.forgejo/workflows/build.yaml` runs on every push to `main` (and version tags):
+
+- **Every push to `main`** — runs `cargo test --workspace` (the Dockerfile `tester` stage),
+  then builds and pushes the multi-arch daemon image to
+  `registry.example/containers/mdkb:latest` and `:<short-sha>` (amd64 + arm64 manifests).
+- **A version tag `vX.Y.Z`** — does all of the above tagged with the version, **and** cuts a
+  Forgejo release with the client binaries (`mdkb`, `mdkb-mcp`, `mdkb-web`) attached as
+  per-arch tarballs plus `SHA256SUMS.txt`.
+
+Required Forgejo Actions secrets:
+
+| Secret | Used for |
+|--------|----------|
+| `REGISTRY_TOKEN` | `docker login registry.example` to push images |
+| `RELEASE_TOKEN` | Forgejo API token to create the release + upload assets (tags only) |
+
+Cutting a release:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The daemon image always builds with the ONNX embedder; pass `--build-arg ONNX=false` to a
+manual `docker build` for a smaller image that uses only the offline hash embedder.
