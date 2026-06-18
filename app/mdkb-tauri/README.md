@@ -35,11 +35,27 @@ all real work happens in the daemon and the shared crates.
 ## Run (development)
 
 ```sh
+# Local daemon:
 export MDKB_VAULT=/path/to/your/vault
 mdkbd --vault "$MDKB_VAULT" &          # start the daemon
 cd app/mdkb-tauri
 cargo tauri dev                         # build + launch the desktop window
 ```
+
+### Connecting to a remote daemon
+
+The desktop app resolves its connection from the environment (via the shared
+`mdkb_protocol::Client::from_env`), so it can talk to a daemon deployed in your cluster:
+
+```sh
+export MDKB_REMOTE=mdkbd.example:7820   # host:port of the remote mdkbd --listen
+export MDKB_TOKEN=<the shared token>    # required for remote (token-gated)
+cd app/mdkb-tauri
+cargo tauri dev
+```
+
+If `MDKB_REMOTE` is unset it falls back to the local socket for `MDKB_VAULT` (or
+`~/mdkb-vault`). `MDKB_SOCKET` can override the socket path explicitly.
 
 ## Build a bundle
 

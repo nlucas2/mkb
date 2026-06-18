@@ -76,9 +76,11 @@ fn main() -> ExitCode {
 fn print_help() {
     println!(
         "mdkb-web {} — local web UI for mdkb\n\n\
-usage:\n  mdkb-web [--socket <path>] [--vault <dir>] [--addr <host:port>]\n\n\
+usage:\n  mdkb-web [--socket <path>] [--vault <dir>] [--addr <host:port>]\n  \
+mdkb-web --remote <host:port> --token <tok> [--addr <host:port>]\n\n\
 Serves the knowledge base over HTTP, rendering via mdkb-view and reading from a running\n\
-mdkbd. Default address: 127.0.0.1:7878.",
+mdkbd — either a local Unix socket or a remote TCP daemon (--remote/$MDKB_REMOTE +\n\
+--token/$MDKB_TOKEN). Default listen address: 127.0.0.1:7878.",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -86,18 +88,26 @@ mdkbd. Default address: 127.0.0.1:7878.",
 fn run(args: &[String]) -> Result<(), String> {
     let mut socket = None;
     let mut vault = None;
+    let mut remote = None;
+    let mut token = None;
     let mut addr = "127.0.0.1:7878".to_string();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--socket" => socket = it.next().cloned(),
             "--vault" => vault = it.next().cloned(),
+            "--remote" => remote = it.next().cloned(),
+            "--token" => token = it.next().cloned(),
             "--addr" => addr = it.next().cloned().ok_or("--addr requires a value")?,
             other => {
                 if let Some(v) = other.strip_prefix("--socket=") {
                     socket = Some(v.to_string());
                 } else if let Some(v) = other.strip_prefix("--vault=") {
                     vault = Some(v.to_string());
+                } else if let Some(v) = other.strip_prefix("--remote=") {
+                    remote = Some(v.to_string());
+                } else if let Some(v) = other.strip_prefix("--token=") {
+                    token = Some(v.to_string());
                 } else if let Some(v) = other.strip_prefix("--addr=") {
                     addr = v.to_string();
                 } else {
@@ -107,30 +117,38 @@ fn run(args: &[String]) -> Result<(), String> {
         }
     }
 
-    let socket_path = match socket {
-        Some(s) => std::path::PathBuf::from(s),
-        None => {
-            let vault = vault
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(DaemonPaths::default_vault);
-            DaemonPaths::from_vault(vault).socket
-        }
+    // Connect to a remote TCP daemon (--remote/$MDKB_REMOTE, token-gated) or a local socket.
+    let remote = remote.or_else(|| std::env::var("MDKB_REMOTE").ok().filter(|s| !s.is_empty()));
+    let client = if let Some(remote) = remote {
+        let token = token
+            .or_else(|| std::env::var("MDKB_TOKEN").ok())
+            .filter(|s| !s.is_empty())
+            .ok_or("--remote requires a token (--token or $MDKB_TOKEN)")?;
+        Client::tcp(remote, token)
+    } else {
+        let socket_path = match socket {
+            Some(s) => std::path::PathBuf::from(s),
+            None => {
+                let vault = vault
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(DaemonPaths::default_vault);
+                DaemonPaths::from_vault(vault).socket
+            }
+        };
+        Client::new(&socket_path)
     };
 
-    let client = Client::new(&socket_path);
     if !client.ping() {
         return Err(format!(
-            "no daemon reachable on {} — start mdkbd first",
-            socket_path.display()
+            "no daemon reachable at {} — start mdkbd first",
+            client.endpoint()
         ));
     }
+    let endpoint = client.endpoint();
     let backend = DaemonBackend { client };
 
     let listener = TcpListener::bind(&addr).map_err(|e| format!("binding {addr}: {e}"))?;
-    eprintln!(
-        "mdkb-web: serving http://{addr} (daemon: {})",
-        socket_path.display()
-    );
+    eprintln!("mdkb-web: serving http://{addr} (daemon: {endpoint})");
 
     let backend = std::sync::Arc::new(backend);
     for stream in listener.incoming() {

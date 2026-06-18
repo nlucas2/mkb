@@ -310,6 +310,45 @@ impl Client {
         }
     }
 
+    /// A short human description of where this client connects (for logs/UI).
+    pub fn endpoint(&self) -> String {
+        match &self.transport {
+            Transport::Unix(p) => format!("unix:{}", p.display()),
+            Transport::Tcp { addr, .. } => format!("tcp:{addr}"),
+        }
+    }
+
+    /// Resolve a client from the environment, so every UI connects the same way:
+    ///
+    /// - `MDKB_REMOTE=host:port` (+ `MDKB_TOKEN`) → a **remote TCP** client (token required).
+    /// - else `MDKB_SOCKET=/path` → that Unix socket.
+    /// - else the local socket for `MDKB_VAULT` (or the default vault).
+    ///
+    /// This is the single connection-resolution path shared by the desktop app, the web UI,
+    /// and any other client, so they cannot drift apart.
+    pub fn from_env() -> Result<Client, String> {
+        if let Some(remote) = std::env::var_os("MDKB_REMOTE") {
+            let remote = remote.to_string_lossy().trim().to_string();
+            if !remote.is_empty() {
+                let token = std::env::var("MDKB_TOKEN").unwrap_or_default();
+                if token.is_empty() {
+                    return Err(
+                        "MDKB_REMOTE is set but MDKB_TOKEN is empty; a remote daemon requires a token"
+                            .to_string(),
+                    );
+                }
+                return Ok(Client::tcp(remote, token));
+            }
+        }
+        if let Some(sock) = std::env::var_os("MDKB_SOCKET") {
+            let sock = sock.to_string_lossy().to_string();
+            if !sock.trim().is_empty() {
+                return Ok(Client::new(PathBuf::from(sock)));
+            }
+        }
+        Ok(Client::new(DaemonPaths::for_default_vault().socket))
+    }
+
     /// Send one request and read one response.
     pub fn call(&self, request: &Request) -> io::Result<Response> {
         match &self.transport {
@@ -447,6 +486,35 @@ mod tests {
                 assert!(query.lang.is_none());
             }
             other => panic!("expected search, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_env_resolves_remote_socket_and_default() {
+        // This test mutates process env, so keep all cases in one test to avoid races.
+        for k in ["MDKB_REMOTE", "MDKB_TOKEN", "MDKB_SOCKET", "MDKB_VAULT"] {
+            std::env::remove_var(k);
+        }
+        // Default: local socket.
+        let c = Client::from_env().unwrap();
+        assert!(c.endpoint().starts_with("unix:"));
+
+        // Explicit socket override.
+        std::env::set_var("MDKB_SOCKET", "/tmp/custom.sock");
+        let c = Client::from_env().unwrap();
+        assert_eq!(c.endpoint(), "unix:/tmp/custom.sock");
+
+        // Remote requires a token: set remote without token → error.
+        std::env::set_var("MDKB_REMOTE", "host.example:7820");
+        assert!(Client::from_env().is_err());
+
+        // Remote + token → TCP, and takes precedence over the socket.
+        std::env::set_var("MDKB_TOKEN", "secret");
+        let c = Client::from_env().unwrap();
+        assert_eq!(c.endpoint(), "tcp:host.example:7820");
+
+        for k in ["MDKB_REMOTE", "MDKB_TOKEN", "MDKB_SOCKET", "MDKB_VAULT"] {
+            std::env::remove_var(k);
         }
     }
 

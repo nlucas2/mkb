@@ -24,7 +24,7 @@ spec:
   resources:
     requests:
       storage: 5Gi
-  # storageClassName: truenas-nfs   # set to your cluster's class
+  # storageClassName: <your-storage-class>   # set to your cluster's class
 ---
 apiVersion: apps/v1
 kind: Deployment

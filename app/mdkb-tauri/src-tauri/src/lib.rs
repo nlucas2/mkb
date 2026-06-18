@@ -64,10 +64,21 @@ fn search(state: tauri::State<'_, AppState>, query: String) -> Result<String, St
     Ok(search_results_html(&query, &rows))
 }
 
-/// Resolve the daemon socket from `$MDKB_VAULT` (or the default vault).
+/// Resolve the daemon connection from the environment so the desktop app can talk to a
+/// local socket **or** a remote TCP daemon. Set `MDKB_REMOTE=host:port` + `MDKB_TOKEN` to
+/// point at a deployed `mdkbd`; otherwise it uses the local vault's socket. Falls back to
+/// the default local socket if the environment is misconfigured (logged to stderr).
 fn resolve_client() -> Client {
-    let paths = DaemonPaths::for_default_vault();
-    Client::new(paths.socket)
+    match Client::from_env() {
+        Ok(client) => {
+            eprintln!("mdkb: connecting to {}", client.endpoint());
+            client
+        }
+        Err(e) => {
+            eprintln!("mdkb: {e}; falling back to the local socket");
+            Client::new(DaemonPaths::for_default_vault().socket)
+        }
+    }
 }
 
 /// Entry point used by the generated binary.
