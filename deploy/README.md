@@ -91,11 +91,12 @@ conflicts` so you can resolve them in plain text. The Markdown stays authoritati
 `.forgejo/workflows/build.yaml` runs on every push to `main` (and version tags):
 
 - **Every push to `main`** — runs `cargo test --workspace` (the Dockerfile `tester` stage),
-  then builds and pushes the multi-arch daemon image to
-  `registry.example/containers/mdkb:latest` and `:<short-sha>` (amd64 + arm64 manifests).
+  builds and pushes the multi-arch daemon image to `registry.example/containers/mdkb:latest` and
+  `:<short-sha>` (amd64 + arm64 manifests), and publishes the client binaries (`mdkb`,
+  `mdkb-mcp`, `mdkb-web`, per-arch tarballs + `SHA256SUMS.txt`) as a **downloadable workflow
+  artifact** on the run.
 - **A version tag `vX.Y.Z`** — does all of the above tagged with the version, **and** cuts a
-  Forgejo release with the client binaries (`mdkb`, `mdkb-mcp`, `mdkb-web`) attached as
-  per-arch tarballs plus `SHA256SUMS.txt`.
+  Forgejo release with the same client binaries attached.
 
 Required Forgejo Actions secrets:
 

@@ -1,7 +1,8 @@
 name: Build and Release
 
-# Build the multi-arch mdkbd image on every push to main. When the push is a version tag
-# (v*), additionally cut a Forgejo release with the client binaries attached.
+# Build the multi-arch mdkbd image and the client binaries on every push to main; the
+# binaries are published as a downloadable workflow artifact. When the push is a version
+# tag (v*), additionally cut a Forgejo release with those binaries attached.
 on:
   push:
     branches: [main]
@@ -94,9 +95,8 @@ jobs:
             registry.example/containers/mdkb:${V}-amd64 \
             registry.example/containers/mdkb:${V}-arm64
 
-      # ── Client binaries (only when cutting a tagged release) ──────────────────
+      # ── Client binaries — extracted on every build, attached to tagged releases ──
       - name: Extract client binaries
-        if: steps.ver.outputs.release == 'true'
         run: |
           for arch in amd64 arm64; do
             docker buildx build \
@@ -109,6 +109,16 @@ jobs:
               mdkb mdkb-mcp mdkb-web
           done
           sha256sum mdkb-clients-*.tar.gz > SHA256SUMS.txt
+
+      # Every push (and tag) publishes the binaries as a downloadable workflow artifact.
+      - name: Upload client binaries (workflow artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mdkb-clients-${{ steps.ver.outputs.version }}
+          path: |
+            mdkb-clients-*.tar.gz
+            SHA256SUMS.txt
+          if-no-files-found: error
 
       # Create the release and attach the client tarballs via the Forgejo API.
       - name: Publish Forgejo release
