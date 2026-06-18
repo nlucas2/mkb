@@ -185,11 +185,11 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             Request::Search {
                 query: SearchQuery {
                     text: s("query"),
-                    vector: None,
                     tags,
                     lang: s("lang"),
                     page: s("page"),
                     limit,
+                    ..Default::default()
                 },
             }
         }

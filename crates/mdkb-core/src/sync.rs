@@ -128,7 +128,20 @@ impl<I: Index> SyncEngine<I> {
             if self.hashes.get(&rel) == Some(&hash_bytes(&bytes)) {
                 continue;
             }
-            let source = String::from_utf8_lossy(&bytes).into_owned();
+            // Markdown is the source of truth: never lossily rewrite a file we can't decode.
+            // Non-UTF-8 files are skipped (and dropped from the index if they were valid
+            // before) rather than mangled with U+FFFD replacements.
+            let source = match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(_) => {
+                    eprintln!("mdkb: skipping non-UTF-8 file {rel}");
+                    seen.remove(&rel);
+                    if self.hashes.contains_key(&rel) {
+                        self.drop_page(&rel)?;
+                    }
+                    continue;
+                }
+            };
             self.ingest_source(&rel, source)?;
             report.changed.push(rel);
         }
@@ -181,11 +194,12 @@ impl<I: Index> SyncEngine<I> {
 
     /// Remove a page from vault + index *and* delete its file from disk.
     pub fn delete_page(&mut self, rel: &str) -> Result<(), IndexError> {
-        let abs = self.root.join(rel);
+        let rel = crate::vault::safe_relative_path(rel).map_err(IndexError::new)?;
+        let abs = self.root.join(&rel);
         if abs.exists() {
             std::fs::remove_file(&abs).map_err(io_err)?;
         }
-        self.drop_page(rel)
+        self.drop_page(&rel)
     }
 
     /// Drop a page from vault + index without touching disk (e.g. a file was deleted
@@ -197,9 +211,13 @@ impl<I: Index> SyncEngine<I> {
         Ok(())
     }
 
-    /// Core ingest: optionally assign ids (writing the file), update the vault, recompute
-    /// links, reindex the page, and record the on-disk content hash.
+    /// Core ingest: confine the path to the vault, optionally assign ids (writing the file),
+    /// update the vault, recompute links, reindex the page, and record the on-disk content
+    /// hash. Confinement here means no write path — internal or via a write API — can escape
+    /// the vault root through `..` or an absolute path.
     fn ingest_source(&mut self, rel: &str, source: String) -> Result<(), IndexError> {
+        let rel = crate::vault::safe_relative_path(rel).map_err(IndexError::new)?;
+        let rel = rel.as_str();
         let final_source = if self.assign_ids {
             let doc = Document::parse(&source);
             match doc.with_assigned_ids(&NativeIdCodec) {
@@ -234,8 +252,9 @@ impl<I: Index> SyncEngine<I> {
                 .map(|b| b.contextual_text())
                 .collect();
             let vectors = embedder.embed(&texts).map_err(IndexError::new)?;
+            let model_id = embedder.model_id();
             for (block, vector) in page.doc.blocks.iter().zip(vectors) {
-                self.index.set_embedding(&block.id, &vector)?;
+                self.index.set_embedding(&block.id, &model_id, &vector)?;
             }
         }
 
@@ -246,12 +265,14 @@ impl<I: Index> SyncEngine<I> {
 
     /// Search the index, embedding the query text first when an embedder is attached and the
     /// query does not already carry a vector. This is the entry point a daemon/UI uses so
-    /// keyword and semantic search are fused automatically.
+    /// keyword and semantic search are fused automatically. The query is tagged with the
+    /// embedder's model id so only same-model vectors are compared.
     pub fn search(&self, mut query: SearchQuery) -> Result<Vec<SearchHit>, IndexError> {
         if query.vector.is_none() {
             if let (Some(embedder), Some(text)) = (&self.embedder, &query.text) {
                 let vector = embedder.embed_one(text).map_err(IndexError::new)?;
                 query.vector = Some(vector);
+                query.vector_model = Some(embedder.model_id());
             }
         }
         self.index.search(&query)
@@ -366,6 +387,20 @@ mod tests {
         engine.save_page("topic/new.md", "fresh note\n").unwrap();
         assert!(root.path().join("topic/new.md").exists());
         assert_eq!(engine.index().stats().unwrap().blocks, 1);
+    }
+
+    #[test]
+    fn write_apis_reject_path_traversal() {
+        let root = temp_root();
+        let mut engine = SyncEngine::new(root.path(), MemIndex::default());
+        // Absolute and `..` paths must be refused, and nothing must be written outside root.
+        assert!(engine.save_page("../escape.md", "x\n").is_err());
+        assert!(engine.save_page("/tmp/mdkb-escape-test.md", "x\n").is_err());
+        assert!(engine.delete_page("../../etc/passwd").is_err());
+        assert!(!std::path::Path::new("/tmp/mdkb-escape-test.md").exists());
+        // The parent of root must be untouched.
+        let sibling = root.path().parent().unwrap().join("escape.md");
+        assert!(!sibling.exists());
     }
 
     #[test]

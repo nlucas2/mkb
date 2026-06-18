@@ -13,14 +13,24 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::thread;
+use std::time::Duration;
 
 use mdkb_core::RequestContext;
 use mdkb_protocol::{decode_request, dispatch, encode_response, Request, Response};
 
 use crate::SharedService;
+
+/// Maximum length of a single request line. Caps memory a connection can force us to buffer
+/// before a request is even decoded (pre-auth on the network listener).
+const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Idle/read timeout for network connections (slowloris mitigation). The local Unix socket
+/// is trusted and left without a timeout.
+const TCP_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Network listener configuration.
 #[derive(Clone)]
@@ -46,6 +56,10 @@ pub fn serve(socket: &Path, net: Option<NetConfig>, service: SharedService) -> i
     }
 
     let listener = UnixListener::bind(socket)?;
+    // The Unix socket is the trusted control plane: restrict it to the owner so other local
+    // users can't connect as a trusted Caller::Local. (Best-effort; ignore on platforms
+    // that don't support it.)
+    let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
     eprintln!("mdkbd: listening on {}", socket.display());
     for stream in listener.incoming() {
         match stream {
@@ -80,6 +94,8 @@ fn serve_tcp(listener: TcpListener, net: NetConfig, service: SharedService) {
                     .peer_addr()
                     .map(|a| a.to_string())
                     .unwrap_or_else(|_| "unknown".to_string());
+                // Bound how long a connection may stall mid-request (slowloris).
+                let _ = stream.set_read_timeout(Some(TCP_READ_TIMEOUT));
                 thread::spawn(move || {
                     let writer = match stream.try_clone() {
                         Ok(w) => w,
@@ -108,13 +124,33 @@ fn handle(
     token: Option<String>,
     service: SharedService,
 ) -> io::Result<()> {
-    let reader = BufReader::new(reader);
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
+    let mut reader = BufReader::new(reader);
+    loop {
+        // Read one line with a hard cap so a peer can't force unbounded buffering before we
+        // even decode (and authenticate) the request.
+        let mut buf = Vec::new();
+        let n = (&mut reader)
+            .take(MAX_LINE_BYTES)
+            .read_until(b'\n', &mut buf)?;
+        if n == 0 {
+            break; // EOF
+        }
+        if !buf.ends_with(b"\n") && (n as u64) >= MAX_LINE_BYTES {
+            writer.write_all(
+                encode_response(&Response::Error {
+                    message: "request line exceeds maximum length".to_string(),
+                })?
+                .as_bytes(),
+            )?;
+            writer.flush()?;
+            break;
+        }
+        let line = String::from_utf8_lossy(&buf);
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
-        let response = match decode_request(&line) {
+        let response = match decode_request(line) {
             Ok(Request::Authenticate { token: presented }) => {
                 authenticate(&mut ctx, token.as_deref(), &presented)
             }

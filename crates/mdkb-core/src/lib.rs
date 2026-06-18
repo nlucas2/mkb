@@ -31,7 +31,7 @@ pub use link::{extract_references, Anchor, LinkTarget, Reference};
 pub use render::{render_block, render_page};
 pub use service::{Caller, Capability, RequestContext, Service};
 pub use sync::{SyncEngine, SyncReport};
-pub use vault::{markdown_files, Page, Vault};
+pub use vault::{markdown_files, safe_relative_path, Page, Vault};
 
 /// Crate version, surfaced to clients for diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

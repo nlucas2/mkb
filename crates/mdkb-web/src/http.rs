@@ -140,20 +140,33 @@ pub fn parse_target(target: &str) -> (String, HashMap<String, String>) {
     (percent_decode(path), params)
 }
 
+/// Maximum bytes for the request line, and a cap on header lines, so a malicious or stuck
+/// client cannot force unbounded buffering / looping.
+const MAX_REQUEST_LINE: u64 = 64 * 1024;
+const MAX_HEADER_LINES: usize = 200;
+
 /// Read and parse an HTTP request from a stream (request line + headers; body discarded).
 pub fn read_request(stream: &mut impl Read) -> std::io::Result<Option<HttpRequest>> {
     let mut reader = BufReader::new(stream);
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
+    if (&mut reader)
+        .take(MAX_REQUEST_LINE)
+        .read_line(&mut request_line)?
+        == 0
+    {
         return Ok(None);
     }
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
     let target = parts.next().unwrap_or("/").to_string();
-    // Drain headers (until blank line) so the client doesn't see a reset.
-    loop {
+    // Drain headers (until blank line), bounded so a client that never sends the blank
+    // terminator can't loop us forever.
+    for _ in 0..MAX_HEADER_LINES {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
+        if (&mut reader).take(MAX_REQUEST_LINE).read_line(&mut line)? == 0
+            || line == "\r\n"
+            || line == "\n"
+        {
             break;
         }
     }

@@ -104,6 +104,10 @@ pub struct SearchQuery {
     /// Query embedding for semantic search. When present alongside `text`, results are
     /// fused (keyword + vector) via reciprocal rank fusion.
     pub vector: Option<Vec<f32>>,
+    /// The embedding model that produced `vector`. When set, only stored vectors from the
+    /// same model are compared, so different embedding spaces (e.g. after an ONNX→hash
+    /// fallback) are never mixed into one ranking.
+    pub vector_model: Option<String>,
     /// Tags that must all be present (AND).
     pub tags: Vec<String>,
     /// Required fence language (e.g. `kusto`).
@@ -205,9 +209,9 @@ pub trait Index {
     /// Index statistics.
     fn stats(&self) -> Result<IndexStats>;
 
-    /// Store (or replace) the embedding for a block. Default: a no-op for engines without
-    /// vector support.
-    fn set_embedding(&mut self, _id: &BlockId, _vector: &[f32]) -> Result<()> {
+    /// Store (or replace) the embedding for a block, tagged with the `model_id` that
+    /// produced it. Default: a no-op for engines without vector support.
+    fn set_embedding(&mut self, _id: &BlockId, _model_id: &str, _vector: &[f32]) -> Result<()> {
         Ok(())
     }
 
@@ -404,7 +408,7 @@ pub(crate) mod testing {
                 embedded: self.embeddings.len(),
             })
         }
-        fn set_embedding(&mut self, id: &BlockId, vector: &[f32]) -> Result<()> {
+        fn set_embedding(&mut self, id: &BlockId, _model_id: &str, vector: &[f32]) -> Result<()> {
             self.embeddings.insert(id.clone(), vector.to_vec());
             Ok(())
         }

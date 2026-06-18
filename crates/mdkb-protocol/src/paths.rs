@@ -54,10 +54,17 @@ impl DaemonPaths {
         self.socket.parent().unwrap_or(&self.vault)
     }
 
-    /// Create the vault and `.mdkb` directories if missing.
+    /// Create the vault and `.mdkb` directories if missing. The `.mdkb` directory holds the
+    /// trusted Unix socket and the local index, so on Unix it is restricted to the owner.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.vault)?;
-        std::fs::create_dir_all(self.mdkb_dir())?;
+        let mdkb_dir = self.mdkb_dir();
+        std::fs::create_dir_all(mdkb_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(mdkb_dir, std::fs::Permissions::from_mode(0o700));
+        }
         Ok(())
     }
 }

@@ -7,7 +7,7 @@
 //! and wraps it in a browsable document.
 
 use mdkb_core::{IdCodec, NativeIdCodec};
-use pulldown_cmark::{html, Options, Parser};
+use pulldown_cmark::{html, Event, Options, Parser};
 
 /// HTML-escape a string for safe insertion into element text / attributes.
 pub fn escape_html(s: &str) -> String {
@@ -29,6 +29,11 @@ pub fn escape_html(s: &str) -> String {
 ///
 /// The invisible `<!-- mdkb:… -->` id markers are stripped first so they never leak into
 /// the rendered output. CommonMark plus tables/strikethrough/task-lists are enabled.
+///
+/// **Security:** raw HTML in the source is **not** passed through. Any inline/block HTML
+/// event is downgraded to escaped text, so a note containing `<script>…</script>` (which an
+/// AI agent could be induced to write via the MCP write tools) renders as inert text rather
+/// than executing — this closes the stored-XSS vector.
 pub fn markdown_to_html(markdown: &str) -> String {
     let cleaned = NativeIdCodec.strip(markdown);
     let mut options = Options::empty();
@@ -36,7 +41,12 @@ pub fn markdown_to_html(markdown: &str) -> String {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_FOOTNOTES);
-    let parser = Parser::new_ext(&cleaned, options);
+    let parser = Parser::new_ext(&cleaned, options).map(|event| match event {
+        // Neutralise raw HTML: re-emit it as escaped text instead of live markup.
+        Event::Html(h) => Event::Text(h),
+        Event::InlineHtml(h) => Event::Text(h),
+        other => other,
+    });
     let mut out = String::new();
     html::push_html(&mut out, parser);
     out
@@ -175,6 +185,20 @@ mod tests {
         let html = markdown_to_html("```kusto\nStormEvents | take 10\n```\n");
         assert!(html.contains("language-kusto"));
         assert!(html.contains("StormEvents"));
+    }
+
+    #[test]
+    fn raw_html_is_neutralised_not_executed() {
+        // Stored-XSS guard: a script/img payload in note content must not survive as live
+        // markup. It is escaped to inert text instead.
+        let html = markdown_to_html("hello <script>alert('xss')</script> world\n");
+        assert!(
+            !html.contains("<script>"),
+            "raw <script> must not pass through"
+        );
+        assert!(html.contains("&lt;script&gt;"));
+        let img = markdown_to_html("<img src=x onerror=alert(1)>\n");
+        assert!(!img.contains("<img"), "raw <img> must not pass through");
     }
 
     #[test]

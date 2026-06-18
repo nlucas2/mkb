@@ -175,6 +175,39 @@ fn normalize_path(p: &str) -> String {
         .to_string()
 }
 
+/// Validate and normalise a caller-supplied vault-relative path, confining it to the vault.
+///
+/// Rejects absolute paths and any `..` traversal (and odd components), so a path obtained
+/// from an external caller (a write/delete API) can never escape the vault root via
+/// `Path::join`. Returns the cleaned forward-slash relative path. This is the single
+/// confinement boundary every filesystem write must pass through.
+pub fn safe_relative_path(rel: &str) -> Result<String, String> {
+    let normalized = rel.replace('\\', "/");
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return Err("empty path".to_string());
+    }
+    // Reject Unix and Windows absolute paths (incl. drive letters like `C:`).
+    let p = std::path::Path::new(trimmed);
+    if p.is_absolute() || trimmed.starts_with('/') {
+        return Err(format!("absolute paths are not allowed: {rel}"));
+    }
+    let mut clean = Vec::new();
+    for comp in trimmed.split('/') {
+        match comp {
+            "" | "." => continue,
+            ".." => return Err(format!("path traversal is not allowed: {rel}")),
+            // A bare drive-letter / Windows prefix component.
+            c if c.contains(':') => return Err(format!("invalid path component {c:?} in {rel}")),
+            c => clean.push(c),
+        }
+    }
+    if clean.is_empty() {
+        return Err(format!("path resolves to the vault root: {rel}"));
+    }
+    Ok(clean.join("/"))
+}
+
 fn key(s: &str) -> String {
     s.to_lowercase()
 }
@@ -215,6 +248,28 @@ pub fn markdown_files(root: impl AsRef<Path>) -> io::Result<Vec<(String, std::pa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn safe_relative_path_accepts_normal_paths() {
+        assert_eq!(
+            safe_relative_path("notes/arch.md").unwrap(),
+            "notes/arch.md"
+        );
+        assert_eq!(safe_relative_path("./a/./b.md").unwrap(), "a/b.md");
+        assert_eq!(safe_relative_path("a\\b.md").unwrap(), "a/b.md");
+    }
+
+    #[test]
+    fn safe_relative_path_rejects_traversal_and_absolute() {
+        assert!(safe_relative_path("../../etc/passwd").is_err());
+        assert!(safe_relative_path("a/../../b.md").is_err());
+        assert!(safe_relative_path("/etc/passwd").is_err());
+        assert!(safe_relative_path("/abs/x.md").is_err());
+        assert!(safe_relative_path("C:/Windows/x.md").is_err());
+        assert!(safe_relative_path("").is_err());
+        assert!(safe_relative_path("..").is_err());
+        assert!(safe_relative_path("./").is_err());
+    }
 
     #[test]
     fn resolves_pages_by_name_and_path() {

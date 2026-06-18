@@ -164,6 +164,12 @@ impl SqliteIndex {
              FROM blocks b JOIN block_vectors v ON v.block_id = b.id WHERE 1=1",
         );
         let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        // Only compare vectors produced by the same embedding model, so different spaces
+        // (e.g. after an ONNX→hash fallback) are never mixed into one ranking.
+        if let Some(model) = &query.vector_model {
+            args.push(Box::new(model.clone()));
+            sql.push_str(&format!(" AND v.model_id = ?{}", args.len()));
+        }
         Self::push_filters(&mut sql, &mut args, query);
 
         let mut stmt = self.conn.prepare(&sql).map_err(err)?;
@@ -306,12 +312,17 @@ impl Index for SqliteIndex {
             .map_err(err)
     }
 
-    fn set_embedding(&mut self, id: &BlockId, vector: &[f32]) -> Result<(), IndexError> {
+    fn set_embedding(
+        &mut self,
+        id: &BlockId,
+        model_id: &str,
+        vector: &[f32],
+    ) -> Result<(), IndexError> {
         self.conn
             .execute(
-                "INSERT INTO block_vectors(block_id, dim, embedding) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(block_id) DO UPDATE SET dim = excluded.dim, embedding = excluded.embedding",
-                params![id.as_str(), vector.len() as i64, mdkb_core::vector_to_bytes(vector)],
+                "INSERT INTO block_vectors(block_id, model_id, dim, embedding) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(block_id) DO UPDATE SET model_id = excluded.model_id, dim = excluded.dim, embedding = excluded.embedding",
+                params![id.as_str(), model_id, vector.len() as i64, mdkb_core::vector_to_bytes(vector)],
             )
             .map_err(err)?;
         Ok(())
@@ -526,6 +537,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS block_fts USING fts5(
 
 CREATE TABLE IF NOT EXISTS block_vectors (
     block_id  TEXT PRIMARY KEY,
+    model_id  TEXT NOT NULL,
     dim       INTEGER NOT NULL,
     embedding BLOB NOT NULL
 );
@@ -651,7 +663,8 @@ mod tests {
         for page in v.pages() {
             for b in &page.doc.blocks {
                 let vec = embedder.embed_one(&b.contextual_text()).unwrap();
-                idx.set_embedding(&b.id, &vec).unwrap();
+                idx.set_embedding(&b.id, &embedder.model_id(), &vec)
+                    .unwrap();
             }
         }
         assert!(idx.stats().unwrap().embedded >= 2);
@@ -667,6 +680,34 @@ mod tests {
     }
 
     #[test]
+    fn vector_search_excludes_other_model_embeddings() {
+        use mdkb_core::{Embedder, HashEmbedder};
+        let (mut idx, v) = indexed_vault(&[("n.md", "restart the nginx server\n")]);
+        let embedder = HashEmbedder::new(512);
+        for page in v.pages() {
+            for b in &page.doc.blocks {
+                let vec = embedder.embed_one(&b.contextual_text()).unwrap();
+                idx.set_embedding(&b.id, "model-A", &vec).unwrap();
+            }
+        }
+        // Query tagged with a DIFFERENT model id must not match model-A vectors (no silent
+        // cross-space comparison).
+        let q = SearchQuery {
+            vector: Some(embedder.embed_one("nginx").unwrap()),
+            vector_model: Some("model-B".to_string()),
+            ..Default::default()
+        };
+        assert!(idx.search(&q).unwrap().is_empty());
+        // Same model id matches.
+        let q_same = SearchQuery {
+            vector: Some(embedder.embed_one("nginx").unwrap()),
+            vector_model: Some("model-A".to_string()),
+            ..Default::default()
+        };
+        assert!(!idx.search(&q_same).unwrap().is_empty());
+    }
+
+    #[test]
     fn hybrid_search_fuses_keyword_and_vector() {
         use mdkb_core::{Embedder, HashEmbedder};
         let (mut idx, v) = indexed_vault(&[(
@@ -677,7 +718,8 @@ mod tests {
         for page in v.pages() {
             for b in &page.doc.blocks {
                 let vec = embedder.embed_one(&b.contextual_text()).unwrap();
-                idx.set_embedding(&b.id, &vec).unwrap();
+                idx.set_embedding(&b.id, &embedder.model_id(), &vec)
+                    .unwrap();
             }
         }
         let q = SearchQuery {
@@ -700,8 +742,12 @@ mod tests {
         idx.rebuild(&v).unwrap();
         let embedder = HashEmbedder::new(64);
         for b in &v.page("a").unwrap().doc.blocks {
-            idx.set_embedding(&b.id, &embedder.embed_one(&b.content).unwrap())
-                .unwrap();
+            idx.set_embedding(
+                &b.id,
+                &embedder.model_id(),
+                &embedder.embed_one(&b.content).unwrap(),
+            )
+            .unwrap();
         }
         assert_eq!(idx.stats().unwrap().embedded, 2);
         // Shrink page; reindex clears the page's embeddings (re-embedding is the engine's
@@ -713,8 +759,12 @@ mod tests {
         assert_eq!(idx.stats().unwrap().embedded, 0);
         // Re-embedding the surviving block yields exactly one embedding.
         for b in &page.doc.blocks {
-            idx.set_embedding(&b.id, &embedder.embed_one(&b.content).unwrap())
-                .unwrap();
+            idx.set_embedding(
+                &b.id,
+                &embedder.model_id(),
+                &embedder.embed_one(&b.content).unwrap(),
+            )
+            .unwrap();
         }
         assert_eq!(idx.stats().unwrap().embedded, 1);
     }

@@ -132,6 +132,7 @@ fn run(args: &[String]) -> Result<(), String> {
         socket_path.display()
     );
 
+    let backend = std::sync::Arc::new(backend);
     for stream in listener.incoming() {
         let mut stream = match stream {
             Ok(s) => s,
@@ -140,17 +141,23 @@ fn run(args: &[String]) -> Result<(), String> {
                 continue;
             }
         };
-        let response = match http::read_request(&mut stream) {
-            Ok(Some(req)) => routes::handle(&backend, &req),
-            Ok(None) => continue,
-            Err(e) => {
-                eprintln!("mdkb-web: read error: {e}");
-                continue;
+        // Bound how long a connection may stall so one slow/half-open socket (browsers open
+        // speculative ones) cannot wedge the server.
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(15)));
+        let backend = std::sync::Arc::clone(&backend);
+        std::thread::spawn(move || {
+            let response = match http::read_request(&mut stream) {
+                Ok(Some(req)) => routes::handle(backend.as_ref(), &req),
+                Ok(None) => return,
+                Err(e) => {
+                    eprintln!("mdkb-web: read error: {e}");
+                    return;
+                }
+            };
+            if let Err(e) = stream.write_all(&response.to_bytes()) {
+                eprintln!("mdkb-web: write error: {e}");
             }
-        };
-        if let Err(e) = stream.write_all(&response.to_bytes()) {
-            eprintln!("mdkb-web: write error: {e}");
-        }
+        });
     }
     Ok(())
 }
