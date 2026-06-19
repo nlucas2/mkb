@@ -32,7 +32,7 @@ usage:
 options:
   --vault <dir>     vault directory (default: $MDKB_VAULT or ~/mdkb-vault)
   --db <path>       index database (default: <vault>/.mdkb/index.db)
-  --socket <path>   unix socket (default: <vault>/.mdkb/mdkbd.sock)
+  --socket <path>   local socket: Unix socket / Windows named pipe (default: <vault>/.mdkb/mdkbd.sock)
   --listen <addr>   ALSO serve over TCP at <addr> (e.g. 0.0.0.0:7820); requires a token
   --token <tok>     shared token network clients must present ($MDKB_TOKEN also accepted)
   --help            show this help

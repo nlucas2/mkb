@@ -1,11 +1,14 @@
-//! The request server: a local Unix socket and, optionally, a network (TCP) listener.
+//! The request server: a local socket and, optionally, a network (TCP) listener.
 //!
 //! Connections speak newline-delimited JSON [`mdkb_protocol::Request`]s. Each is answered by
 //! locking the shared [`mdkb_core::Service`] and calling the shared
 //! [`mdkb_protocol::dispatch`].
 //!
+//! The local socket is cross-platform via [`mdkb_protocol::transport`] (a Unix-domain socket
+//! on Unix, a named pipe on Windows).
+//!
 //! **Auth model (plan Decision #9):**
-//! - Unix socket connections are `Caller::Local` — trusted (filesystem permissions are the
+//! - Local socket connections are `Caller::Local` — trusted (OS-level access control is the
 //!   gate). This is the default and only transport unless a network listener is enabled.
 //! - TCP connections start unauthenticated (`Caller::Remote`) and **fail closed**: every
 //!   data request is rejected until the client sends `Authenticate { token }` with the
@@ -13,14 +16,12 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
 use mdkb_core::RequestContext;
-use mdkb_protocol::{decode_request, dispatch, encode_response, Request, Response};
+use mdkb_protocol::{decode_request, dispatch, encode_response, transport, Request, Response};
 
 use crate::SharedService;
 
@@ -41,7 +42,7 @@ pub struct NetConfig {
     pub token: String,
 }
 
-/// Serve the Unix socket (always) and, if configured, a TCP listener (in a side thread).
+/// Serve the local socket (always) and, if configured, a TCP listener (in a side thread).
 pub fn serve(socket: &Path, net: Option<NetConfig>, service: SharedService) -> io::Result<()> {
     if let Some(net) = net {
         let svc = SharedService::clone(&service);
@@ -55,25 +56,22 @@ pub fn serve(socket: &Path, net: Option<NetConfig>, service: SharedService) -> i
         }
     }
 
-    let listener = UnixListener::bind(socket)?;
-    // The Unix socket is the trusted control plane: restrict it to the owner so other local
-    // users can't connect as a trusted Caller::Local. (Best-effort; ignore on platforms
-    // that don't support it.)
-    let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
+    let listener = transport::bind_local(socket)?;
+    // The local socket is the trusted control plane. On Unix it is a filesystem socket, so
+    // restrict it to the owner; on Windows it is a named pipe (no file to chmod). Best-effort.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
+    }
     eprintln!("mdkbd: listening on {}", socket.display());
-    for stream in listener.incoming() {
+    for stream in listener {
         match stream {
             Ok(stream) => {
                 let svc = SharedService::clone(&service);
                 thread::spawn(move || {
-                    let writer = match stream.try_clone() {
-                        Ok(w) => w,
-                        Err(e) => {
-                            eprintln!("mdkbd: clone error: {e}");
-                            return;
-                        }
-                    };
-                    if let Err(e) = handle(stream, writer, RequestContext::local(), None, svc) {
+                    // `&Stream` is both Read and Write, so one stream serves reader and writer.
+                    if let Err(e) = handle(&stream, &stream, RequestContext::local(), None, svc) {
                         eprintln!("mdkbd: connection error: {e}");
                     }
                 });

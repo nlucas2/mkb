@@ -8,10 +8,10 @@
 //! "no divergence" rule in `AGENTS.md`.
 
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 pub mod paths;
+pub mod transport;
 pub use paths::DaemonPaths;
 
 use mdkb_core::{
@@ -269,8 +269,8 @@ fn read_one(reader: &mut impl BufRead) -> io::Result<Response> {
 /// The transport a [`Client`] uses to reach the daemon.
 #[derive(Debug, Clone)]
 enum Transport {
-    /// Local Unix-domain socket (trusted).
-    Unix(PathBuf),
+    /// Local socket (trusted): a Unix-domain socket on Unix, a named pipe on Windows.
+    Local(PathBuf),
     /// TCP with a shared auth token presented on each connection.
     Tcp { addr: String, token: String },
 }
@@ -285,10 +285,10 @@ pub struct Client {
 }
 
 impl Client {
-    /// Point a client at a daemon Unix socket path.
+    /// Point a client at a daemon local socket path (Unix socket / Windows named pipe).
     pub fn new(socket: impl Into<PathBuf>) -> Self {
         Client {
-            transport: Transport::Unix(socket.into()),
+            transport: Transport::Local(socket.into()),
         }
     }
 
@@ -302,10 +302,10 @@ impl Client {
         }
     }
 
-    /// The socket path, if this is a Unix-socket client.
+    /// The socket path, if this is a local-socket client.
     pub fn socket(&self) -> &Path {
         match &self.transport {
-            Transport::Unix(p) => p,
+            Transport::Local(p) => p,
             Transport::Tcp { .. } => Path::new(""),
         }
     }
@@ -313,7 +313,7 @@ impl Client {
     /// A short human description of where this client connects (for logs/UI).
     pub fn endpoint(&self) -> String {
         match &self.transport {
-            Transport::Unix(p) => format!("unix:{}", p.display()),
+            Transport::Local(p) => format!("local:{}", p.display()),
             Transport::Tcp { addr, .. } => format!("tcp:{addr}"),
         }
     }
@@ -352,10 +352,10 @@ impl Client {
     /// Send one request and read one response.
     pub fn call(&self, request: &Request) -> io::Result<Response> {
         match &self.transport {
-            Transport::Unix(socket) => {
-                let stream = UnixStream::connect(socket)?;
-                let mut writer = stream.try_clone()?;
-                let mut reader = BufReader::new(stream);
+            Transport::Local(socket) => {
+                let stream = transport::connect_local(socket)?;
+                let mut writer = &stream;
+                let mut reader = BufReader::new(&stream);
                 send(&mut writer, request)?;
                 read_one(&mut reader)
             }
@@ -497,12 +497,12 @@ mod tests {
         }
         // Default: local socket.
         let c = Client::from_env().unwrap();
-        assert!(c.endpoint().starts_with("unix:"));
+        assert!(c.endpoint().starts_with("local:"));
 
         // Explicit socket override.
         std::env::set_var("MDKB_SOCKET", "/tmp/custom.sock");
         let c = Client::from_env().unwrap();
-        assert_eq!(c.endpoint(), "unix:/tmp/custom.sock");
+        assert_eq!(c.endpoint(), "local:/tmp/custom.sock");
 
         // Remote requires a token: set remote without token → error.
         std::env::set_var("MDKB_REMOTE", "host.example:7820");

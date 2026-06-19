@@ -24,11 +24,12 @@ the difference is *where the daemon runs* and *how clients reach it*.
 
 ### 1. Local-first (single machine)
 
-Everything runs on your machine. `mdkbd` owns the vault and a local **Unix socket**; the
-index lives in `<vault>/.mdkb/` (local-only, rebuildable). The CLI, MCP server, web UI, and
-desktop app all connect to that socket. To use multiple machines, **sync only the Markdown**
-(OneDrive, etc.) — each machine runs its own daemon and keeps its own local index. This is
-the default and needs no configuration.
+Everything runs on your machine. `mdkbd` owns the vault and a local socket (a **Unix-domain
+socket** on Linux/macOS, a **named pipe** on Windows); the index lives in `<vault>/.mdkb/`
+(local-only, rebuildable). The CLI, MCP server, web UI, and desktop app all connect to that
+socket. To use multiple machines, **sync only the Markdown** (OneDrive, etc.) — each machine
+runs its own daemon and keeps its own local index. This is the default and needs no
+configuration.
 
 ```sh
 mdkbd --vault ~/mdkb-vault          # serves ~/mdkb-vault/.mdkb/mdkbd.sock
@@ -68,7 +69,7 @@ remote setup.
 | `crates/mdkb-index` | lib | SQLite (FTS5 + sqlite-vec) implementation of the core `Index` trait. |
 | `crates/mdkb-embed` | lib | Embedder backends: offline hash embedder + optional local ONNX (`fastembed`). |
 | `crates/mdkb-protocol` | lib | Wire protocol: request/response types, blocking client, shared dispatcher. |
-| `crates/mdkbd` | bin | Headless daemon: owns the watcher, index, and writes; serves a local Unix socket. |
+| `crates/mdkbd` | bin | Headless daemon: owns the watcher, index, and writes; serves a local socket (Unix socket / Windows named pipe). |
 | `crates/mdkb-mcp` | bin (`mdkb-mcp`) | MCP server (stdio); thin client that forwards tool calls to the daemon. |
 | `crates/mdkb-cli` | bin (`mdkb`) | CLI for scripting/manual ops, thin client. |
 | `crates/mdkb-view` | lib | Shared presentation: Markdown→HTML rendering + page templating for any UI. |
@@ -117,10 +118,10 @@ cargo run -p mdkb-cli -- --help
 - `mdkb-core::service` — the shared `Service` API (search / get / render / upsert / link /
   delete / reconcile) with a `RequestContext` + capability gate on every call. Every client
   goes through this; behavior is never reimplemented per client.
-- `mdkb-protocol` — newline-delimited JSON wire types, a blocking Unix-socket `Client`, and
+- `mdkb-protocol` — newline-delimited JSON wire types, a blocking local-socket `Client`, and
   the shared `dispatch` request handler.
 - `mdkbd` — the headless daemon: owns a `SyncEngine` over SQLite + the vault, a `notify`
-  file watcher that auto-reconciles external edits, and a local Unix-socket server. Can also
+  file watcher that auto-reconciles external edits, and a local-socket server (Unix socket / Windows named pipe). Can also
   serve a **token-gated TCP** listener (opt-in via `--listen`, fail-closed) for remote/cluster
   clients.
 - `mdkb` CLI commands: `render`, `assign-ids`, `list`, `search` (keyword + semantic),
@@ -152,7 +153,7 @@ cargo run -p mdkb-cli -- stats ./my-vault
 
 ### Running the daemon
 
-`mdkbd` owns the index and a file watcher, and serves a local Unix socket. Markdown is the
+`mdkbd` owns the index and a file watcher, and serves a local socket (Unix socket / Windows named pipe). Markdown is the
 source of truth; the index lives in `<vault>/.mdkb/` and is local-only (exclude it from
 cloud sync).
 
@@ -247,7 +248,7 @@ both connect using the two paradigms above — a **local** socket or a **remote*
 - **Phase 3 — Semantic search** *(done)*: local embeddings (`mdkb-embed`: offline hash +
   optional `fastembed` ONNX), vector storage, hybrid keyword+vector ranking.
 - **Phase 4 — Daemon + API** *(done)*: shared `Service` API + `RequestContext`, JSON wire
-  protocol, `mdkbd` with a local Unix-socket server and `notify` file watcher.
+  protocol, `mdkbd` with a local-socket server and `notify` file watcher.
 - **Phase 5 — MCP server** *(done)*: `mdkb-mcp` exposes search / get / render / upsert /
   link / stats as MCP tools over stdio; thin client of the daemon.
 - **Phase 6 — Frontends** *(done)*: shared `mdkb-view` (Markdown→HTML), runnable
