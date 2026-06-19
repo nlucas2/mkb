@@ -477,14 +477,17 @@ fn row_to_link(r: &rusqlite::Row<'_>) -> rusqlite::Result<LinkRow> {
 }
 
 /// Turn arbitrary user text into a safe FTS5 MATCH expression: alphanumeric tokens, each
-/// quoted, joined by space (implicit AND). Avoids FTS5 syntax errors from punctuation.
+/// quoted, joined by ` OR ` so a block matches when it contains *any* query term (ranked by
+/// bm25). Implicit AND (joining by space) would require *every* term to be present, which
+/// makes natural-language / paraphrased queries — where only some words overlap the block —
+/// match nothing. Quoting each token avoids FTS5 syntax errors from punctuation.
 fn to_fts_query(text: &str) -> String {
     let tokens: Vec<String> = text
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
         .map(|t| format!("\"{t}\""))
         .collect();
-    tokens.join(" ")
+    tokens.join(" OR ")
 }
 
 const SCHEMA: &str = r#"
@@ -570,6 +573,35 @@ mod tests {
         assert!(hits
             .iter()
             .any(|h| h.block.content.contains("bounce script")));
+    }
+
+    #[test]
+    fn to_fts_query_joins_terms_with_or() {
+        // Locks OR semantics: a multi-term query must not require every term present.
+        assert_eq!(
+            to_fts_query("restart the server"),
+            "\"restart\" OR \"the\" OR \"server\""
+        );
+        assert_eq!(to_fts_query("single"), "\"single\"");
+        assert_eq!(to_fts_query("  -- ,. "), "");
+    }
+
+    #[test]
+    fn keyword_search_matches_any_term_not_all() {
+        // A paraphrased, multi-word query where only *some* terms appear in the block must
+        // still match. Under the old implicit-AND join (`"a" "b" "c"`) this returned nothing
+        // because "database" is absent; OR (`"a" OR "b" OR "c"`) ranks it via the shared terms.
+        let (idx, _v) = indexed_vault(&[(
+            "ops.md",
+            "# Web server\n\nBounce the nginx service: systemctl restart nginx\n",
+        )]);
+        let hits = idx
+            .search(&SearchQuery::text("restart the database server"))
+            .unwrap();
+        assert!(
+            hits.iter().any(|h| h.block.content.contains("nginx")),
+            "OR query should match a block that shares only some of the terms"
+        );
     }
 
     #[test]
