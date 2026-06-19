@@ -153,12 +153,14 @@ jobs:
 
   # ── Windows x64 — cross-compiled from the Linux runner via cargo-xwin ──────────
   # Separate job so a Windows hiccup never blocks the Linux image/tarball pipeline.
-  # Targets x86_64-pc-windows-msvc (the ABI onnxruntime's prebuilt ships for); cargo-xwin
-  # supplies the MSVC CRT/SDK and lld-link. Produces a self-contained zip (daemon + clients
-  # + the SHA-256-pinned model laid out beside the binaries for the <exe_dir>/model lookup).
+  # Targets x86_64-pc-windows-msvc; cargo-xwin supplies the MSVC CRT/SDK and lld-link.
+  # Built WITHOUT the onnx embedder for now: the ort/onnxruntime cross-link + the
+  # onnxruntime.dll packaging need validation on a real Windows runner. The Windows daemon
+  # therefore uses keyword (FTS) + the offline hash embedder; neural embeddings on Windows
+  # are a tracked follow-up. Everything else (daemon, watcher, MCP, web, CLI) is identical.
   windows:
     runs-on: docker
-    timeout-minutes: 90
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
@@ -186,29 +188,11 @@ jobs:
             echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Fetch + verify embedding model
-        run: |
-          set -eux
-          mkdir -p model
-          REPO=https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main
-          curl -fsSL "$REPO/onnx/model_quantized.onnx" -o model/model_quantized.onnx
-          curl -fsSL "$REPO/tokenizer.json"            -o model/tokenizer.json
-          curl -fsSL "$REPO/config.json"               -o model/config.json
-          curl -fsSL "$REPO/tokenizer_config.json"     -o model/tokenizer_config.json
-          curl -fsSL "$REPO/special_tokens_map.json"   -o model/special_tokens_map.json
-          cd model
-          echo "6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4  model_quantized.onnx"    | sha256sum -c -
-          echo "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66  tokenizer.json"          | sha256sum -c -
-          echo "fa73f90bf92c8cace1fbcb709626306f2bdbc9ea3e5b5f94b440df9b6aa56350  config.json"             | sha256sum -c -
-          echo "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3  tokenizer_config.json"   | sha256sum -c -
-          echo "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3  special_tokens_map.json" | sha256sum -c -
-
       - name: Cross-compile for Windows (x86_64-msvc)
         run: |
           . "$HOME/.cargo/env"
-          # Daemon with the local ONNX embedder; clients are thin (no onnx).
-          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkbd --features onnx
-          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkb-cli -p mdkb-mcp -p mdkb-web
+          cargo xwin build --release --target x86_64-pc-windows-msvc \
+            -p mdkbd -p mdkb-cli -p mdkb-mcp -p mdkb-web
 
       - name: Package zip
         run: |
@@ -216,9 +200,8 @@ jobs:
           D=target/x86_64-pc-windows-msvc/release
           rm -rf dist && mkdir -p dist
           cp "$D/mdkbd.exe" "$D/mdkb.exe" "$D/mdkb-mcp.exe" "$D/mdkb-web.exe" dist/
-          cp -r model dist/model
           ( cd dist && zip -qr "../mdkb-${{ steps.ver.outputs.version }}-windows-x64.zip" \
-              mdkbd.exe mdkb.exe mdkb-mcp.exe mdkb-web.exe model )
+              mdkbd.exe mdkb.exe mdkb-mcp.exe mdkb-web.exe )
           sha256sum mdkb-*-windows-x64.zip > SHA256SUMS-windows.txt
 
       - name: Upload Windows payload (workflow artifact)
