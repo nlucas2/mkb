@@ -97,8 +97,8 @@ jobs:
             registry.example/containers/mdkb:${V}-amd64 \
             registry.example/containers/mdkb:${V}-arm64
 
-      # ── Client binaries — extracted on every build, attached to tagged releases ──
-      - name: Extract client binaries
+      # ── Release payload (daemon + clients + model) — extracted every build, attached to tags ──
+      - name: Extract release payload
         run: |
           for arch in amd64 arm64; do
             docker buildx build \
@@ -106,22 +106,25 @@ jobs:
               --cache-from type=registry,ref=registry.example/containers/mdkb:cache-$arch \
               --output type=local,dest=out/$arch \
               .
-            tar -C out/$arch -czf mdkb-clients-${{ steps.ver.outputs.version }}-linux-$arch.tar.gz \
-              mdkb mdkb-mcp mdkb-web
+            # Bundle the daemon, the thin clients, and the vendored model together. The model/
+            # dir sits beside the binaries so mdkbd and the standalone CLI find it via the
+            # <exe_dir>/model lookup — semantic search works straight out of the tarball.
+            tar -C out/$arch -czf mdkb-${{ steps.ver.outputs.version }}-linux-$arch.tar.gz \
+              mdkbd mdkb mdkb-mcp mdkb-web model
           done
-          sha256sum mdkb-clients-*.tar.gz > SHA256SUMS.txt
+          sha256sum mdkb-*.tar.gz > SHA256SUMS.txt
 
-      # Every push (and tag) publishes the binaries as a downloadable workflow artifact.
-      - name: Upload client binaries (workflow artifact)
+      # Every push (and tag) publishes the payload as a downloadable workflow artifact.
+      - name: Upload release payload (workflow artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: mdkb-clients-${{ steps.ver.outputs.version }}
+          name: mdkb-${{ steps.ver.outputs.version }}
           path: |
-            mdkb-clients-*.tar.gz
+            mdkb-*.tar.gz
             SHA256SUMS.txt
           if-no-files-found: error
 
-      # Create the release and attach the client tarballs via the Forgejo API.
+      # Create the release and attach the tarballs via the Forgejo API.
       - name: Publish Forgejo release
         if: steps.ver.outputs.release == 'true'
         env:
@@ -131,7 +134,7 @@ jobs:
         run: |
           set -e
           apt-get install -y -qq jq
-          BODY="mdkb ${TAG}\n\nClient binaries for Linux (amd64/arm64). The daemon ships as the container image registry.example/containers/mdkb:${TAG}."
+          BODY="mdkb ${TAG}\n\nSelf-contained daemon + clients for Linux (amd64/arm64), with the embedding model bundled. Also available as the container image registry.example/containers/mdkb:${TAG}."
           # Create the release; if the tag already has one, fall back to looking it up.
           REL_ID=$(curl -s -X POST "$API/releases" \
             -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
@@ -141,7 +144,7 @@ jobs:
             REL_ID=$(curl -sf "$API/releases/tags/$TAG" -H "Authorization: token $TOKEN" | jq -r '.id')
           fi
           echo "release id: $REL_ID"
-          for f in mdkb-clients-*.tar.gz SHA256SUMS.txt; do
+          for f in mdkb-*.tar.gz SHA256SUMS.txt; do
             curl -sf -X POST "$API/releases/$REL_ID/assets?name=$f" \
               -H "Authorization: token $TOKEN" \
               -F "attachment=@$f" >/dev/null

@@ -209,13 +209,20 @@ FROM runtime AS final-arm64
 COPY --from=builder-arm64 /out/mdkbd /usr/local/bin/mdkbd
 
 
-# -- Client binaries, for extraction to the host (not runnable images) --------
+# -- Release payload, for extraction to the host (not runnable images) --------
+# The full daemon + clients + the vendored model, laid out so `mdkbd`/`mdkb` find the model
+# automatically via the `<exe_dir>/model` lookup. The container image is just one way to run
+# mdkbd; these tarballs are the native way (Linux service / CLI).
 FROM scratch AS artifacts-amd64
+COPY --from=builder-amd64 /out/mdkbd   /mdkbd
 COPY --from=builder-amd64 /out/mdkb     /mdkb
 COPY --from=builder-amd64 /out/mdkb-mcp /mdkb-mcp
 COPY --from=builder-amd64 /out/mdkb-web /mdkb-web
+COPY --from=model         /model        /model
 
 FROM scratch AS artifacts-arm64
+COPY --from=builder-arm64 /out/mdkbd   /mdkbd
 COPY --from=builder-arm64 /out/mdkb     /mdkb
 COPY --from=builder-arm64 /out/mdkb-mcp /mdkb-mcp
 COPY --from=builder-arm64 /out/mdkb-web /mdkb-web
+COPY --from=model         /model        /model
