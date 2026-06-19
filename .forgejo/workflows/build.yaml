@@ -112,16 +112,27 @@ jobs:
             tar -C out/$arch -czf mdkb-${{ steps.ver.outputs.version }}-linux-$arch.tar.gz \
               mdkbd mdkb mdkb-mcp mdkb-web model
           done
-          sha256sum mdkb-*.tar.gz > SHA256SUMS.txt
+          # Per-arch checksum files so each arch artifact is self-contained.
+          sha256sum mdkb-${{ steps.ver.outputs.version }}-linux-amd64.tar.gz > SHA256SUMS-amd64.txt
+          sha256sum mdkb-${{ steps.ver.outputs.version }}-linux-arm64.tar.gz > SHA256SUMS-arm64.txt
 
-      # Every push (and tag) publishes the payload as a downloadable workflow artifact.
-      - name: Upload release payload (workflow artifact)
+      # One workflow artifact PER ARCH, so you download only the arch you need (not both).
+      - name: Upload amd64 payload (workflow artifact)
         uses: actions/upload-artifact@v3
         with:
-          name: mdkb-${{ steps.ver.outputs.version }}
+          name: mdkb-${{ steps.ver.outputs.version }}-linux-amd64
           path: |
-            mdkb-*.tar.gz
-            SHA256SUMS.txt
+            mdkb-${{ steps.ver.outputs.version }}-linux-amd64.tar.gz
+            SHA256SUMS-amd64.txt
+          if-no-files-found: error
+
+      - name: Upload arm64 payload (workflow artifact)
+        uses: actions/upload-artifact@v3
+        with:
+          name: mdkb-${{ steps.ver.outputs.version }}-linux-arm64
+          path: |
+            mdkb-${{ steps.ver.outputs.version }}-linux-arm64.tar.gz
+            SHA256SUMS-arm64.txt
           if-no-files-found: error
 
       # Create the release and attach the tarballs via the Forgejo API.
@@ -144,7 +155,7 @@ jobs:
             REL_ID=$(curl -sf "$API/releases/tags/$TAG" -H "Authorization: token $TOKEN" | jq -r '.id')
           fi
           echo "release id: $REL_ID"
-          for f in mdkb-*.tar.gz SHA256SUMS.txt; do
+          for f in mdkb-*.tar.gz SHA256SUMS-amd64.txt SHA256SUMS-arm64.txt; do
             curl -sf -X POST "$API/releases/$REL_ID/assets?name=$f" \
               -H "Authorization: token $TOKEN" \
               -F "attachment=@$f" >/dev/null
