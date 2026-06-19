@@ -4,24 +4,50 @@
 #
 # Stages:
 #   tester     – runs `cargo test --workspace` (native, on the build platform)
+#   model      – downloads + SHA-256-verifies the vendored embedding model (build-time only)
 #   builder    – compiles mdkbd (with the onnx embedder) + the client binaries for the
 #                *target* platform (built natively under QEMU emulation, so the
 #                statically-linked onnxruntime resolves per-arch without cross-link pain)
-#   runtime    – minimal Debian base for the daemon image
+#   runtime    – minimal Debian base for the daemon image, with the model baked in
 #   final      – the mdkbd daemon image shipped to the registry (per --platform)
 #   artifacts  – a scratch stage holding just the client binaries, extracted to the host
 #                via `docker buildx build --target artifacts --output type=local`
 #
 # Build deps live in each Rust stage; ca-certificates is needed for cargo and for ort's
-# build-time onnxruntime download. The daemon image keeps ca-certificates so the embedding
-# model can be fetched at first use (it degrades to the offline hash embedder if the
-# network is unavailable).
+# build-time onnxruntime download. The embedding model is vendored into the image at build
+# time (see the `model` stage) and loaded from local files at runtime — the daemon never
+# downloads a model. ca-certificates is kept only for outbound TLS to a configured remote
+# embeddings endpoint (opt-in) and general correctness.
 #
 # Base must be Debian trixie (not bookworm): ort's prebuilt static onnxruntime references
 # newer glibc/libstdc++ symbols (e.g. __isoc23_strtol, __cxa_call_terminate) that bookworm's
 # toolchain doesn't provide, so the daemon fails to link there.
 
 ARG ONNX=true
+
+
+# -- Embedding model (vendored at build time; NO runtime download) ------------
+# The int8-quantized BGE-small-en-v1.5 ONNX export (BAAI weights, converted to ONNX by
+# Xenova / Joshua Lochner, a Hugging Face maintainer) plus its tokenizer files. Baking these
+# in lets the daemon run the neural embedder fully offline. Every file is SHA-256-pinned: if
+# any upstream byte changes, the build fails loudly rather than silently shipping a different
+# model. ~32 MB on disk; loaded via MDKB_BUNDLED_MODEL_DIR.
+FROM debian:trixie-slim AS model
+ARG MODEL_REPO=https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /model
+RUN set -eux; \
+    curl -fsSL "$MODEL_REPO/onnx/model_quantized.onnx" -o model_quantized.onnx; \
+    curl -fsSL "$MODEL_REPO/tokenizer.json"            -o tokenizer.json; \
+    curl -fsSL "$MODEL_REPO/config.json"               -o config.json; \
+    curl -fsSL "$MODEL_REPO/tokenizer_config.json"     -o tokenizer_config.json; \
+    curl -fsSL "$MODEL_REPO/special_tokens_map.json"   -o special_tokens_map.json; \
+    echo "6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4  model_quantized.onnx"    | sha256sum -c -; \
+    echo "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66  tokenizer.json"          | sha256sum -c -; \
+    echo "fa73f90bf92c8cace1fbcb709626306f2bdbc9ea3e5b5f94b440df9b6aa56350  config.json"             | sha256sum -c -; \
+    echo "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3  tokenizer_config.json"   | sha256sum -c -; \
+    echo "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3  special_tokens_map.json" | sha256sum -c -
 
 
 # -- Test stage ---------------------------------------------------------------
@@ -160,6 +186,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd --system --uid 10001 --home-dir /vault mdkb
 WORKDIR /vault
+# Vendored embedding model (baked at build time) — loaded locally, never downloaded.
+COPY --from=model /model /opt/mdkb/model
+ENV MDKB_BUNDLED_MODEL_DIR=/opt/mdkb/model
 # Vault is mounted here; the local index is created under $MDKB_VAULT/.mdkb at runtime.
 ENV MDKB_VAULT=/vault
 EXPOSE 7820

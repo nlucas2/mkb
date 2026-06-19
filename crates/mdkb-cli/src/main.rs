@@ -67,9 +67,13 @@ fn load_vault(dir: &str) -> Result<Vault, String> {
 /// exact ingest/embed/search path the daemon uses — no duplicated logic.
 fn readonly_engine(dir: &str) -> Result<SyncEngine<SqliteIndex>, String> {
     let index = SqliteIndex::open_in_memory().map_err(|e| e.to_string())?;
+    let mdkb_dir = mdkb_protocol::DaemonPaths::from_vault(dir)
+        .mdkb_dir()
+        .to_path_buf();
+    let source = mdkb_embed::FileConfig::load(&mdkb_dir).embedder;
     let mut engine = SyncEngine::new(dir, index)
         .without_id_assignment()
-        .with_embedder(mdkb_embed::recommended());
+        .with_embedder(mdkb_embed::from_source(&source));
     engine.reconcile().map_err(|e| e.to_string())?;
     Ok(engine)
 }

@@ -61,7 +61,10 @@ fn run() -> Result<(), String> {
     );
 
     let index = SqliteIndex::open(cfg.db()).map_err(|e| e.to_string())?;
-    let engine = SyncEngine::new(cfg.vault(), index).with_embedder(mdkb_embed::recommended());
+    let source = mdkb_embed::FileConfig::load(cfg.paths.mdkb_dir()).embedder;
+    eprintln!("mdkbd: embedder source = {source:?}");
+    let engine =
+        SyncEngine::new(cfg.vault(), index).with_embedder(mdkb_embed::from_source(&source));
     let mut service = Service::new(engine);
 
     // Initial reconcile so the index reflects the vault before serving.

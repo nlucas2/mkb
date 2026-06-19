@@ -13,3 +13,6 @@ src-tauri/target/
 # OS
 .DS_Store
 Thumbs.db
+
+# fastembed's local model cache (created by ad-hoc runs; never committed)
+.fastembed_cache/

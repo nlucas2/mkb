@@ -1,11 +1,16 @@
 //! Local ONNX embedding backend via `fastembed`.
 //!
-//! Compiled only under the `onnx` feature. The model weights are downloaded once on first
-//! use (to fastembed's cache) and then run fully in-process/offline.
+//! Compiled only under the `onnx` feature. The model is loaded from local files via
+//! [`FastEmbedder::from_model_dir`] with **no network access** — the `hf-hub` download path
+//! is not even compiled in (see this crate's `Cargo.toml`).
 
+use std::path::Path;
 use std::sync::Mutex;
 
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+use fastembed::{
+    InitOptionsUserDefined, Pooling, QuantizationMode, TextEmbedding, TokenizerFiles,
+    UserDefinedEmbeddingModel,
+};
 use mdkb_core::{EmbedError, Embedder};
 
 /// A local sentence-embedding model.
@@ -20,17 +25,47 @@ pub struct FastEmbedder {
 }
 
 impl FastEmbedder {
-    /// Initialise the default model (BGE-small-en-v1.5, 384-dim) — a strong, small,
-    /// CPU-friendly default.
-    pub fn new() -> Result<Self, EmbedError> {
-        Self::with_model(EmbeddingModel::BGESmallENV15, 384, "BGESmallENV15")
-    }
-
-    /// Initialise a specific fastembed model. `dim` must match the model's output size.
-    pub fn with_model(model: EmbeddingModel, dim: usize, name: &str) -> Result<Self, EmbedError> {
-        let model = TextEmbedding::try_new(TextInitOptions::new(model)).map_err(EmbedError::new)?;
+    /// Load a model from a local directory with **zero network access**. The directory must
+    /// contain the ONNX weights and the four tokenizer files:
+    ///
+    /// - one of `model.onnx` / `model_quantized.onnx` / `model_int8.onnx` / `model_optimized.onnx`
+    /// - `tokenizer.json`, `config.json`, `tokenizer_config.json`, `special_tokens_map.json`
+    ///
+    /// Pooling is CLS and quantization is treated as dynamic, matching the int8 BGE-small
+    /// export we vendor (`DynamicQuantizeLinear`). `dim` is the embedding width (384 for
+    /// BGE-small) and `name` tags the stored vectors via [`Embedder::model_id`].
+    pub fn from_model_dir(
+        dir: impl AsRef<Path>,
+        dim: usize,
+        name: &str,
+    ) -> Result<Self, EmbedError> {
+        let dir = dir.as_ref();
+        let read = |file: &str| -> Result<Vec<u8>, EmbedError> {
+            std::fs::read(dir.join(file))
+                .map_err(|e| EmbedError::new(format!("reading {file} from {}: {e}", dir.display())))
+        };
+        let onnx = [
+            "model.onnx",
+            "model_quantized.onnx",
+            "model_int8.onnx",
+            "model_optimized.onnx",
+        ]
+        .iter()
+        .find_map(|f| std::fs::read(dir.join(f)).ok())
+        .ok_or_else(|| EmbedError::new(format!("no ONNX model file found in {}", dir.display())))?;
+        let tokenizer_files = TokenizerFiles {
+            tokenizer_file: read("tokenizer.json")?,
+            config_file: read("config.json")?,
+            special_tokens_map_file: read("special_tokens_map.json")?,
+            tokenizer_config_file: read("tokenizer_config.json")?,
+        };
+        let model = UserDefinedEmbeddingModel::new(onnx, tokenizer_files)
+            .with_pooling(Pooling::Cls)
+            .with_quantization(QuantizationMode::Dynamic);
+        let inner = TextEmbedding::try_new_from_user_defined(model, InitOptionsUserDefined::new())
+            .map_err(EmbedError::new)?;
         Ok(FastEmbedder {
-            model: Mutex::new(model),
+            model: Mutex::new(inner),
             dim,
             name: name.to_string(),
         })
@@ -50,7 +85,7 @@ impl Embedder for FastEmbedder {
             .model
             .lock()
             .map_err(|_| EmbedError::new("embedder mutex poisoned"))?;
-        guard.embed(texts.to_vec(), None).map_err(EmbedError::new)
+        guard.embed(texts, None).map_err(EmbedError::new)
     }
 
     fn model_id(&self) -> String {

@@ -43,13 +43,16 @@ Clients connect with `mdkbd`'s TCP transport and the token:
 - A networked client authenticates first (`authenticate { token }`), then issues requests.
 - Without a valid token, every data request is rejected.
 
-> **First-run model download.** The image is built with the local ONNX embedder. On first
-> use the daemon downloads the embedding model (~100 MB) from Hugging Face before it begins
-> serving, so the first startup is slower and the pod needs egress to `huggingface.co`. If
-> egress is unavailable the daemon logs a warning and degrades to the offline hash embedder
-> (keyword search and everything else still work; semantic ranking is weaker). The
-> readiness probe is a plain TCP check, so the pod only reports Ready once the daemon is
-> actually listening.
+> **Embedding model is baked in (no runtime download).** The image vendors an int8-quantized
+> BGE-small-en-v1.5 ONNX model (~32 MB) at build time and loads it from local disk, so the
+> daemon runs semantic search **fully offline** — no egress to `huggingface.co`, no slow first
+> start. To use a different model, mount one and point `config.json` at it
+> (`{"embedder":{"kind":"local","path":"…"}}`) or target a remote endpoint
+> (`{"embedder":{"kind":"remote","url":"…"}}`); see the README's "Choosing an embedder"
+> section. If a configured embedder can't load, the daemon logs a warning and degrades to the
+> offline hash embedder (keyword search still works; semantic ranking is weaker). The readiness
+> probe is a plain TCP check, so the pod only reports Ready once the daemon is actually
+> listening.
 
 ### Connecting a UI to the deployed daemon
 
