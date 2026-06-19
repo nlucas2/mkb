@@ -194,15 +194,26 @@ FROM debian:trixie-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-RUN useradd --system --uid 10001 --home-dir /vault mdkb
+# Run as an ARBITRARY uid/gid chosen at deploy time (Kubernetes securityContext, `docker run
+# -u`, OpenShift random uids, etc.) — no user is baked in. The image follows the "arbitrary
+# user" convention: default to non-root uid 65534 (nobody), make the relevant paths owned by
+# the root group (gid 0) and group-writable, and set HOME/dirs so any uid can read the model
+# and create its runtime files.
 WORKDIR /vault
 # Vendored embedding model (baked at build time) — loaded locally, never downloaded.
 COPY --from=model /model /opt/mdkb/model
+# World-readable model + a group-writable vault dir, so whatever uid the container runs as can
+# read the model and write the vault/index. gid 0 (root group) is always a supplemental group.
+RUN chgrp -R 0 /opt/mdkb /vault \
+    && chmod -R g=u /opt/mdkb /vault
 ENV MDKB_BUNDLED_MODEL_DIR=/opt/mdkb/model
+ENV HOME=/vault
 # Vault is mounted here; the local index is created under $MDKB_VAULT/.mdkb at runtime.
 ENV MDKB_VAULT=/vault
 EXPOSE 7820
-USER mdkb
+# Default to a non-root uid; the actual uid is overridable at deploy time and the image works
+# with any uid (its gid 0 membership grants access to the prepared paths).
+USER 65534:0
 ENTRYPOINT ["mdkbd"]
 # Token must be provided at runtime (e.g. from a Secret) via $MDKB_TOKEN.
 CMD ["--vault", "/vault", "--listen", "0.0.0.0:7820"]
