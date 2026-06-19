@@ -62,7 +62,7 @@ RUN cargo test --workspace
 FROM --platform=$BUILDPLATFORM rust:slim-trixie AS builder-amd64
 ARG ONNX
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential pkg-config ca-certificates libssl-dev \
+    build-essential pkg-config ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
@@ -104,21 +104,18 @@ RUN mkdir -p /out && cp target/release/mdkbd target/release/mdkb \
 # -- arm64 builder (cross-compiled, native speed on the runner) ----------------
 # Cross-compilation (not QEMU emulation) keeps the build fast. ort downloads a prebuilt
 # aarch64 onnxruntime static lib (it is listed in ort's dist.txt), so onnxruntime is never
-# compiled from source here — only linked with the cross toolchain.
+# compiled from source here — only linked with the cross toolchain. fastembed uses rustls
+# (not openssl), so no libssl / dpkg arm64 cross-libs are needed.
 FROM --platform=$BUILDPLATFORM rust:slim-trixie AS builder-arm64
 ARG ONNX
-RUN dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkg-config ca-certificates \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
-    libssl-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*
 RUN rustup target add aarch64-unknown-linux-gnu
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
-    CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
-    PKG_CONFIG_ALLOW_CROSS=1 \
-    PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu=/usr/aarch64-linux-gnu \
-    PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig
+    CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./

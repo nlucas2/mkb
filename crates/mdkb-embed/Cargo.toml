@@ -15,4 +15,11 @@ onnx = ["dep:fastembed"]
 
 [dependencies]
 mdkb-core.workspace = true
-fastembed = { version = "5", optional = true }
+# Use rustls (not native-tls/openssl) for both the ort binary download and the hf-hub model
+# download, so there is no openssl/libssl-dev dependency — this keeps cross-compilation
+# clean. `image-models` is dropped: we only use text embeddings, and it pulls a heavy image
+# codec tree (rav1e/ravif/exr/…).
+fastembed = { version = "5", optional = true, default-features = false, features = [
+    "ort-download-binaries-rustls-tls",
+    "hf-hub-rustls-tls",
+] }
