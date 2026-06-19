@@ -77,7 +77,9 @@ RUN mkdir -p \
         crates/mdkb-core/src/lib.rs crates/mdkb-index/src/lib.rs \
         crates/mdkb-embed/src/lib.rs crates/mdkb-protocol/src/lib.rs \
         crates/mdkb-view/src/lib.rs \
-    && for b in mdkbd mdkb-mcp mdkb-cli mdkb-web; do echo 'fn main(){}' > crates/$b/src/main.rs; done
+    && for b in mdkbd mdkb-mcp mdkb-cli mdkb-web; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
+    && mkdir -p crates/mdkb-embed/examples \
+    && echo 'fn main(){}' > crates/mdkb-embed/examples/footprint.rs
 RUN cargo fetch
 
 COPY . .
@@ -110,7 +112,9 @@ RUN mkdir -p \
         crates/mdkb-core/src/lib.rs crates/mdkb-index/src/lib.rs \
         crates/mdkb-embed/src/lib.rs crates/mdkb-protocol/src/lib.rs \
         crates/mdkb-view/src/lib.rs \
-    && for b in mdkbd mdkb-mcp mdkb-cli mdkb-web; do echo 'fn main(){}' > crates/$b/src/main.rs; done
+    && for b in mdkbd mdkb-mcp mdkb-cli mdkb-web; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
+    && mkdir -p crates/mdkb-embed/examples \
+    && echo 'fn main(){}' > crates/mdkb-embed/examples/footprint.rs
 RUN cargo fetch
 
 COPY . .
@@ -162,7 +166,9 @@ RUN mkdir -p \
         crates/mdkb-core/src/lib.rs crates/mdkb-index/src/lib.rs \
         crates/mdkb-embed/src/lib.rs crates/mdkb-protocol/src/lib.rs \
         crates/mdkb-view/src/lib.rs \
-    && for b in mdkbd mdkb-mcp mdkb-cli mdkb-web; do echo 'fn main(){}' > crates/$b/src/main.rs; done
+    && for b in mdkbd mdkb-mcp mdkb-cli mdkb-web; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
+    && mkdir -p crates/mdkb-embed/examples \
+    && echo 'fn main(){}' > crates/mdkb-embed/examples/footprint.rs
 RUN cargo fetch --target aarch64-unknown-linux-gnu
 
 COPY . .
