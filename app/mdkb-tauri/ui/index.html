@@ -4,91 +4,389 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>mdkb</title>
+    <script src="vendor/force-graph.min.js"></script>
     <style>
-      :root { --bg:#1e1e2e; --fg:#cdd6f4; --muted:#9399b2; --accent:#89b4fa; --panel:#181825; --border:#313244; }
+      :root {
+        --bg:#1e1e2e; --fg:#cdd6f4; --muted:#9399b2; --accent:#89b4fa;
+        --panel:#181825; --border:#313244; --hover:#272840; --ok:#a6e3a1; --bad:#f38ba8;
+      }
       * { box-sizing: border-box; }
+      html, body { height:100%; }
       body { margin:0; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
-      .layout { display:flex; min-height:100vh; }
-      nav { width:260px; flex:0 0 260px; background:var(--panel); border-right:1px solid var(--border); padding:1rem; overflow-y:auto; }
-      nav input { width:100%; padding:.5rem .6rem; margin-bottom:1rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
-      nav ul { list-style:none; margin:0; padding:0; }
-      nav li a { display:block; padding:.3rem .5rem; border-radius:6px; color:var(--fg); text-decoration:none; cursor:pointer; }
-      nav li a:hover { background:var(--border); }
+      .layout { display:flex; height:100vh; }
+      nav { width:270px; flex:0 0 270px; background:var(--panel); border-right:1px solid var(--border); padding:1rem; display:flex; flex-direction:column; }
+      nav input { width:100%; padding:.5rem .6rem; margin-bottom:.6rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
+      .navbtns { display:flex; gap:.4rem; margin-bottom:.6rem; }
+      .navbtns button { flex:1; }
+      button { background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.35rem .6rem; cursor:pointer; font:inherit; }
+      button:hover { background:var(--hover); }
+      button.primary { background:var(--accent); color:var(--panel); border-color:var(--accent); font-weight:600; }
+      button.danger:hover { border-color:var(--bad); color:var(--bad); }
+      nav ul { list-style:none; margin:0; padding:0; overflow-y:auto; flex:1; }
+      nav li a { display:block; padding:.3rem .5rem; border-radius:6px; color:var(--fg); text-decoration:none; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      nav li a:hover { background:var(--hover); }
       nav li.active a { background:var(--accent); color:var(--panel); font-weight:600; }
-      main { flex:1; padding:2rem 3rem; max-width:60rem; }
+      .status { margin-top:.6rem; padding-top:.6rem; border-top:1px solid var(--border); font-size:.8em; color:var(--muted); display:flex; align-items:center; gap:.4rem; cursor:pointer; }
+      .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); flex:0 0 auto; }
+      .dot.ok { background:var(--ok); }
+      main { flex:1; overflow:auto; position:relative; }
+      .pad { padding:1.5rem 2.5rem; max-width:62rem; }
       a { color:var(--accent); }
       code { background:var(--panel); padding:.1rem .35rem; border-radius:4px; }
       pre { background:var(--panel); border:1px solid var(--border); padding:1rem; border-radius:8px; overflow-x:auto; }
       pre code { background:none; padding:0; }
       blockquote { border-left:3px solid var(--accent); margin:0; padding-left:1rem; color:var(--muted); }
-      .muted { color:var(--muted); } .crumb { color:var(--muted); margin-left:.5rem; font-size:.85em; }
+      .muted { color:var(--muted); }
       .results { list-style:none; padding:0; } .results li { padding:.6rem 0; border-bottom:1px solid var(--border); }
+      .results .crumb { color:var(--muted); margin-left:.5rem; font-size:.85em; }
       .preview { color:var(--muted); font-size:.9em; margin-top:.2rem; }
+
+      .topbar { display:flex; align-items:center; gap:.5rem; padding:.7rem 2.5rem; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg); z-index:5; }
+      .topbar h1 { font-size:1.15rem; margin:0; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .seg { display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+      .seg button { border:none; border-radius:0; border-right:1px solid var(--border); }
+      .seg button:last-child { border-right:none; }
+      .seg button.on { background:var(--accent); color:var(--panel); font-weight:600; }
+
+      .content > :first-child { margin-top:.2rem; }
+      .editor { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--accent); border-radius:6px; padding:.5rem .6rem; font:14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; resize:none; min-height:50vh; }
+      .titleedit { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.45rem .6rem; margin-bottom:.5rem; font:inherit; }
+
+      /* Wiki references: a chip-style inline link. */
+      .wikilink { background:var(--panel); border:1px solid var(--border); border-radius:5px; padding:.02rem .35rem; text-decoration:none; white-space:nowrap; }
+      .wikilink:hover { border-color:var(--accent); background:var(--hover); }
+      .wikilink.unresolved { color:var(--bad); border-style:dashed; }
+      /* Transclusions: a framed "live mirror" card with a clickable source header. */
+      blockquote.mdkb-embed { border-left:3px solid var(--accent); background:var(--panel); border-radius:0 6px 6px 0; margin:.5rem 0; padding:.4rem .8rem; }
+      blockquote.mdkb-embed > p:first-child { margin:0 0 .3rem; font-size:.85em; color:var(--muted); }
+      blockquote.mdkb-embed .wikilink { background:transparent; border:none; padding:0; color:var(--accent); }
+
+      .refs { margin-top:2rem; border-top:1px solid var(--border); padding-top:1rem; }
+      .refs h3 { font-size:.95rem; color:var(--muted); margin:.2rem 0 .6rem; }
+      .refs ul { list-style:none; padding:0; margin:0; } .refs li { padding:.2rem 0; }
+
+      #graphview { position:absolute; inset:0; }
+      .form { max-width:34rem; } .form label { display:block; margin:.8rem 0 .2rem; font-weight:600; }
+      .form input[type=text] { width:100%; padding:.5rem .6rem; background:var(--panel); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
+      .form .row { display:flex; gap:.5rem; align-items:center; }
+      .modes { display:flex; gap:1rem; margin:.5rem 0; }
+      .hint { color:var(--muted); font-size:.85em; margin-top:.3rem; }
+      .savebar { margin-top:1rem; display:flex; gap:.6rem; align-items:center; }
     </style>
   </head>
   <body>
     <div class="layout">
       <nav>
         <input id="search" type="search" placeholder="Search…" />
-        <ul id="pages"></ul>
+        <div class="navbtns">
+          <button id="newblock">＋ Block</button>
+          <button id="graphbtn">◎ Graph</button>
+        </div>
+        <ul id="blocks"></ul>
+        <div class="status" id="status" title="Connection settings">
+          <span class="dot" id="dot"></span><span id="statustext">…</span>
+        </div>
       </nav>
-      <main id="content"><p class="muted">Loading…</p></main>
+      <main id="main"></main>
     </div>
+
     <script type="module">
       const { invoke } = window.__TAURI__.core;
-      const pagesEl = document.getElementById("pages");
-      const contentEl = document.getElementById("content");
+      const blocksEl = document.getElementById("blocks");
+      const mainEl = document.getElementById("main");
       const searchEl = document.getElementById("search");
-      let pages = [];
-      let active = null;
+      const dotEl = document.getElementById("dot");
+      const statusTextEl = document.getElementById("statustext");
 
-      async function loadPages() {
-        pages = await invoke("list_pages");
+      let roots = [];      // [{id,title}]
+      let active = null;   // current block id
+      let mode = "read";   // read | edit
+      let graphCache = null;
+      let fg = null;
+
+      const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
+
+      async function refreshStatus() {
+        try {
+          const s = await invoke("connection_status");
+          dotEl.classList.toggle("ok", s.connected);
+          statusTextEl.textContent = s.connected ? s.endpoint : "offline · " + s.endpoint;
+        } catch (e) {
+          dotEl.classList.remove("ok");
+          statusTextEl.textContent = "no connection";
+        }
+      }
+
+      async function loadBlocks(select) {
+        try {
+          roots = await invoke("list_blocks");
+        } catch (e) {
+          mainEl.innerHTML =
+            `<div class="pad"><h1>Can’t reach the daemon</h1>` +
+            `<p class="muted">${esc(e)}</p>` +
+            `<p><button class="primary" onclick="window.__mdkb.settings()">Open settings</button></p></div>`;
+          refreshStatus();
+          return;
+        }
         renderNav();
-        if (pages.length) openPage(pages[0]);
-        else contentEl.innerHTML = '<p class="muted">No pages yet.</p>';
+        graphCache = null;
+        if (select && roots.some((b) => b.id === select)) openBlock(select);
+        else if (active && roots.some((b) => b.id === active)) openBlock(active);
+        else if (roots.length) openBlock(roots[0].id);
+        else mainEl.innerHTML = '<div class="pad"><p class="muted">No blocks yet. Click ＋ Block to create one.</p></div>';
+        refreshStatus();
       }
 
       function renderNav() {
-        pagesEl.innerHTML = "";
-        for (const p of pages) {
+        blocksEl.innerHTML = "";
+        for (const b of roots) {
           const li = document.createElement("li");
-          if (p === active) li.className = "active";
+          if (b.id === active) li.className = "active";
           const a = document.createElement("a");
-          a.textContent = p.replace(/.*\//, "").replace(/\.md$/, "").replace(/[-_]/g, " ");
-          a.onclick = () => openPage(p);
+          a.textContent = b.title || b.id;
+          a.title = b.id;
+          a.onclick = () => openBlock(b.id);
           li.appendChild(a);
-          pagesEl.appendChild(li);
+          blocksEl.appendChild(li);
         }
       }
 
-      async function openPage(p) {
-        active = p;
+      async function getGraph(force) {
+        if (graphCache && !force) return graphCache;
+        graphCache = await invoke("graph");
+        return graphCache;
+      }
+
+      function topbar(title) {
+        const m = (id, label) => `<button data-m="${id}" class="${mode===id?"on":""}">${label}</button>`;
+        return `<div class="topbar">
+          <h1>${esc(title)}</h1>
+          <div class="seg">${m("read","Read")}${m("edit","Edit")}</div>
+          <button id="carve" title="Carve a child block">⑂ Carve</button>
+          <button id="del" class="danger" title="Delete block">🗑</button>
+        </div>`;
+      }
+
+      async function openBlock(id, keepMode) {
+        active = id;
+        if (!keepMode) mode = "read";
         renderNav();
-        try {
-          contentEl.innerHTML = await invoke("render_page", { page: p });
-        } catch (e) {
-          contentEl.innerHTML = `<h1>Error</h1><p class="muted">${e}</p>`;
-        }
+        mainEl.scrollTop = 0;
+        let view;
+        try { view = await invoke("render_block", { id }); }
+        catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
+        mainEl.innerHTML = topbar(view.title) + `<div class="pad" id="body"></div>`;
+        mainEl.querySelectorAll(".seg button").forEach((b) =>
+          (b.onclick = () => { mode = b.dataset.m; openBlock(id, true); }));
+        mainEl.querySelector("#carve").onclick = () => carve(id);
+        mainEl.querySelector("#del").onclick = () => del(id);
+        const body = mainEl.querySelector("#body");
+        if (mode === "edit") await renderEdit(body, id);
+        else { body.innerHTML = `<div class="content">${view.html}</div>`; await renderRefs(body, id); }
       }
 
+      async function renderEdit(body, id) {
+        const [src, title] = await Promise.all([
+          invoke("block_source", { id }),
+          invoke("block_title_of", { id }),
+        ]);
+        body.innerHTML = `<input class="titleedit" id="t" placeholder="Title (optional)" />
+          <textarea class="editor" id="b" spellcheck="false"></textarea>
+          <div class="savebar"><button class="primary" id="save">Save</button>
+          <span class="muted" id="msg">Use <code>![[id]]</code> to embed a child, <code>[[id]]</code> to reference.</span></div>`;
+        body.querySelector("#t").value = title || "";
+        body.querySelector("#b").value = src;
+        body.querySelector("#save").onclick = async () => {
+          const t = body.querySelector("#t").value.trim();
+          try {
+            await invoke("save_block", { id, title: t || null, body: body.querySelector("#b").value });
+            graphCache = null;
+            await loadBlocks(id);
+            mode = "read";
+            openBlock(id, true);
+          } catch (e) { body.querySelector("#msg").textContent = String(e); }
+        };
+      }
+
+      async function renderRefs(body, id) {
+        let back;
+        try { back = await invoke("backlinks", { id }); } catch { return; }
+        if (!back.length) return;
+        const refs = document.createElement("div");
+        refs.className = "refs";
+        refs.innerHTML = `<h3>Linked references (${back.length})</h3><ul>${
+          back.map((b) => `<li><a data-go="${esc(b.id)}">${esc(b.title || b.id)}</a></li>`).join("")
+        }</ul>`;
+        body.appendChild(refs);
+        refs.querySelectorAll("a[data-go]").forEach((a) => (a.onclick = () => openBlock(a.dataset.go)));
+      }
+
+      async function newBlock() {
+        const title = prompt("Title for the new block (optional):", "");
+        if (title === null) return;
+        try {
+          const id = await invoke("create_block", { title: title.trim() || null, body: title.trim() ? `# ${title.trim()}\n\n` : "" });
+          graphCache = null;
+          await loadBlocks(id);
+          mode = "edit";
+          openBlock(id, true);
+        } catch (e) { alert(String(e)); }
+      }
+
+      async function carve(parentId) {
+        const title = prompt("Title for the carved child block (optional):", "");
+        if (title === null) return;
+        const bodyText = prompt("Content for the new child block:", "");
+        if (bodyText === null) return;
+        try {
+          await invoke("carve_block", { parentId, title: title.trim() || null, body: bodyText });
+          graphCache = null;
+          await loadBlocks();
+          openBlock(parentId, true);
+        } catch (e) { alert(String(e)); }
+      }
+
+      async function del(id) {
+        if (!confirm("Delete this block? Its file will be removed.")) return;
+        try { await invoke("delete_block", { id }); active = null; graphCache = null; await loadBlocks(); }
+        catch (e) { alert(String(e)); }
+      }
+
+      // ---------- graph view ----------
+      async function showGraph() {
+        active = null; renderNav();
+        mainEl.innerHTML = `<div id="graphview"></div>`;
+        let g;
+        try { g = await getGraph(true); }
+        catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
+        const deg = {};
+        g.edges.forEach((e) => { deg[e.source]=(deg[e.source]||0)+1; deg[e.target]=(deg[e.target]||0)+1; });
+        const nodes = g.nodes.map((n) => ({ id: n.id, label: n.title, d: (deg[n.id]||0), root: n.root }));
+        const links = g.edges.map((e) => ({ source: e.source, target: e.target }));
+        const neighbors = {};
+        links.forEach((l) => {
+          (neighbors[l.source] = neighbors[l.source] || new Set()).add(l.target);
+          (neighbors[l.target] = neighbors[l.target] || new Set()).add(l.source);
+        });
+        let hover = null;
+        const el = document.getElementById("graphview");
+        fg = ForceGraph()(el)
+          .backgroundColor("#181825")
+          .graphData({ nodes, links })
+          .linkColor(() => "rgba(147,153,178,.35)")
+          .linkDirectionalArrowLength(3)
+          .nodeCanvasObject((n, ctx, scale) => {
+            const r = Math.max(2.4, Math.cbrt((n.d||0) + 1) * 2.6);
+            const dim = hover && hover !== n.id && !(neighbors[hover] && neighbors[hover].has(n.id));
+            ctx.globalAlpha = dim ? 0.18 : 1;
+            ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2*Math.PI);
+            ctx.fillStyle = n.root ? "#89b4fa" : "#cba6f7";
+            ctx.fill();
+            if (scale > 1.1 || (hover && (hover===n.id || (neighbors[hover]&&neighbors[hover].has(n.id))))) {
+              ctx.globalAlpha = dim ? 0.25 : 1;
+              ctx.font = `${11/scale}px -apple-system, sans-serif`;
+              ctx.fillStyle = "#cdd6f4"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+              ctx.fillText(n.label || n.id, n.x + r + 1.5, n.y);
+            }
+            ctx.globalAlpha = 1;
+          })
+          .onNodeHover((n) => { hover = n ? n.id : null; el.style.cursor = n ? "pointer" : "default"; })
+          .onNodeClick((n) => openBlock(n.id))
+          .width(el.clientWidth).height(el.clientHeight);
+        fg.d3Force("charge").strength(-130);
+        const ro = new ResizeObserver(() => { if (fg) fg.width(el.clientWidth).height(el.clientHeight); });
+        ro.observe(el);
+      }
+
+      // ---------- settings ----------
+      async function showSettings() {
+        active = null; renderNav();
+        const cfg = await invoke("get_settings");
+        const isLocal = cfg.mode === "local";
+        mainEl.innerHTML = `<div class="topbar"><h1>Settings</h1></div>
+          <div class="pad form">
+            <div class="modes">
+              <label class="row"><input type="radio" name="mode" value="local" ${isLocal?"checked":""}/> Local vault</label>
+              <label class="row"><input type="radio" name="mode" value="remote" ${!isLocal?"checked":""}/> Remote daemon</label>
+            </div>
+            <div id="local" style="${isLocal?"":"display:none"}">
+              <label>Vault folder</label>
+              <div class="row"><input type="text" id="vault" value="${esc(isLocal?(cfg.vault||""):"")}" placeholder="~/mdkb-vault"/>
+              <button id="browse">Browse…</button></div>
+              <p class="hint">The app starts a background <code>mdkbd</code> for this folder and reuses it — the daemon keeps running after you quit. Blocks are stored as <code>blocks/&lt;id&gt;.md</code>.</p>
+            </div>
+            <div id="remote" style="${isLocal?"display:none":""}">
+              <label>Host</label>
+              <input type="text" id="host" value="${esc(!isLocal?(cfg.host||""):"")}" placeholder="host:7820"/>
+              <label>Token</label>
+              <input type="text" id="token" value="${esc(!isLocal?(cfg.token||""):"")}" placeholder="shared token"/>
+            </div>
+            <div class="savebar"><button class="primary" id="savecfg">Save & connect</button>
+            <span class="muted" id="cfgmsg"></span></div>
+          </div>`;
+        const radios = mainEl.querySelectorAll("input[name=mode]");
+        const localBox = mainEl.querySelector("#local");
+        const remoteBox = mainEl.querySelector("#remote");
+        radios.forEach((r) => (r.onchange = () => {
+          const local = mainEl.querySelector("input[name=mode]:checked").value === "local";
+          localBox.style.display = local ? "" : "none";
+          remoteBox.style.display = local ? "none" : "";
+        }));
+        mainEl.querySelector("#browse").onclick = async () => {
+          const dir = await invoke("pick_vault");
+          if (dir) mainEl.querySelector("#vault").value = dir;
+        };
+        mainEl.querySelector("#savecfg").onclick = async () => {
+          const local = mainEl.querySelector("input[name=mode]:checked").value === "local";
+          const config = local
+            ? { mode: "local", vault: mainEl.querySelector("#vault").value.trim() }
+            : { mode: "remote", host: mainEl.querySelector("#host").value.trim(), token: mainEl.querySelector("#token").value };
+          const msg = mainEl.querySelector("#cfgmsg");
+          msg.textContent = "Connecting…";
+          try {
+            await invoke("save_settings", { config });
+            msg.textContent = "Connected.";
+            graphCache = null; active = null;
+            await refreshStatus();
+            await loadBlocks();
+          } catch (e) { msg.textContent = String(e); await refreshStatus(); }
+        };
+      }
+
+      // ---------- search ----------
       let timer = null;
       searchEl.addEventListener("input", () => {
         clearTimeout(timer);
         const q = searchEl.value.trim();
         timer = setTimeout(async () => {
-          if (!q) return;
-          active = null;
-          renderNav();
-          try {
-            contentEl.innerHTML = await invoke("search", { query: q });
-          } catch (e) {
-            contentEl.innerHTML = `<h1>Error</h1><p class="muted">${e}</p>`;
-          }
+          if (!q) { if (active) openBlock(active); return; }
+          active = null; renderNav();
+          try { mainEl.innerHTML = `<div class="pad" id="sr">${await invoke("search", { query: q })}</div>`; }
+          catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
+          mainEl.querySelectorAll('#sr a[href^="/block/"]').forEach((a) => {
+            a.onclick = (ev) => { ev.preventDefault(); openBlock(a.getAttribute("href").slice("/block/".length)); };
+          });
         }, 200);
       });
 
-      loadPages();
+      document.getElementById("newblock").onclick = newBlock;
+      document.getElementById("graphbtn").onclick = showGraph;
+      document.getElementById("status").onclick = showSettings;
+      window.__mdkb = { settings: showSettings };
+
+      // Intercept clicks on shared `mdkb:` reference links (wiki chips + embed-card headers).
+      mainEl.addEventListener("click", (e) => {
+        const a = e.target.closest && e.target.closest('a[href^="mdkb:"]');
+        if (!a) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const rest = a.getAttribute("href").slice("mdkb:".length);
+        if (rest.startsWith("?")) return;
+        const id = decodeURIComponent(rest.split("#")[0]);
+        if (id) openBlock(id);
+      }, true);
+
+      loadBlocks();
     </script>
   </body>
 </html>

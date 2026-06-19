@@ -1,9 +1,9 @@
 //! MCP tool definitions and their mapping to daemon requests.
 //!
-//! This is pure translation: a tool call becomes a [`mdkb_protocol::Request`], which the
-//! daemon dispatches to the one shared `Service`. No knowledge-base behavior lives here —
-//! only schemas and (de)serialization — so the MCP server cannot diverge from the CLI or UI
-//! (see `AGENTS.md`).
+//! Pure translation: a tool call becomes a [`mdkb_protocol::Request`], which the daemon
+//! dispatches to the one shared `Service`. No knowledge-base behavior lives here — only
+//! schemas and (de)serialization — so the MCP server cannot diverge (see `AGENTS.md`). The
+//! unit is the **block** (one file); reuse is by block id (`![[id]]` child / `[[id]]` ref).
 
 use mdkb_core::{BlockId, SearchQuery};
 use mdkb_protocol::{Request, Response};
@@ -24,21 +24,20 @@ pub fn tool_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "search",
-            description: "Search the knowledge base (keyword + semantic). Optional filters: lang, tags, page, limit.",
+            description: "Search the knowledge base (keyword + semantic). Optional filters: lang, tags, limit.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Free-text query"},
                     "lang": {"type": "string", "description": "Restrict to a code-fence language (e.g. kusto)"},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Require all of these tags"},
-                    "page": {"type": "string", "description": "Restrict to a page path"},
                     "limit": {"type": "integer", "description": "Max results (default 50)"}
                 }
             }),
         },
         ToolDef {
             name: "get_block",
-            description: "Fetch a single block by its id.",
+            description: "Fetch a single block (its title, tags, and Markdown body) by id.",
             schema: json!({
                 "type": "object",
                 "properties": {"id": {"type": "string"}},
@@ -46,26 +45,27 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "get_page",
-            description: "Get the raw Markdown source of a page.",
+            name: "render_block",
+            description: "Render a block with all child transclusions (![[id]]) resolved inline.",
             schema: json!({
                 "type": "object",
-                "properties": {"page": {"type": "string"}},
-                "required": ["page"]
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"]
             }),
         },
         ToolDef {
-            name: "render_page",
-            description: "Render a page with all transclusions resolved (inlined).",
-            schema: json!({
-                "type": "object",
-                "properties": {"page": {"type": "string"}},
-                "required": ["page"]
-            }),
+            name: "list_blocks",
+            description: "List all block ids in the vault.",
+            schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
-            name: "list_pages",
-            description: "List all page paths in the vault.",
+            name: "list_roots",
+            description: "List root block ids (top-level entries that nothing transcludes).",
+            schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
+            name: "graph",
+            description: "The block-level knowledge graph (nodes = blocks, edges = references/transclusions).",
             schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -87,67 +87,78 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "upsert_block",
-            description: "Update a block by id, or append a new block to a page when no id is given. Returns the affected block id.",
+            name: "create_block",
+            description: "Create a new block (optional title + Markdown body). Returns the new block id.",
             schema: json!({
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "Existing block id to update; omit to create"},
-                    "text": {"type": "string", "description": "The block's Markdown text"},
-                    "page": {"type": "string", "description": "Target page (required when creating)"}
+                    "title": {"type": "string"},
+                    "body": {"type": "string"}
                 },
-                "required": ["text"]
+                "required": ["body"]
             }),
         },
         ToolDef {
-            name: "save_page",
-            description: "Create or overwrite an entire page from raw Markdown.",
+            name: "update_block",
+            description: "Overwrite a block's title + Markdown body, by id.",
             schema: json!({
                 "type": "object",
                 "properties": {
-                    "page": {"type": "string"},
-                    "source": {"type": "string"}
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"}
                 },
-                "required": ["page", "source"]
+                "required": ["id", "body"]
             }),
         },
         ToolDef {
-            name: "delete_page",
-            description: "Delete a page (removes the file and its index entries).",
+            name: "delete_block",
+            description: "Delete a block (removes its file and index entries).",
             schema: json!({
                 "type": "object",
-                "properties": {"page": {"type": "string"}},
-                "required": ["page"]
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"]
+            }),
+        },
+        ToolDef {
+            name: "carve_block",
+            description: "Carve a new child block out of a parent: the new block gets the given body, and a ![[child]] directive is appended to the parent in place. Returns the new child id.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "parent_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"}
+                },
+                "required": ["parent_id", "body"]
             }),
         },
         ToolDef {
             name: "link_blocks",
-            description: "Create a link or transclusion from a source block to a target. Set embed=true for a transclusion (![[...]]), false for a plain link ([[...]]).",
+            description: "Link or embed one block into another. embed=true writes a transclusion (![[id]]); false a plain reference ([[id]]). An embed that would create a cycle is auto-downgraded to a reference.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "source_id": {"type": "string"},
-                    "target_page": {"type": "string"},
                     "target_id": {"type": "string"},
-                    "target_anchor": {"type": "string"},
                     "embed": {"type": "boolean"}
                 },
-                "required": ["source_id", "embed"]
+                "required": ["source_id", "target_id", "embed"]
             }),
         },
         ToolDef {
             name: "stats",
-            description: "Index statistics: page, block, and embedding counts.",
+            description: "Index statistics: block, root, and embedding counts.",
             schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
             name: "rebuild",
-            description: "Rebuild the entire search index from the vault's Markdown files (the source of truth). Use after corruption or to force a full re-index.",
+            description: "Rebuild the entire search index from the block files (the source of truth).",
             schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
             name: "conflicts",
-            description: "List cloud-sync conflict files (e.g. OneDrive copies) detected in the vault. These are surfaced but not indexed; resolve them in plain text.",
+            description: "List cloud-sync conflict files detected in the vault (surfaced, not indexed).",
             schema: json!({"type": "object", "properties": {}}),
         },
     ]
@@ -161,13 +172,9 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             .map(|v| v.to_string())
     };
     let req_s = |key: &str| s(key).ok_or_else(|| format!("missing required argument: {key}"));
-    let id = |key: &str| -> Result<Option<BlockId>, String> {
-        match s(key) {
-            Some(v) => BlockId::parse(&v)
-                .map(Some)
-                .map_err(|_| format!("invalid block id for {key}: {v}")),
-            None => Ok(None),
-        }
+    let req_id = |key: &str| -> Result<BlockId, String> {
+        let v = s(key).ok_or_else(|| format!("missing required argument: {key}"))?;
+        BlockId::parse(&v).map_err(|_| format!("invalid block id for {key}: {v}"))
     };
 
     Ok(match name {
@@ -187,45 +194,36 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
                     text: s("query"),
                     tags,
                     lang: s("lang"),
-                    page: s("page"),
                     limit,
                     ..Default::default()
                 },
             }
         }
-        "get_block" => Request::GetBlock {
-            id: id("id")?.ok_or("missing required argument: id")?,
+        "get_block" => Request::GetBlock { id: req_id("id")? },
+        "render_block" => Request::RenderBlock { id: req_id("id")? },
+        "list_blocks" => Request::ListBlocks,
+        "list_roots" => Request::ListRoots,
+        "graph" => Request::Graph,
+        "backlinks" => Request::Backlinks { id: req_id("id")? },
+        "links_from" => Request::LinksFrom { id: req_id("id")? },
+        "create_block" => Request::CreateBlock {
+            title: s("title"),
+            body: req_s("body")?,
         },
-        "get_page" => Request::GetPageSource {
-            page: req_s("page")?,
+        "update_block" => Request::UpdateBlock {
+            id: req_id("id")?,
+            title: s("title"),
+            body: req_s("body")?,
         },
-        "render_page" => Request::RenderPage {
-            page: req_s("page")?,
-        },
-        "list_pages" => Request::ListPages,
-        "backlinks" => Request::Backlinks {
-            id: id("id")?.ok_or("missing required argument: id")?,
-        },
-        "links_from" => Request::LinksFrom {
-            id: id("id")?.ok_or("missing required argument: id")?,
-        },
-        "upsert_block" => Request::UpsertBlock {
-            id: id("id")?,
-            text: req_s("text")?,
-            page: s("page"),
-        },
-        "save_page" => Request::SavePage {
-            page: req_s("page")?,
-            source: req_s("source")?,
-        },
-        "delete_page" => Request::DeletePage {
-            page: req_s("page")?,
+        "delete_block" => Request::DeleteBlock { id: req_id("id")? },
+        "carve_block" => Request::CarveBlock {
+            parent_id: req_id("parent_id")?,
+            title: s("title"),
+            body: req_s("body")?,
         },
         "link_blocks" => Request::LinkBlocks {
-            source_id: id("source_id")?.ok_or("missing required argument: source_id")?,
-            target_page: s("target_page"),
-            target_id: id("target_id")?,
-            target_anchor: s("target_anchor"),
+            source_id: req_id("source_id")?,
+            target_id: req_id("target_id")?,
             embed: args.get("embed").and_then(|v| v.as_bool()).unwrap_or(false),
         },
         "stats" => Request::Stats,
@@ -243,11 +241,22 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
         Response::Ok => Ok("ok".to_string()),
         Response::Text(t) => Ok(t.clone().unwrap_or_else(|| "(not found)".to_string())),
         Response::BlockId(id) => Ok(id.to_string()),
-        Response::Pages(p) => to_json(p),
+        Response::Linked(o) => Ok(match o {
+            mdkb_core::LinkOutcome::Reference => "linked (reference)".to_string(),
+            mdkb_core::LinkOutcome::Transclusion => "linked (transclusion)".to_string(),
+            mdkb_core::LinkOutcome::DowngradedToReference => {
+                "linked as a plain reference (an embed would have created a transclusion cycle)"
+                    .to_string()
+            }
+        }),
+        Response::Ids(v) => to_json(v),
+        Response::Names(n) => to_json(n),
         Response::Hits(h) => to_json(h),
         Response::Block(b) => to_json(b),
+        Response::Rendered(b) => to_json(b),
         Response::Links(l) => to_json(l),
         Response::Stats(s) => to_json(s),
+        Response::Graph(g) => to_json(g),
     }
 }
 
@@ -271,16 +280,15 @@ mod tests {
                 d.name
             );
         }
-        assert!(defs.len() >= 12);
+        assert!(defs.len() >= 14);
     }
 
     #[test]
     fn every_tool_name_builds_a_request() {
-        // Provide enough args that each tool's required fields are satisfied.
         let id = BlockId::generate().to_string();
         let args = json!({
-            "query": "q", "id": id, "source_id": id, "page": "p.md",
-            "text": "t", "source": "s", "embed": true
+            "query": "q", "id": id, "source_id": id, "target_id": id, "parent_id": id,
+            "title": "T", "body": "b", "embed": true
         });
         for d in tool_definitions() {
             build_request(d.name, &args)
@@ -303,21 +311,21 @@ mod tests {
     }
 
     #[test]
-    fn upsert_without_id_is_create() {
-        let args = json!({"text": "hi", "page": "a.md"});
-        match build_request("upsert_block", &args).unwrap() {
-            Request::UpsertBlock { id, page, .. } => {
-                assert!(id.is_none());
-                assert_eq!(page.as_deref(), Some("a.md"));
+    fn create_block_maps_title_and_body() {
+        let args = json!({"title": "T", "body": "hi"});
+        match build_request("create_block", &args).unwrap() {
+            Request::CreateBlock { title, body } => {
+                assert_eq!(title.as_deref(), Some("T"));
+                assert_eq!(body, "hi");
             }
-            _ => panic!("expected upsert"),
+            _ => panic!("expected create_block"),
         }
     }
 
     #[test]
     fn missing_required_arg_errors() {
         assert!(build_request("get_block", &json!({})).is_err());
-        assert!(build_request("save_page", &json!({"page": "a.md"})).is_err());
+        assert!(build_request("create_block", &json!({})).is_err());
     }
 
     #[test]

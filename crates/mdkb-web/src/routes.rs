@@ -1,20 +1,19 @@
-//! Route handling for the web UI.
+//! Route handling for the web UI (block-centric).
 //!
 //! Routes call a [`Backend`] (the daemon, in production) and render via the shared
-//! `mdkb-view` layer. The `Backend` seam keeps routing testable with a mock and means the
-//! UI shares the *exact* presentation path with any other front-end.
+//! `mdkb-view` layer, so the UI shares the *exact* presentation path with every other
+//! front-end. A block is the unit: `/block/<id>` renders a block with its children expanded.
 
-use mdkb_view::{page_document, search_results_html, ResultRow};
+use mdkb_view::{page_document, search_results_html, NavEntry, ResultRow};
 
 use crate::http::{HttpRequest, HttpResponse};
 
-/// The data operations the web UI needs from the daemon. Implemented for the real client in
-/// `main`; mocked in tests.
+/// The data operations the web UI needs from the daemon.
 pub trait Backend {
-    /// List page paths.
-    fn list_pages(&self) -> Result<Vec<String>, String>;
-    /// Render a page (transclusions resolved) to Markdown.
-    fn render_page(&self, page: &str) -> Result<Option<String>, String>;
+    /// Sidebar entries (root blocks): `(id, title)`.
+    fn nav_entries(&self) -> Result<Vec<NavEntry>, String>;
+    /// Render a block (children resolved) to Markdown; also returns its display title.
+    fn render_block(&self, id: &str) -> Result<Option<(String, String)>, String>;
     /// Search, returning display rows.
     fn search(&self, query: &str) -> Result<Vec<ResultRow>, String>;
 }
@@ -30,35 +29,38 @@ pub fn handle(backend: &dyn Backend, req: &HttpRequest) -> HttpResponse {
             backend,
             req.query.get("q").map(String::as_str).unwrap_or(""),
         ),
-        p if p.starts_with("/page/") => page(backend, &p["/page/".len()..]),
+        p if p.starts_with("/block/") => block(backend, &p["/block/".len()..]),
         _ => HttpResponse::not_found(shell(backend, "Not found", &error_page("Not found"), "")),
     }
 }
 
 fn home(backend: &dyn Backend) -> HttpResponse {
-    match backend.list_pages() {
-        Ok(pages) if !pages.is_empty() => HttpResponse::redirect(&format!("/page/{}", pages[0])),
+    match backend.nav_entries() {
+        Ok(entries) if !entries.is_empty() => {
+            HttpResponse::redirect(&format!("/block/{}", entries[0].id))
+        }
         Ok(_) => HttpResponse::html(shell(
             backend,
             "mdkb",
-            "<h1>mdkb</h1><p class=\"muted\">No pages yet.</p>",
+            "<h1>mdkb</h1><p class=\"muted\">No blocks yet.</p>",
             "",
         )),
         Err(e) => HttpResponse::html(shell(backend, "mdkb", &error_page(&e), "")),
     }
 }
 
-fn page(backend: &dyn Backend, path: &str) -> HttpResponse {
-    match backend.render_page(path) {
-        Ok(Some(md)) => {
-            let title = mdkb_view::page_title(path);
-            let body = mdkb_view::markdown_to_html(&md);
-            HttpResponse::html(shell(backend, &title, &body, path))
+fn block(backend: &dyn Backend, id: &str) -> HttpResponse {
+    match backend.render_block(id) {
+        Ok(Some((title, md))) => {
+            // Map the shared `mdkb:` reference scheme onto `/block/` routes so wiki links and
+            // embed-card headers navigate.
+            let body = mdkb_view::rewrite_mdkb_links(&mdkb_view::markdown_to_html(&md), "/block/");
+            HttpResponse::html(shell(backend, &title, &body, id))
         }
         Ok(None) => HttpResponse::not_found(shell(
             backend,
             "Not found",
-            &error_page(&format!("Page not found: {path}")),
+            &error_page(&format!("Block not found: {id}")),
             "",
         )),
         Err(e) => HttpResponse::html(shell(backend, "Error", &error_page(&e), "")),
@@ -83,10 +85,10 @@ fn search(backend: &dyn Backend, query: &str) -> HttpResponse {
     }
 }
 
-/// Wrap a body in the full document, fetching the page list for the sidebar.
+/// Wrap a body in the full document, fetching the sidebar entries.
 fn shell(backend: &dyn Backend, title: &str, body: &str, active: &str) -> String {
-    let pages = backend.list_pages().unwrap_or_default();
-    page_document(title, body, &pages, active)
+    let entries = backend.nav_entries().unwrap_or_default();
+    page_document(title, body, &entries, active)
 }
 
 fn error_page(msg: &str) -> String {
@@ -102,25 +104,34 @@ mod tests {
     use std::collections::HashMap;
 
     struct MockBackend {
-        pages: Vec<String>,
+        blocks: Vec<(String, String)>, // (id, title)
     }
 
     impl Backend for MockBackend {
-        fn list_pages(&self) -> Result<Vec<String>, String> {
-            Ok(self.pages.clone())
+        fn nav_entries(&self) -> Result<Vec<NavEntry>, String> {
+            Ok(self
+                .blocks
+                .iter()
+                .map(|(id, title)| NavEntry {
+                    id: id.clone(),
+                    title: title.clone(),
+                })
+                .collect())
         }
-        fn render_page(&self, page: &str) -> Result<Option<String>, String> {
-            if self.pages.iter().any(|p| p == page) {
-                Ok(Some(format!("# {page}\n\nbody of {page}\n")))
-            } else {
-                Ok(None)
+        fn render_block(&self, id: &str) -> Result<Option<(String, String)>, String> {
+            match self.blocks.iter().find(|(bid, _)| bid == id) {
+                Some((_, title)) => Ok(Some((
+                    title.clone(),
+                    format!("# {title}\n\nbody of {id}\n"),
+                ))),
+                None => Ok(None),
             }
         }
         fn search(&self, query: &str) -> Result<Vec<ResultRow>, String> {
             Ok(vec![ResultRow {
-                page_path: "notes/arch.md".into(),
                 id: "x".into(),
-                lineage: vec!["Top".into()],
+                title: "Arch".into(),
+                tags: vec!["top".into()],
                 content: format!("a block matching {query}"),
             }])
         }
@@ -136,31 +147,33 @@ mod tests {
 
     fn backend() -> MockBackend {
         MockBackend {
-            pages: vec!["notes/arch.md".into(), "queries.md".into()],
+            blocks: vec![
+                ("01AAA".into(), "Arch".into()),
+                ("01BBB".into(), "Queries".into()),
+            ],
         }
     }
 
     #[test]
-    fn home_redirects_to_first_page() {
+    fn home_redirects_to_first_block() {
         let r = handle(&backend(), &req("/"));
         assert_eq!(r.status, 302);
-        assert_eq!(r.location.as_deref(), Some("/page/notes/arch.md"));
+        assert_eq!(r.location.as_deref(), Some("/block/01AAA"));
     }
 
     #[test]
-    fn page_renders_markdown_into_document() {
-        let r = handle(&backend(), &req("/page/queries.md"));
+    fn block_renders_markdown_into_document() {
+        let r = handle(&backend(), &req("/block/01BBB"));
         let body = String::from_utf8_lossy(&r.body);
         assert_eq!(r.status, 200);
         assert!(body.contains("<!DOCTYPE html>"));
-        assert!(body.contains("body of queries.md"));
-        // Sidebar + active highlight.
+        assert!(body.contains("body of 01BBB"));
         assert!(body.contains("class=\"active\""));
     }
 
     #[test]
-    fn missing_page_is_404() {
-        let r = handle(&backend(), &req("/page/nope.md"));
+    fn missing_block_is_404() {
+        let r = handle(&backend(), &req("/block/nope"));
         assert_eq!(r.status, 404);
     }
 
@@ -171,7 +184,7 @@ mod tests {
         let r = handle(&backend(), &request);
         let body = String::from_utf8_lossy(&r.body);
         assert!(body.contains("matching restart"));
-        assert!(body.contains("href=\"/page/notes/arch.md\""));
+        assert!(body.contains("href=\"/block/x\""));
     }
 
     #[test]

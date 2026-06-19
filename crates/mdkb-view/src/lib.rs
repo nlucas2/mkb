@@ -49,25 +49,68 @@ pub fn markdown_to_html(markdown: &str) -> String {
     });
     let mut out = String::new();
     html::push_html(&mut out, parser);
-    out
+    decorate_wiki(out)
 }
 
-/// Derive a human page title from a vault-relative path (file stem, dashes→spaces).
-pub fn page_title(path: &str) -> String {
-    let file = path.rsplit('/').next().unwrap_or(path);
-    let stem = file.strip_suffix(".md").unwrap_or(file);
-    stem.replace(['-', '_'], " ")
+/// Post-process rendered HTML to make mdkb wiki structure visible and stylable:
+///
+/// - `mdkb:` reference links become `<a class="wikilink" …>` chips (dangling ones also get
+///   `unresolved`), so a UI can style and intercept navigation on them;
+/// - the embed-card sentinel (`⧉` as the first content of a blockquote, emitted by
+///   `mdkb_core::render`) tags that blockquote `class="mdkb-embed"`, so transclusions render
+///   as framed "live mirror" cards rather than ordinary quotes.
+///
+/// This is a pure string pass keyed on markers the core renderer controls, so both the web
+/// and desktop UIs get identical wiki styling from the one shared renderer.
+fn decorate_wiki(html: String) -> String {
+    html.replace(
+        "<a href=\"mdkb:?unresolved\"",
+        "<a class=\"wikilink unresolved\" href=\"mdkb:?unresolved\"",
+    )
+    .replace("<a href=\"mdkb:", "<a class=\"wikilink\" href=\"mdkb:")
+    .replace(
+        "<blockquote>\n<p>⧉",
+        "<blockquote class=\"mdkb-embed\">\n<p>⧉",
+    )
+}
+
+/// Rewrite the shared `mdkb:` link scheme onto a concrete navigation base for a client that
+/// uses plain hyperlinks (e.g. the web UI's `/page/<path>` routes). `mdkb:<path>#<id>` becomes
+/// `<base><path>#<id>`; the unresolved sentinel is left inert (`#`). Clients that intercept
+/// clicks in JS (the desktop shell) can ignore this and parse `mdkb:` directly.
+pub fn rewrite_mdkb_links(html: &str, base: &str) -> String {
+    html.replace(
+        "href=\"mdkb:?unresolved\"",
+        "href=\"#\" aria-disabled=\"true\"",
+    )
+    .replace("href=\"mdkb:", &format!("href=\"{base}"))
+}
+
+/// Derive a human display title for a block from an optional title and a content snippet.
+pub fn block_title(title: Option<&str>, content: &str) -> String {
+    if let Some(t) = title {
+        if !t.trim().is_empty() {
+            return t.trim().to_string();
+        }
+    }
+    for line in content.lines() {
+        let t = line.trim().trim_start_matches('#').trim();
+        if !t.is_empty() {
+            return t.replace(['*', '_', '`'], "").chars().take(80).collect();
+        }
+    }
+    "(untitled)".to_string()
 }
 
 /// A single search result row for display.
 pub struct ResultRow {
-    /// Page path the block lives on.
-    pub page_path: String,
     /// Block id.
     pub id: String,
-    /// Lineage breadcrumb (heading path).
-    pub lineage: Vec<String>,
-    /// Raw block content (will be escaped).
+    /// Block display title.
+    pub title: String,
+    /// Tag names (shown as chips).
+    pub tags: Vec<String>,
+    /// Block content (will be escaped, previewed).
     pub content: String,
 }
 
@@ -85,18 +128,18 @@ pub fn search_results_html(query: &str, rows: &[ResultRow]) -> String {
     out.push_str("<ul class=\"results\">");
     for r in rows {
         let preview: String = r.content.replace('\n', " ").chars().take(160).collect();
-        let crumb = if r.lineage.is_empty() {
+        let crumb = if r.tags.is_empty() {
             String::new()
         } else {
             format!(
                 "<span class=\"crumb\">{}</span>",
-                escape_html(&r.lineage.join(" › "))
+                escape_html(&r.tags.join(" · "))
             )
         };
         out.push_str(&format!(
-            "<li><a href=\"/page/{}\">{}</a>{}<div class=\"preview\">{}</div></li>",
-            escape_html(&r.page_path),
-            escape_html(&page_title(&r.page_path)),
+            "<li><a href=\"/block/{}\">{}</a>{}<div class=\"preview\">{}</div></li>",
+            escape_html(&r.id),
+            escape_html(&r.title),
             crumb,
             escape_html(&preview)
         ));
@@ -105,20 +148,32 @@ pub fn search_results_html(query: &str, rows: &[ResultRow]) -> String {
     out
 }
 
-/// Wrap a body fragment in the full mdkb HTML document: a sidebar of pages plus a search
-/// box and the main content. `active` highlights the current page (empty for none).
-pub fn page_document(title: &str, body_html: &str, pages: &[String], active: &str) -> String {
+/// A sidebar entry: a block id + its display title.
+pub struct NavEntry {
+    /// Block id.
+    pub id: String,
+    /// Display title.
+    pub title: String,
+}
+
+/// Wrap a body fragment in the full mdkb HTML document: a sidebar of blocks plus a search box
+/// and the main content. `active` highlights the current block id (empty for none).
+pub fn page_document(title: &str, body_html: &str, entries: &[NavEntry], active: &str) -> String {
     let mut nav = String::from(
         "<nav><form action=\"/search\" method=\"get\">\
         <input type=\"search\" name=\"q\" placeholder=\"Search…\" autofocus></form><ul>",
     );
-    for p in pages {
-        let cls = if p == active { " class=\"active\"" } else { "" };
+    for e in entries {
+        let cls = if e.id == active {
+            " class=\"active\""
+        } else {
+            ""
+        };
         nav.push_str(&format!(
-            "<li{}><a href=\"/page/{}\">{}</a></li>",
+            "<li{}><a href=\"/block/{}\">{}</a></li>",
             cls,
-            escape_html(p),
-            escape_html(&page_title(p))
+            escape_html(&e.id),
+            escape_html(&e.title)
         ));
     }
     nav.push_str("</ul></nav>");
@@ -181,6 +236,43 @@ mod tests {
     }
 
     #[test]
+    fn wiki_reference_becomes_chip_link() {
+        // Mirrors what mdkb_core::render emits for a resolved `[[...]]` reference.
+        let html = markdown_to_html("see [ideas](mdkb:ideas.md) now");
+        assert!(
+            html.contains("<a class=\"wikilink\" href=\"mdkb:ideas.md\">ideas</a>"),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn unresolved_reference_is_marked() {
+        let html = markdown_to_html("see [ghost](mdkb:?unresolved) now");
+        assert!(
+            html.contains("class=\"wikilink unresolved\""),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn embed_card_blockquote_is_tagged() {
+        // Mirrors mdkb_core::render's embed card: a blockquote whose first content is `⧉`.
+        let html = markdown_to_html("> ⧉ [src](mdkb:src.md#01ABC)\n>\n> the body\n");
+        assert!(
+            html.contains("<blockquote class=\"mdkb-embed\">"),
+            "got: {html}"
+        );
+        assert!(html.contains("the body"));
+    }
+
+    #[test]
+    fn rewrite_mdkb_links_targets_web_routes() {
+        let html = "<a class=\"wikilink\" href=\"mdkb:ideas.md#01ABC\">ideas</a>";
+        let web = rewrite_mdkb_links(html, "/page/");
+        assert!(web.contains("href=\"/page/ideas.md#01ABC\""), "got: {web}");
+    }
+
+    #[test]
     fn code_fence_language_becomes_class() {
         let html = markdown_to_html("```kusto\nStormEvents | take 10\n```\n");
         assert!(html.contains("language-kusto"));
@@ -210,17 +302,27 @@ mod tests {
     }
 
     #[test]
-    fn page_title_humanises_path() {
-        assert_eq!(page_title("topic/useful-queries.md"), "useful queries");
-        assert_eq!(page_title("notes/arch_design.md"), "arch design");
+    fn block_title_prefers_title_then_first_line() {
+        assert_eq!(block_title(Some("Explicit"), "body"), "Explicit");
+        assert_eq!(block_title(None, "# Heading\n\nbody"), "Heading");
+        assert_eq!(block_title(Some("  "), "first line"), "first line");
     }
 
     #[test]
     fn document_includes_nav_and_active_highlight() {
-        let pages = vec!["a.md".to_string(), "b.md".to_string()];
-        let doc = page_document("T", "<p>hi</p>", &pages, "b.md");
+        let entries = vec![
+            NavEntry {
+                id: "a".into(),
+                title: "Alpha".into(),
+            },
+            NavEntry {
+                id: "b".into(),
+                title: "Beta".into(),
+            },
+        ];
+        let doc = page_document("T", "<p>hi</p>", &entries, "b");
         assert!(doc.contains("<!DOCTYPE html>"));
-        assert!(doc.contains("href=\"/page/a.md\""));
+        assert!(doc.contains("href=\"/block/a\""));
         assert!(doc.contains("class=\"active\""));
         assert!(doc.contains("<p>hi</p>"));
         assert!(doc.contains("action=\"/search\""));
@@ -229,15 +331,15 @@ mod tests {
     #[test]
     fn search_results_render_links_and_escape() {
         let rows = vec![ResultRow {
-            page_path: "n.md".into(),
             id: "x".into(),
-            lineage: vec!["Top".into()],
+            title: "Note".into(),
+            tags: vec!["top".into()],
             content: "a <dangerous> line".into(),
         }];
         let html = search_results_html("q", &rows);
-        assert!(html.contains("href=\"/page/n.md\""));
+        assert!(html.contains("href=\"/block/x\""));
         assert!(html.contains("&lt;dangerous&gt;"));
-        assert!(html.contains("Top"));
+        assert!(html.contains("top"));
     }
 
     #[test]

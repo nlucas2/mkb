@@ -11,9 +11,12 @@
 //! call sites (see plan Decision #9).
 
 use crate::id::BlockId;
-use crate::index::{BlockRecord, Index, IndexError, IndexStats, LinkRow, SearchHit, SearchQuery};
-use crate::render::render_page;
-use crate::sync::SyncEngine;
+use crate::index::{
+    block_links, link_graph, transclusion_reaches, BlockRecord, GraphData, Index, IndexError,
+    IndexStats, LinkOutcome, LinkRow, SearchHit, SearchQuery,
+};
+use crate::render::{render_block, rendered_block, RenderedBlock};
+use crate::sync::{SyncEngine, SyncReport};
 
 /// Who is making a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,7 +80,7 @@ impl RequestContext {
     }
 }
 
-/// The mdkb service: wraps a [`SyncEngine`] and exposes the deterministic API.
+/// The mdkb service: wraps a [`SyncEngine`] and exposes the deterministic block API.
 pub struct Service<I: Index> {
     engine: SyncEngine<I>,
 }
@@ -120,24 +123,44 @@ impl<I: Index> Service<I> {
         self.engine.index().block(id)
     }
 
-    /// Get the raw Markdown source of a page.
-    pub fn get_page_source(
+    /// The raw Markdown body of a block (for editing).
+    pub fn get_block_source(
         &self,
         ctx: &RequestContext,
-        page: &str,
+        id: &BlockId,
     ) -> Result<Option<String>, IndexError> {
         ctx.authorize(Capability::Read)?;
-        Ok(self.engine.vault().page(page).map(|p| p.doc.source.clone()))
+        Ok(self.engine.vault().block(id).map(|b| b.body.clone()))
     }
 
-    /// Render a page with all transclusions resolved.
-    pub fn render_page(
+    /// The block's optional title.
+    pub fn get_block_title(
         &self,
         ctx: &RequestContext,
-        page: &str,
+        id: &BlockId,
     ) -> Result<Option<String>, IndexError> {
         ctx.authorize(Capability::Read)?;
-        Ok(render_page(self.engine.vault(), page))
+        Ok(self.engine.vault().block(id).and_then(|b| b.title.clone()))
+    }
+
+    /// Render a block with all transclusions resolved (Markdown out).
+    pub fn render_block(
+        &self,
+        ctx: &RequestContext,
+        id: &BlockId,
+    ) -> Result<Option<String>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(render_block(self.engine.vault(), id))
+    }
+
+    /// Render a block as a [`RenderedBlock`] (raw + resolved Markdown).
+    pub fn rendered_block(
+        &self,
+        ctx: &RequestContext,
+        id: &BlockId,
+    ) -> Result<Option<RenderedBlock>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(rendered_block(self.engine.vault(), id))
     }
 
     /// Outgoing links from a block.
@@ -160,138 +183,163 @@ impl<I: Index> Service<I> {
         self.engine.index().backlinks(id)
     }
 
-    /// List page paths.
-    pub fn list_pages(&self, ctx: &RequestContext) -> Result<Vec<String>, IndexError> {
+    /// List all block ids (sorted).
+    pub fn list_blocks(&self, ctx: &RequestContext) -> Result<Vec<BlockId>, IndexError> {
         ctx.authorize(Capability::Read)?;
-        let mut pages = self.engine.page_paths();
-        pages.sort();
-        Ok(pages)
+        Ok(self.engine.vault().ids())
+    }
+
+    /// List root block ids (top-level entries; nothing transcludes them).
+    pub fn list_roots(&self, ctx: &RequestContext) -> Result<Vec<BlockId>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(self.engine.vault().roots())
     }
 
     /// Index statistics.
     pub fn stats(&self, ctx: &RequestContext) -> Result<IndexStats, IndexError> {
         ctx.authorize(Capability::Read)?;
-        self.engine.index().stats()
+        let mut s = self.engine.index().stats()?;
+        s.roots = self.engine.vault().roots().len();
+        Ok(s)
+    }
+
+    /// The block-level knowledge graph.
+    pub fn graph(&self, ctx: &RequestContext) -> Result<GraphData, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(link_graph(self.engine.vault()))
+    }
+
+    /// All link rows in the vault that are dangling (unresolved target) — for the health view.
+    pub fn dangling_links(&self, ctx: &RequestContext) -> Result<Vec<LinkRow>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        let vault = self.engine.vault();
+        let mut out = Vec::new();
+        for block in vault.blocks() {
+            for row in block_links(vault, block) {
+                if row.target_id.is_none() {
+                    out.push(row);
+                }
+            }
+        }
+        Ok(out)
     }
 
     // ----- writes -----
 
-    /// Upsert a block: if `id` is given, replace that block's text; otherwise append a new
-    /// block to `page` (creating the page if needed). Returns the affected block id.
-    pub fn upsert_block(
+    /// Create a new block (optional title + body). Returns the new id.
+    pub fn create_block(
         &mut self,
         ctx: &RequestContext,
-        id: Option<BlockId>,
-        text: &str,
-        page: Option<&str>,
+        title: Option<&str>,
+        body: &str,
     ) -> Result<BlockId, IndexError> {
         ctx.authorize(Capability::Write)?;
-        match id {
-            Some(id) => {
-                let ok = self.engine.update_block(&id, text)?;
-                if ok {
-                    Ok(id)
-                } else {
-                    Err(IndexError::new(format!("unknown block id: {id}")))
-                }
-            }
-            None => {
-                let page = page.ok_or_else(|| {
-                    IndexError::new("upsert_block requires a page when no id is given")
-                })?;
-                self.engine.append_block(page, text)
-            }
-        }
+        self.engine.create_block(title, body)
     }
 
-    /// Save a whole page (create or overwrite) from raw Markdown.
-    pub fn save_page(
+    /// Overwrite a block's title + body.
+    pub fn update_block(
         &mut self,
         ctx: &RequestContext,
-        page: &str,
-        source: &str,
+        id: &BlockId,
+        title: Option<&str>,
+        body: &str,
     ) -> Result<(), IndexError> {
         ctx.authorize(Capability::Write)?;
-        self.engine.save_page(page, source)
+        self.engine.update_block(id, title, body)
     }
 
-    /// Delete a page (file + index).
-    pub fn delete_page(&mut self, ctx: &RequestContext, page: &str) -> Result<(), IndexError> {
+    /// Delete a block (file + index).
+    pub fn delete_block(&mut self, ctx: &RequestContext, id: &BlockId) -> Result<(), IndexError> {
         ctx.authorize(Capability::Write)?;
-        self.engine.delete_page(page)
+        self.engine.delete_block(id)
     }
 
-    /// Create a link or transclusion from `source_id` to a target, by appending the wiki
-    /// directive to the source block's text. `embed = true` writes `![[...]]`
-    /// (transclusion); `false` writes `[[...]]` (reference).
+    /// Carve a new child block out of an existing block: the new block gets `body`, and a
+    /// `![[<newid>]]` directive is appended to the parent in place. Non-destructive: the
+    /// parent's other content is untouched. Returns the new child id.
+    pub fn carve_block(
+        &mut self,
+        ctx: &RequestContext,
+        parent_id: &BlockId,
+        title: Option<&str>,
+        body: &str,
+    ) -> Result<BlockId, IndexError> {
+        ctx.authorize(Capability::Write)?;
+        if self.engine.vault().block(parent_id).is_none() {
+            return Err(IndexError::new(format!("unknown block: {parent_id}")));
+        }
+        let child = self.engine.create_block(title, body)?;
+        self.engine
+            .append_to_body(parent_id, &format!("![[{child}]]"))?;
+        Ok(child)
+    }
+
+    /// Link or embed `source_id` to `target_id`. `embed = true` appends `![[target]]`,
+    /// `false` appends `[[target]]`.
+    ///
+    /// If an **embed** would create a transclusion cycle (the target already transcludes its
+    /// way back to the source, or is the source itself), it is **downgraded** to a plain
+    /// `[[reference]]` — the link is still made, it just won't recurse. The returned
+    /// [`LinkOutcome`] reports whether a downgrade happened. References are never cycle-checked.
     pub fn link_blocks(
         &mut self,
         ctx: &RequestContext,
         source_id: &BlockId,
-        target_page: Option<&str>,
-        target_id: Option<&BlockId>,
-        target_anchor: Option<&str>,
+        target_id: &BlockId,
         embed: bool,
-    ) -> Result<(), IndexError> {
+    ) -> Result<LinkOutcome, IndexError> {
         ctx.authorize(Capability::Write)?;
-        let current = self
-            .engine
-            .index()
-            .block(source_id)?
-            .ok_or_else(|| IndexError::new(format!("unknown source block: {source_id}")))?;
-        let directive = build_directive(target_page, target_id, target_anchor, embed)?;
-        let new_text = format!("{}\n\n{}", current.content.trim_end(), directive);
-        self.engine.update_block(source_id, &new_text)?;
-        Ok(())
+        if self.engine.vault().block(source_id).is_none() {
+            return Err(IndexError::new(format!(
+                "unknown source block: {source_id}"
+            )));
+        }
+        if self.engine.vault().block(target_id).is_none() {
+            return Err(IndexError::new(format!(
+                "unknown target block: {target_id}"
+            )));
+        }
+
+        let mut effective_embed = embed;
+        if embed
+            && (source_id == target_id
+                || transclusion_reaches(self.engine.vault(), target_id, source_id))
+        {
+            effective_embed = false;
+        }
+
+        let directive = if effective_embed {
+            format!("![[{target_id}]]")
+        } else {
+            format!("[[{target_id}]]")
+        };
+        self.engine.append_to_body(source_id, &directive)?;
+
+        Ok(match (embed, effective_embed) {
+            (false, _) => LinkOutcome::Reference,
+            (true, true) => LinkOutcome::Transclusion,
+            (true, false) => LinkOutcome::DowngradedToReference,
+        })
     }
 
-    /// Reconcile the vault directory with the index (used on startup and by the watcher).
-    pub fn reconcile(
-        &mut self,
-        ctx: &RequestContext,
-    ) -> Result<crate::sync::SyncReport, IndexError> {
+    /// Reconcile the `blocks/` directory with the index (startup + watcher).
+    pub fn reconcile(&mut self, ctx: &RequestContext) -> Result<SyncReport, IndexError> {
         ctx.authorize(Capability::Write)?;
         self.engine.reconcile()
     }
 
-    /// Rebuild the entire index from the vault files (clear + re-ingest everything).
-    pub fn rebuild(&mut self, ctx: &RequestContext) -> Result<crate::sync::SyncReport, IndexError> {
+    /// Rebuild the entire index from the block files.
+    pub fn rebuild(&mut self, ctx: &RequestContext) -> Result<SyncReport, IndexError> {
         ctx.authorize(Capability::Write)?;
         self.engine.rebuild()
     }
 
-    /// Cloud-sync conflict files detected at the last reconcile (surfaced, not indexed).
+    /// Cloud-sync conflict files detected at the last reconcile.
     pub fn conflicts(&self, ctx: &RequestContext) -> Result<Vec<String>, IndexError> {
         ctx.authorize(Capability::Read)?;
         Ok(self.engine.conflicts().to_vec())
     }
-}
-
-fn build_directive(
-    page: Option<&str>,
-    id: Option<&BlockId>,
-    anchor: Option<&str>,
-    embed: bool,
-) -> Result<String, IndexError> {
-    let mut inner = String::new();
-    if let Some(p) = page {
-        inner.push_str(p.strip_suffix(".md").unwrap_or(p));
-    }
-    let anchor_str = id
-        .map(|i| i.to_string())
-        .or_else(|| anchor.map(|a| a.to_string()));
-    if let Some(a) = anchor_str {
-        inner.push('#');
-        inner.push_str(&a);
-    }
-    if inner.is_empty() {
-        return Err(IndexError::new("link target is empty"));
-    }
-    Ok(if embed {
-        format!("![[{inner}]]")
-    } else {
-        format!("[[{inner}]]")
-    })
 }
 
 #[cfg(test)]
@@ -301,55 +349,116 @@ mod tests {
     use crate::SyncEngine;
 
     fn service(root: &std::path::Path) -> Service<MemIndex> {
-        let engine = SyncEngine::new(root, MemIndex::default());
-        Service::new(engine)
+        Service::new(SyncEngine::new(root, MemIndex::default()))
     }
 
     #[test]
-    fn write_then_read_round_trip() {
+    fn create_update_render_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let mut svc = service(dir.path());
         let ctx = RequestContext::local();
 
-        // Create a page with a block.
         let id = svc
-            .upsert_block(&ctx, None, "the original query", Some("queries.md"))
-            .unwrap();
-        assert!(dir.path().join("queries.md").exists());
-
-        // Read it back.
-        let block = svc.get_block(&ctx, &id).unwrap().unwrap();
-        assert_eq!(block.content, "the original query");
-
-        // Update in place.
-        svc.upsert_block(&ctx, Some(id.clone()), "the updated query", None)
+            .create_block(&ctx, Some("Note"), "original body")
             .unwrap();
         assert_eq!(
             svc.get_block(&ctx, &id).unwrap().unwrap().content,
-            "the updated query"
+            "original body"
+        );
+        svc.update_block(&ctx, &id, Some("Note"), "updated body")
+            .unwrap();
+        assert_eq!(
+            svc.get_block_source(&ctx, &id).unwrap().unwrap(),
+            "updated body"
         );
     }
 
     #[test]
-    fn link_blocks_creates_transclusion_reflected_in_render() {
+    fn carve_creates_child_and_links_parent() {
         let dir = tempfile::tempdir().unwrap();
         let mut svc = service(dir.path());
         let ctx = RequestContext::local();
+        let parent = svc.create_block(&ctx, Some("Guide"), "intro").unwrap();
+        let child = svc
+            .carve_block(&ctx, &parent, Some("Shared step"), "do the thing")
+            .unwrap();
+        // Parent now embeds the child; rendering pulls the child content.
+        let rendered = svc.render_block(&ctx, &parent).unwrap().unwrap();
+        assert!(rendered.contains("do the thing"), "got: {rendered}");
+        assert!(svc.engine().vault().children(&parent).contains(&child));
+    }
 
-        let qid = svc
-            .upsert_block(&ctx, None, "StormEvents | take 10", Some("queries.md"))
+    #[test]
+    fn link_embed_reflects_in_render() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let q = svc
+            .create_block(&ctx, Some("Q"), "StormEvents | take 10")
             .unwrap();
         let host = svc
-            .upsert_block(&ctx, None, "Project notes:", Some("project.md"))
+            .create_block(&ctx, Some("Host"), "Project notes:")
             .unwrap();
-
-        // Link project block -> query block as an embed.
-        svc.link_blocks(&ctx, &host, Some("queries.md"), Some(&qid), None, true)
-            .unwrap();
-
-        // Rendering the project page inlines the transcluded query.
-        let rendered = svc.render_page(&ctx, "project.md").unwrap().unwrap();
+        assert_eq!(
+            svc.link_blocks(&ctx, &host, &q, true).unwrap(),
+            LinkOutcome::Transclusion
+        );
+        let rendered = svc.render_block(&ctx, &host).unwrap().unwrap();
         assert!(rendered.contains("StormEvents | take 10"));
+    }
+
+    #[test]
+    fn embed_that_would_cycle_is_downgraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let a = svc.create_block(&ctx, Some("A"), "block a").unwrap();
+        let b = svc.create_block(&ctx, Some("B"), "block b").unwrap();
+        // A embeds B.
+        assert_eq!(
+            svc.link_blocks(&ctx, &a, &b, true).unwrap(),
+            LinkOutcome::Transclusion
+        );
+        // B embedding A would cycle -> downgraded to a reference.
+        assert_eq!(
+            svc.link_blocks(&ctx, &b, &a, true).unwrap(),
+            LinkOutcome::DowngradedToReference
+        );
+        let b_src = svc.get_block_source(&ctx, &b).unwrap().unwrap();
+        assert!(b_src.contains(&format!("[[{a}]]")));
+        assert!(!b_src.contains(&format!("![[{a}]]")));
+        // Render still terminates.
+        assert!(svc.render_block(&ctx, &a).unwrap().is_some());
+        assert!(svc.render_block(&ctx, &b).unwrap().is_some());
+    }
+
+    #[test]
+    fn self_embed_is_downgraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let a = svc.create_block(&ctx, None, "note").unwrap();
+        assert_eq!(
+            svc.link_blocks(&ctx, &a, &a, true).unwrap(),
+            LinkOutcome::DowngradedToReference
+        );
+    }
+
+    #[test]
+    fn reference_cycle_is_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let a = svc.create_block(&ctx, None, "A").unwrap();
+        let b = svc.create_block(&ctx, None, "B").unwrap();
+        assert_eq!(
+            svc.link_blocks(&ctx, &a, &b, false).unwrap(),
+            LinkOutcome::Reference
+        );
+        assert_eq!(
+            svc.link_blocks(&ctx, &b, &a, false).unwrap(),
+            LinkOutcome::Reference
+        );
     }
 
     #[test]
@@ -358,20 +467,19 @@ mod tests {
         let svc = service(dir.path());
         let ctx = RequestContext::remote("agent-7");
         assert!(
-            svc.list_pages(&ctx).is_err(),
+            svc.list_blocks(&ctx).is_err(),
             "remote callers must fail closed"
         );
     }
 
     #[test]
-    fn delete_page_removes_file_and_index() {
+    fn delete_removes_block() {
         let dir = tempfile::tempdir().unwrap();
         let mut svc = service(dir.path());
         let ctx = RequestContext::local();
-        svc.save_page(&ctx, "a.md", "hello\n").unwrap();
-        assert_eq!(svc.stats(&ctx).unwrap().pages, 1);
-        svc.delete_page(&ctx, "a.md").unwrap();
-        assert_eq!(svc.stats(&ctx).unwrap().pages, 0);
-        assert!(!dir.path().join("a.md").exists());
+        let id = svc.create_block(&ctx, None, "x").unwrap();
+        assert_eq!(svc.stats(&ctx).unwrap().blocks, 1);
+        svc.delete_block(&ctx, &id).unwrap();
+        assert_eq!(svc.stats(&ctx).unwrap().blocks, 0);
     }
 }

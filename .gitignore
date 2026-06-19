@@ -9,6 +9,8 @@
 app/**/node_modules/
 app/**/dist/
 src-tauri/target/
+# Staged daemon binary bundled into the desktop app at build time (rebuilt, never committed)
+app/mdkb-tauri/src-tauri/bin/
 
 # OS
 .DS_Store
@@ -16,3 +18,5 @@ Thumbs.db
 
 # fastembed's local model cache (created by ad-hoc runs; never committed)
 .fastembed_cache/
+app/mdkb-tauri/src-tauri/target/
+app/mdkb-tauri/src-tauri/gen/

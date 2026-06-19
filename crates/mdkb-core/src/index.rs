@@ -1,68 +1,90 @@
-//! The search index contract.
+//! The search index contract (storage-agnostic) plus shared record/query/graph types.
 //!
-//! This module defines the **storage-agnostic** index interface plus the owned record,
-//! query, and hit types. Concrete engines (e.g. the SQLite + FTS5 + sqlite-vec impl in the
-//! `mdkb-index` crate) implement [`Index`]; everything else programs against the trait so
-//! the engine can be swapped without touching callers (see `AGENTS.md`).
-//!
-//! Pure ranking helpers (hybrid fusion of keyword + vector scores) live here so that logic
-//! is shared, not reimplemented per engine.
+//! Concrete engines (the SQLite + FTS5 impl in `mdkb-index`) implement [`Index`]; everything
+//! else programs against the trait so the engine can be swapped (see `AGENTS.md`). Pure
+//! ranking, graph, and reachability helpers live here so that logic is shared, not
+//! reimplemented per engine. The unit everywhere is the **block** (one file).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
 use crate::block::Block;
 use crate::id::BlockId;
-use crate::link::{extract_references, Anchor};
-use crate::vault::{Page, Vault};
+use crate::vault::Vault;
 
-/// An owned, index-friendly snapshot of a block and the page it lives on.
+/// An owned, index-friendly snapshot of a block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockRecord {
-    /// Stable block id.
+    /// Stable block id (its filename stem).
     pub id: BlockId,
-    /// Vault-relative page path.
-    pub page_path: String,
-    /// Structural kind (see [`crate::block::BlockKind::kind_str`]).
-    pub kind: String,
-    /// Heading level, if applicable.
-    pub heading_level: Option<u8>,
-    /// Fence language, if a code block.
-    pub lang: Option<String>,
-    /// Heading lineage breadcrumb.
-    pub lineage: Vec<String>,
+    /// Optional human title.
+    pub title: Option<String>,
     /// Tag names attached to the block.
     pub tags: Vec<String>,
-    /// Raw block content.
+    /// Fenced-code languages in the block.
+    pub langs: Vec<String>,
+    /// The Markdown body (verbatim).
     pub content: String,
-    /// Lineage-prepended text used for embedding/search context.
+    /// Title-prepended plain text used for embedding/search context.
     pub contextual_text: String,
+    /// Number of resolved children (transclusions).
+    pub child_count: usize,
 }
 
 impl BlockRecord {
-    /// Build a record from a page path and a parsed block.
-    pub fn from_block(page_path: impl Into<String>, block: &Block) -> BlockRecord {
+    /// Build a record from a parsed block and its resolved child count.
+    pub fn from_block(block: &Block, child_count: usize) -> BlockRecord {
         BlockRecord {
             id: block.id.clone(),
-            page_path: page_path.into(),
-            kind: block.kind.kind_str().to_string(),
-            heading_level: block.kind.heading_level(),
-            lang: block.lang.clone(),
-            lineage: block.lineage.clone(),
+            title: block.title.clone(),
             tags: block.tag_names().iter().map(|s| s.to_string()).collect(),
-            content: block.content.clone(),
+            langs: block.langs.clone(),
+            content: block.body.clone(),
             contextual_text: block.contextual_text(),
+            child_count,
         }
     }
+
+    /// A short display title for this record.
+    pub fn display_title(&self) -> String {
+        if let Some(t) = &self.title {
+            if !t.trim().is_empty() {
+                return t.trim().to_string();
+            }
+        }
+        for line in self.content.lines() {
+            let t = line.trim().trim_start_matches('#').trim();
+            if !t.is_empty() {
+                let t: String = t.chars().take(80).collect();
+                return t;
+            }
+        }
+        self.id.to_string()
+    }
+}
+
+/// The result of a link/embed write — what was actually written. Reports when a requested
+/// transclusion was **downgraded** to a plain reference to avoid a cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum LinkOutcome {
+    /// A plain `[[reference]]` was written (as requested).
+    Reference,
+    /// A `![[transclusion]]` was written (as requested).
+    Transclusion,
+    /// A transclusion was requested but would have formed a cycle, so a plain `[[reference]]`
+    /// was written instead.
+    DowngradedToReference,
 }
 
 /// The relationship a link expresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LinkKind {
-    /// `![[...]]` — an embed/transclusion.
+    /// `![[...]]` — an embed/transclusion (a child edge).
     Transcludes,
     /// `[[...]]` — a plain reference.
     References,
@@ -78,18 +100,16 @@ impl LinkKind {
     }
 }
 
-/// A directed edge from one block to a target (resolved page path + optional block id).
+/// A directed edge from one block to another (resolved), or a dangling directive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LinkRow {
-    /// The block that contains the reference.
+    /// The block that contains the directive.
     pub source_id: BlockId,
-    /// Resolved target page path, if the page resolved.
-    pub target_page: Option<String>,
-    /// Target block id, if the anchor was an id (or resolved to one).
+    /// Resolved target block id, if the target resolved.
     pub target_id: Option<BlockId>,
-    /// Raw anchor text (heading text or id), if any.
-    pub target_anchor: Option<String>,
+    /// The raw target token (ULID or title) as written.
+    pub target: String,
     /// Embed vs plain reference.
     pub kind: LinkKind,
 }
@@ -101,19 +121,14 @@ pub struct LinkRow {
 pub struct SearchQuery {
     /// Full-text query (FTS). `None` matches everything (subject to filters).
     pub text: Option<String>,
-    /// Query embedding for semantic search. When present alongside `text`, results are
-    /// fused (keyword + vector) via reciprocal rank fusion.
+    /// Query embedding for semantic search; fused with keyword via RRF when both present.
     pub vector: Option<Vec<f32>>,
-    /// The embedding model that produced `vector`. When set, only stored vectors from the
-    /// same model are compared, so different embedding spaces (e.g. after an ONNX→hash
-    /// fallback) are never mixed into one ranking.
+    /// The embedding model that produced `vector`; only same-model vectors are compared.
     pub vector_model: Option<String>,
     /// Tags that must all be present (AND).
     pub tags: Vec<String>,
-    /// Required fence language (e.g. `kusto`).
+    /// Required fenced-code language.
     pub lang: Option<String>,
-    /// Restrict to a single page path.
-    pub page: Option<String>,
     /// Max results. `0` is treated as the default (50).
     pub limit: usize,
 }
@@ -151,10 +166,10 @@ pub struct SearchHit {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IndexStats {
-    /// Number of indexed pages.
-    pub pages: usize,
     /// Number of indexed blocks.
     pub blocks: usize,
+    /// Number of root blocks (not transcluded by anything).
+    pub roots: usize,
     /// Number of blocks with a stored embedding.
     pub embedded: usize,
 }
@@ -181,15 +196,13 @@ impl IndexError {
 /// Convenient result alias.
 pub type Result<T> = std::result::Result<T, IndexError>;
 
-/// The storage-agnostic search index.
+/// The storage-agnostic search index. The unit is the block (one file).
 pub trait Index {
-    /// Upsert every block of a page (plus its resolved outgoing `links`), removing any
-    /// blocks/links that no longer exist on it. Link rows are computed by the caller via
-    /// [`page_links`] so target resolution stays shared in core.
-    fn reindex_page(&mut self, page: &Page, links: &[LinkRow]) -> Result<()>;
+    /// Upsert a single block plus its resolved outgoing `links`.
+    fn reindex_block(&mut self, record: &BlockRecord, links: &[LinkRow]) -> Result<()>;
 
-    /// Remove a page and all its blocks from the index.
-    fn remove_page(&mut self, page_path: &str) -> Result<()>;
+    /// Remove a block (and its links) from the index.
+    fn remove_block(&mut self, id: &BlockId) -> Result<()>;
 
     /// Remove everything from the index.
     fn clear(&mut self) -> Result<()>;
@@ -203,99 +216,174 @@ pub trait Index {
     /// Outgoing links from a block.
     fn links_from(&self, id: &BlockId) -> Result<Vec<LinkRow>>;
 
-    /// Incoming references: blocks that link to (or transclude) the given block id.
+    /// Incoming references/transclusions of a block.
     fn backlinks(&self, id: &BlockId) -> Result<Vec<LinkRow>>;
 
     /// Index statistics.
     fn stats(&self) -> Result<IndexStats>;
 
-    /// Store (or replace) the embedding for a block, tagged with the `model_id` that
-    /// produced it. Default: a no-op for engines without vector support.
+    /// Store (or replace) the embedding for a block, tagged with the producing `model_id`.
     fn set_embedding(&mut self, _id: &BlockId, _model_id: &str, _vector: &[f32]) -> Result<()> {
         Ok(())
     }
 
-    /// Whether a block already has a stored embedding. Default: `false`.
+    /// Whether a block already has a stored embedding.
     fn has_embedding(&self, _id: &BlockId) -> Result<bool> {
         Ok(false)
     }
 
-    /// Rebuild the entire index from a vault (clear + reindex every page).
+    /// Rebuild the entire index from a vault (clear + reindex every block).
     fn rebuild(&mut self, vault: &Vault) -> Result<()> {
         self.clear()?;
-        for page in vault.pages() {
-            let links = page_links(vault, page);
-            self.reindex_page(page, &links)?;
+        for block in vault.blocks() {
+            let record = BlockRecord::from_block(block, vault.children(&block.id).len());
+            let links = block_links(vault, block);
+            self.reindex_block(&record, &links)?;
         }
         Ok(())
     }
 }
 
-/// Compute the resolved link rows for a page, given a vault for target resolution.
+/// Compute the resolved link rows for a block, given a vault for target resolution.
 ///
-/// Shared so every engine extracts edges identically. Heading anchors are resolved to a
-/// concrete block id when possible.
-pub fn page_links(vault: &Vault, page: &Page) -> Vec<LinkRow> {
-    let mut rows = Vec::new();
-    for block in &page.doc.blocks {
-        for r in extract_references(&block.content) {
-            let target_page_name = r.target.page.clone();
-            let resolved_page = match &target_page_name {
-                Some(name) => vault.page(name),
-                None => Some(page),
+/// Shared so every engine extracts edges identically. Each directive becomes one row;
+/// unresolved targets keep `target_id = None` (dangling) but are still recorded so the health
+/// view can surface them.
+pub fn block_links(vault: &Vault, block: &Block) -> Vec<LinkRow> {
+    block
+        .references()
+        .into_iter()
+        .map(|r| LinkRow {
+            source_id: block.id.clone(),
+            target_id: vault.resolve(&r.target),
+            target: r.target,
+            kind: if r.embed {
+                LinkKind::Transcludes
+            } else {
+                LinkKind::References
+            },
+        })
+        .collect()
+}
+
+// ---------- knowledge graph ----------
+
+/// A node in the knowledge graph (one per block).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GraphNode {
+    /// Block id.
+    pub id: BlockId,
+    /// Display title.
+    pub title: String,
+    /// Incoming edge weight (how often this block is linked to/transcluded).
+    pub in_degree: usize,
+    /// Outgoing edge weight.
+    pub out_degree: usize,
+    /// Whether this block is a root (nothing transcludes it).
+    pub root: bool,
+}
+
+/// A directed edge between two blocks in the knowledge graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GraphEdge {
+    /// Source block id.
+    pub source: BlockId,
+    /// Target block id.
+    pub target: BlockId,
+    /// Reference vs transclusion.
+    pub kind: LinkKind,
+}
+
+/// The whole vault rendered as a block-level link graph.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GraphData {
+    /// One node per block.
+    pub nodes: Vec<GraphNode>,
+    /// Directed edges between blocks (resolved only).
+    pub edges: Vec<GraphEdge>,
+}
+
+/// Build the block-level knowledge graph from the vault.
+pub fn link_graph(vault: &Vault) -> GraphData {
+    use std::collections::BTreeMap;
+
+    let mut nodes: BTreeMap<String, GraphNode> = BTreeMap::new();
+    for block in vault.blocks() {
+        nodes.insert(
+            block.id.as_str().to_string(),
+            GraphNode {
+                id: block.id.clone(),
+                title: block.display_title(),
+                in_degree: 0,
+                out_degree: 0,
+                root: false,
+            },
+        );
+    }
+
+    let mut edges = Vec::new();
+    for block in vault.blocks() {
+        for row in block_links(vault, block) {
+            let Some(target) = row.target_id else {
+                continue;
             };
-            let (target_page, target_id, target_anchor) = match (&r.target.anchor, resolved_page) {
-                (Some(Anchor::Id(id)), rp) => (
-                    rp.map(|p| p.path.clone()),
-                    Some(id.clone()),
-                    Some(id.to_string()),
-                ),
-                (Some(Anchor::Heading(h)), Some(rp)) => {
-                    let id = rp
-                        .doc
-                        .blocks
-                        .iter()
-                        .find(|b| {
-                            b.kind.heading_level().is_some()
-                                && heading_label(&b.content).eq_ignore_ascii_case(h.trim())
-                        })
-                        .map(|b| b.id.clone());
-                    (Some(rp.path.clone()), id, Some(h.clone()))
-                }
-                (Some(Anchor::Heading(h)), None) => (None, None, Some(h.clone())),
-                (None, rp) => (rp.map(|p| p.path.clone()), None, None),
-            };
-            rows.push(LinkRow {
-                source_id: block.id.clone(),
-                target_page,
-                target_id,
-                target_anchor,
-                kind: if r.embed {
-                    LinkKind::Transcludes
-                } else {
-                    LinkKind::References
-                },
+            if target == block.id {
+                continue;
+            }
+            if let Some(n) = nodes.get_mut(block.id.as_str()) {
+                n.out_degree += 1;
+            }
+            if let Some(n) = nodes.get_mut(target.as_str()) {
+                n.in_degree += 1;
+            }
+            edges.push(GraphEdge {
+                source: block.id.clone(),
+                target,
+                kind: row.kind,
             });
         }
     }
-    rows
+    for id in vault.roots() {
+        if let Some(n) = nodes.get_mut(id.as_str()) {
+            n.root = true;
+        }
+    }
+
+    GraphData {
+        nodes: nodes.into_values().collect(),
+        edges,
+    }
 }
 
-fn heading_label(content: &str) -> String {
-    content
-        .trim_start()
-        .trim_start_matches('#')
-        .trim()
-        .trim_end_matches('#')
-        .trim()
-        .to_string()
-}
-
-/// Fuse keyword and vector scores into a single ranking via Reciprocal Rank Fusion (RRF).
+/// Does `start` reach `goal` by following **transclusion** edges (transitively)?
 ///
-/// `keyword` and `vector` are each `(BlockId, rank_score)` lists already sorted best-first.
-/// RRF is robust to incomparable score scales (FTS rank vs cosine distance), which is why
-/// it is used instead of naive score addition. Returns ids sorted by fused score desc.
+/// This is the reachability test behind cycle *prevention*: creating an embed
+/// `source ![[target]]` would close a cycle iff `target` already transcludes its way back to
+/// `source`. References (`[[...]]`) are intentionally ignored — only embeds expand at render
+/// time, so only embeds can loop. A block trivially reaches itself.
+pub fn transclusion_reaches(vault: &Vault, start: &BlockId, goal: &BlockId) -> bool {
+    let mut stack = vec![start.clone()];
+    let mut seen = HashSet::new();
+    while let Some(id) = stack.pop() {
+        if &id == goal {
+            return true;
+        }
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        stack.extend(vault.children(&id));
+    }
+    false
+}
+
+/// Fuse keyword and vector rankings into one ordering via Reciprocal Rank Fusion (RRF).
+///
+/// `keyword` and `vector` are each `(BlockId, _)` lists already sorted best-first. RRF is
+/// robust to incomparable score scales (FTS rank vs cosine distance). Returns ids sorted by
+/// fused score desc.
 pub fn reciprocal_rank_fusion(
     keyword: &[BlockId],
     vector: &[BlockId],
@@ -313,105 +401,102 @@ pub fn reciprocal_rank_fusion(
     fused
 }
 
-/// A minimal in-memory [`Index`] for tests across the crate (no storage backend).
-#[cfg(test)]
-pub(crate) mod testing {
+/// In-memory [`Index`] for tests across the workspace.
+#[doc(hidden)]
+pub mod testing {
     use super::*;
     use std::collections::HashMap;
 
-    /// In-memory index: enough to exercise sync/service logic without SQLite.
+    /// A simple in-memory index: enough for unit tests, no FTS/vectors.
     #[derive(Default)]
-    pub(crate) struct MemIndex {
+    pub struct MemIndex {
         blocks: HashMap<BlockId, BlockRecord>,
-        page_blocks: HashMap<String, Vec<BlockId>>,
-        links: Vec<LinkRow>,
-        embeddings: HashMap<BlockId, Vec<f32>>,
+        links: HashMap<BlockId, Vec<LinkRow>>,
+        embeddings: HashMap<BlockId, (String, Vec<f32>)>,
     }
 
     impl Index for MemIndex {
-        fn reindex_page(&mut self, page: &Page, links: &[LinkRow]) -> Result<()> {
-            self.remove_page(&page.path)?;
-            let mut ids = Vec::new();
-            for b in &page.doc.blocks {
-                ids.push(b.id.clone());
-                self.blocks
-                    .insert(b.id.clone(), BlockRecord::from_block(&page.path, b));
-            }
-            self.page_blocks.insert(page.path.clone(), ids);
-            self.links.extend_from_slice(links);
+        fn reindex_block(&mut self, record: &BlockRecord, links: &[LinkRow]) -> Result<()> {
+            self.blocks.insert(record.id.clone(), record.clone());
+            self.links.insert(record.id.clone(), links.to_vec());
             Ok(())
         }
-        fn remove_page(&mut self, page_path: &str) -> Result<()> {
-            if let Some(ids) = self.page_blocks.remove(page_path) {
-                for id in &ids {
-                    self.blocks.remove(id);
-                    self.embeddings.remove(id);
-                }
-                self.links.retain(|l| !ids.contains(&l.source_id));
-            }
+
+        fn remove_block(&mut self, id: &BlockId) -> Result<()> {
+            self.blocks.remove(id);
+            self.links.remove(id);
+            self.embeddings.remove(id);
             Ok(())
         }
+
         fn clear(&mut self) -> Result<()> {
             self.blocks.clear();
-            self.page_blocks.clear();
             self.links.clear();
             self.embeddings.clear();
             Ok(())
         }
+
         fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>> {
-            // Substring keyword match; enough for tests.
+            let needle = query.text.as_deref().unwrap_or("").to_lowercase();
             let mut hits: Vec<SearchHit> = self
                 .blocks
                 .values()
-                .filter(|b| match &query.text {
-                    Some(t) => b.content.to_lowercase().contains(&t.to_lowercase()),
-                    None => true,
-                })
                 .filter(|b| {
-                    query
-                        .lang
-                        .as_ref()
-                        .is_none_or(|l| b.lang.as_deref() == Some(l))
+                    (needle.is_empty() || b.content.to_lowercase().contains(&needle))
+                        && query
+                            .tags
+                            .iter()
+                            .all(|t| b.tags.iter().any(|x| x.eq_ignore_ascii_case(t)))
+                        && query
+                            .lang
+                            .as_ref()
+                            .map(|l| b.langs.iter().any(|x| x.eq_ignore_ascii_case(l)))
+                            .unwrap_or(true)
                 })
-                .filter(|b| query.tags.iter().all(|t| b.tags.contains(t)))
                 .map(|b| SearchHit {
                     block: b.clone(),
                     score: 1.0,
                 })
                 .collect();
+            hits.sort_by(|a, b| a.block.id.as_str().cmp(b.block.id.as_str()));
             hits.truncate(query.effective_limit());
             Ok(hits)
         }
+
         fn block(&self, id: &BlockId) -> Result<Option<BlockRecord>> {
             Ok(self.blocks.get(id).cloned())
         }
+
         fn links_from(&self, id: &BlockId) -> Result<Vec<LinkRow>> {
-            Ok(self
-                .links
-                .iter()
-                .filter(|l| &l.source_id == id)
-                .cloned()
-                .collect())
+            Ok(self.links.get(id).cloned().unwrap_or_default())
         }
+
         fn backlinks(&self, id: &BlockId) -> Result<Vec<LinkRow>> {
-            Ok(self
-                .links
-                .iter()
-                .filter(|l| l.target_id.as_ref() == Some(id))
-                .cloned()
-                .collect())
+            let mut out = Vec::new();
+            for rows in self.links.values() {
+                for r in rows {
+                    if r.target_id.as_ref() == Some(id) {
+                        out.push(r.clone());
+                    }
+                }
+            }
+            Ok(out)
         }
+
         fn stats(&self) -> Result<IndexStats> {
             Ok(IndexStats {
-                pages: self.page_blocks.len(),
                 blocks: self.blocks.len(),
+                roots: 0,
                 embedded: self.embeddings.len(),
             })
         }
-        fn set_embedding(&mut self, id: &BlockId, _model_id: &str, vector: &[f32]) -> Result<()> {
-            self.embeddings.insert(id.clone(), vector.to_vec());
+
+        fn set_embedding(&mut self, id: &BlockId, model_id: &str, vector: &[f32]) -> Result<()> {
+            self.embeddings
+                .insert(id.clone(), (model_id.to_string(), vector.to_vec()));
             Ok(())
         }
+
         fn has_embedding(&self, id: &BlockId) -> Result<bool> {
             Ok(self.embeddings.contains_key(id))
         }
@@ -422,61 +507,75 @@ pub(crate) mod testing {
 mod tests {
     use super::*;
 
-    #[test]
-    fn block_record_carries_context() {
+    fn vault_with(blocks: &[(&str, &str)]) -> (Vault, Vec<BlockId>) {
         let mut v = Vault::new();
-        v.insert("a.md", "# H1\n\n## H2\n\nbody #tag here\n");
-        v.assign_ids();
-        let page = v.page("a").unwrap();
-        let body = page
-            .doc
-            .blocks
-            .iter()
-            .find(|b| b.content.contains("body"))
-            .unwrap();
-        let rec = BlockRecord::from_block(&page.path, body);
-        assert_eq!(rec.page_path, "a.md");
-        assert_eq!(rec.kind, "paragraph");
-        assert_eq!(rec.lineage, vec!["H1".to_string(), "H2".to_string()]);
-        assert!(rec.tags.contains(&"tag".to_string()));
-        assert!(rec.contextual_text.starts_with("H1 > H2"));
+        let mut ids = Vec::new();
+        for (_, src) in blocks {
+            let id = BlockId::generate();
+            v.insert_source(id.clone(), src);
+            ids.push(id);
+        }
+        (v, ids)
     }
 
     #[test]
-    fn page_links_resolves_targets() {
+    fn block_links_resolve_and_classify() {
         let mut v = Vault::new();
-        v.insert("src.md", "# Kusto Basics\n\nquery body\n");
-        v.assign_ids();
-        let qid = v
-            .page("src")
-            .unwrap()
-            .doc
-            .blocks
-            .iter()
-            .find(|b| b.content.contains("query body"))
-            .unwrap()
-            .id
-            .clone();
-        v.insert(
-            "dst.md",
-            format!("embed ![[src#{qid}]] and link [[src#Kusto Basics]]\n"),
+        let target = BlockId::generate();
+        let src = BlockId::generate();
+        v.insert_source(target.clone(), "---\ntitle: T\n---\nx\n");
+        v.insert_source(
+            src.clone(),
+            &format!("ref [[{target}]] embed ![[{target}]]\n"),
         );
-        v.assign_ids();
-        let dst = v.page("dst").unwrap();
-        let rows = page_links(&v, dst);
+        let rows = block_links(&v, v.block(&src).unwrap());
         assert_eq!(rows.len(), 2);
-        let embed = rows
+        assert!(rows
             .iter()
-            .find(|r| r.kind == LinkKind::Transcludes)
-            .unwrap();
-        assert_eq!(embed.target_page.as_deref(), Some("src.md"));
-        assert_eq!(embed.target_id.as_ref(), Some(&qid));
-        let link = rows
+            .any(|r| r.kind == LinkKind::References && r.target_id == Some(target.clone())));
+        assert!(rows
             .iter()
-            .find(|r| r.kind == LinkKind::References)
-            .unwrap();
-        // Heading anchor resolves to the heading block's id.
-        assert!(link.target_id.is_some());
+            .any(|r| r.kind == LinkKind::Transcludes && r.target_id == Some(target.clone())));
+    }
+
+    #[test]
+    fn dangling_target_is_recorded() {
+        let (v, ids) = vault_with(&[("a", "see [[ghost-block]]\n")]);
+        let rows = block_links(&v, v.block(&ids[0]).unwrap());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target_id, None);
+        assert_eq!(rows[0].target, "ghost-block");
+    }
+
+    #[test]
+    fn graph_counts_degrees_and_roots() {
+        let mut v = Vault::new();
+        let child = BlockId::generate();
+        let parent = BlockId::generate();
+        v.insert_source(child.clone(), "---\ntitle: Child\n---\nx\n");
+        v.insert_source(parent.clone(), &format!("![[{child}]]\n"));
+        let g = link_graph(&v);
+        assert_eq!(g.nodes.len(), 2);
+        let cn = g.nodes.iter().find(|n| n.id == child).unwrap();
+        assert_eq!(cn.in_degree, 1);
+        assert!(!cn.root);
+        let pn = g.nodes.iter().find(|n| n.id == parent).unwrap();
+        assert!(pn.root);
+        assert_eq!(pn.out_degree, 1);
+    }
+
+    #[test]
+    fn transclusion_reaches_follows_only_embeds() {
+        let mut v = Vault::new();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        v.insert_source(a.clone(), &format!("![[{b}]]\n"));
+        v.insert_source(b.clone(), "leaf\n");
+        assert!(transclusion_reaches(&v, &a, &b));
+        assert!(!transclusion_reaches(&v, &b, &a));
+        // A reference does NOT count as reachability.
+        v.insert_source(b.clone(), &format!("see [[{a}]]\n"));
+        assert!(!transclusion_reaches(&v, &b, &a));
     }
 
     #[test]
@@ -484,11 +583,10 @@ mod tests {
         let a = BlockId::generate();
         let b = BlockId::generate();
         let c = BlockId::generate();
-        // `a` ranks well in both lists; `b` only in keyword; `c` only in vector.
         let keyword = vec![a.clone(), b.clone()];
         let vector = vec![a.clone(), c.clone()];
         let fused = reciprocal_rank_fusion(&keyword, &vector, 60.0);
-        assert_eq!(fused[0].0, a, "block in both lists should rank first");
+        assert_eq!(fused[0].0, a);
         assert!(fused[0].1 > fused[1].1);
     }
 }

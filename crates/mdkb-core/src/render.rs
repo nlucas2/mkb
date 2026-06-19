@@ -1,250 +1,220 @@
-//! Transclusion resolver: render a page with `![[...]]` embeds inlined.
+//! Rendering a block to Markdown, with children (`![[...]]`) expanded and references
+//! (`[[...]]`) turned into navigable links.
 //!
-//! This is where "update a block once, every embed reflects it" actually happens — the
-//! referencing page stores only the directive, and the resolver pulls the *current* text
-//! of the target block at render time. Plain `[[...]]` links are rendered as their label.
-//! Cycles are detected and broken with a visible placeholder.
+//! This is where "edit a block once, every embed reflects it" happens — an embedding block
+//! stores only the directive; the resolver pulls the *current* content of the target block at
+//! render time, recursively (its whole subtree). The output is **Markdown** that makes the
+//! wiki structure visible (the whole point of mdkb):
+//!
+//! - `[[target]]` → a Markdown link `[label](mdkb:<id>)`; `mdkb-view` styles it as a wikilink
+//!   chip. Dangling targets link to `mdkb:?unresolved`.
+//! - `![[target]]` → a block-quoted **embed card** whose header links to the source block and
+//!   whose body is the live resolved content (recursively).
+//!
+//! Resolution is **total**: it never panics and never loops. A cycle renders up to the repeat
+//! and emits a navigable link + note; a missing/dangling target renders an inline note. One
+//! bad edge degrades locally; the rest of the block renders fine.
 
 use std::collections::HashSet;
 
-use crate::block::{Block, BlockKind};
+use crate::block::Block;
 use crate::id::BlockId;
-use crate::link::{extract_references, Anchor, LinkTarget};
-use crate::vault::{Page, Vault};
+use crate::link::extract_references;
+use crate::vault::Vault;
 
-/// Render a page to Markdown with all transclusions resolved.
-///
-/// Returns `None` if the page key does not resolve.
-pub fn render_page(vault: &Vault, page_key: &str) -> Option<String> {
-    let page = vault.page(page_key)?;
-    let mut visited = HashSet::new();
-    let rendered: Vec<String> = page
-        .doc
-        .blocks
-        .iter()
-        .map(|b| render_block(vault, page, b, &mut visited))
-        .collect();
-    Some(rendered.join("\n\n"))
+/// A block rendered for display: id + raw body (for editing) + resolved Markdown (for view).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RenderedBlock {
+    /// Stable block id.
+    pub id: BlockId,
+    /// Display title.
+    pub title: String,
+    /// Original block body, for round-trip editing.
+    pub raw: String,
+    /// Resolved Markdown for display (references → links, children → embed cards).
+    pub rendered: String,
 }
 
-/// Render a single block, resolving any references inside it.
-pub fn render_block(
-    vault: &Vault,
-    page: &Page,
-    block: &Block,
-    visited: &mut HashSet<BlockId>,
-) -> String {
-    // Code is rendered verbatim — references inside code are literal text.
-    if matches!(block.kind, BlockKind::CodeFence) {
-        return block.content.clone();
-    }
+/// Render a block (by id) to Markdown with its children expanded. Returns `None` if the id is
+/// unknown.
+pub fn render_block(vault: &Vault, id: &BlockId) -> Option<String> {
+    let block = vault.block(id)?;
+    let mut visited = HashSet::new();
+    visited.insert(id.clone());
+    Some(render_body(vault, block, &mut visited))
+}
 
-    let refs = extract_references(&block.content);
+/// Render a block as a [`RenderedBlock`] (raw + resolved).
+pub fn rendered_block(vault: &Vault, id: &BlockId) -> Option<RenderedBlock> {
+    let block = vault.block(id)?;
+    let mut visited = HashSet::new();
+    visited.insert(id.clone());
+    Some(RenderedBlock {
+        id: id.clone(),
+        title: block.display_title(),
+        raw: block.body.clone(),
+        rendered: render_body(vault, block, &mut visited),
+    })
+}
+
+/// Render a block's body: substitute each directive, recursing into children.
+fn render_body(vault: &Vault, block: &Block, visited: &mut HashSet<BlockId>) -> String {
+    let refs = extract_references(&block.body);
     if refs.is_empty() {
-        return block.content.clone();
+        return block.body.clone();
     }
-
     let mut out = String::new();
     let mut cursor = 0usize;
     for r in refs {
-        out.push_str(&block.content[cursor..r.span.start]);
+        out.push_str(&block.body[cursor..r.span.start]);
         if r.embed {
-            out.push_str(&resolve_embed(vault, page, &r.target, visited));
+            out.push_str(&resolve_embed(vault, &r.target, r.label(), visited));
         } else {
-            out.push_str(&r.target.label());
+            out.push_str(&render_reference(vault, &r.target, r.label()));
         }
         cursor = r.span.end;
     }
-    out.push_str(&block.content[cursor..]);
+    out.push_str(&block.body[cursor..]);
     out
 }
 
+/// A plain `[[target]]` reference → a Markdown link in the shared `mdkb:` scheme.
+fn render_reference(vault: &Vault, target: &str, label: &str) -> String {
+    let label = escape_link_text(label);
+    match vault.resolve(target) {
+        Some(id) => format!("[{label}](mdkb:{id})"),
+        None => format!("[{label}](mdkb:?unresolved)"),
+    }
+}
+
+/// A `![[target]]` transclusion → an embed card (blockquote) with a source-link header and the
+/// live resolved body of the target subtree.
 fn resolve_embed(
     vault: &Vault,
-    current: &Page,
-    target: &LinkTarget,
+    target: &str,
+    label: &str,
     visited: &mut HashSet<BlockId>,
 ) -> String {
-    let page = match &target.page {
-        Some(name) => match vault.page(name) {
-            Some(p) => p,
-            None => return missing(target),
-        },
-        None => current,
+    let label = escape_link_text(label);
+    let id = match vault.resolve(target) {
+        Some(id) => id,
+        None => return format!("[⚠ {label}](mdkb:?unresolved) *(unresolved embed)*"),
     };
+    if visited.contains(&id) {
+        // Cycle: link back to the offending block + a visible note, never recurse.
+        return format!("[↻ {label}](mdkb:{id}) *(transclusion cycle)*");
+    }
+    let block = match vault.block(&id) {
+        Some(b) => b,
+        None => return format!("[⚠ {label}](mdkb:?unresolved) *(unresolved embed)*"),
+    };
+    visited.insert(id.clone());
+    let body = render_body(vault, block, visited);
+    visited.remove(&id);
 
-    match &target.anchor {
-        None => {
-            // Whole-page embed: inline all of the page's blocks.
-            let parts: Vec<String> = page
-                .doc
-                .blocks
-                .iter()
-                .map(|b| guarded_block(vault, page, b, visited))
-                .collect();
-            parts.join("\n\n")
+    let header = format!(
+        "⧉ [{}](mdkb:{id})",
+        escape_link_text(&block.display_title())
+    );
+    let mut out = format!("> {header}\n>\n");
+    for line in body.lines() {
+        if line.is_empty() {
+            out.push('>');
+        } else {
+            out.push_str("> ");
+            out.push_str(line);
         }
-        Some(anchor) => match find_block(page, anchor) {
-            Some(b) => guarded_block(vault, page, b, visited),
-            None => missing(target),
-        },
+        out.push('\n');
     }
+    out
 }
 
-fn guarded_block(
-    vault: &Vault,
-    page: &Page,
-    block: &Block,
-    visited: &mut HashSet<BlockId>,
-) -> String {
-    if visited.contains(&block.id) {
-        return format!("⟲ [transclusion cycle: {}]", block.id);
-    }
-    visited.insert(block.id.clone());
-    let rendered = render_block(vault, page, block, visited);
-    visited.remove(&block.id);
-    rendered
-}
-
-fn find_block<'a>(page: &'a Page, anchor: &Anchor) -> Option<&'a Block> {
-    match anchor {
-        Anchor::Id(id) => page.doc.block(id),
-        Anchor::Heading(text) => page.doc.blocks.iter().find(|b| {
-            matches!(b.kind, BlockKind::Heading { .. })
-                && heading_label(&b.content).eq_ignore_ascii_case(text.trim())
-        }),
-    }
-}
-
-fn heading_label(content: &str) -> String {
-    content
-        .trim_start()
-        .trim_start_matches('#')
-        .trim()
-        .trim_end_matches('#')
-        .trim()
-        .to_string()
-}
-
-fn missing(target: &LinkTarget) -> String {
-    format!("⚠️ [unresolved: {}]", target.label())
+fn escape_link_text(s: &str) -> String {
+    s.replace('\\', r"\\")
+        .replace('[', r"\[")
+        .replace(']', r"\]")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::Vault;
 
-    fn vault_with_ids(pages: &[(&str, &str)]) -> Vault {
+    fn vault() -> (Vault, BlockId, BlockId) {
         let mut v = Vault::new();
-        for (path, src) in pages {
-            v.insert(*path, *src);
-        }
-        v.assign_ids();
-        v
-    }
-
-    fn block_id(v: &Vault, page: &str, content_contains: &str) -> BlockId {
-        v.page(page)
-            .unwrap()
-            .doc
-            .blocks
-            .iter()
-            .find(|b| b.content.contains(content_contains))
-            .unwrap()
-            .id
-            .clone()
-    }
-
-    #[test]
-    fn renders_plain_page_unchanged() {
-        let v = vault_with_ids(&[("a.md", "# Title\n\njust text\n")]);
-        let out = render_page(&v, "a").unwrap();
-        assert_eq!(out, "# Title\n\njust text");
-    }
-
-    #[test]
-    fn update_once_reflects_everywhere() {
-        // Master query lives on one page; two other pages embed it by id.
-        let mut v =
-            vault_with_ids(&[("useful-queries.md", "# Queries\n\nStormEvents | take 10\n")]);
-        let qid = block_id(&v, "useful-queries", "StormEvents");
-        v.insert(
-            "project-x.md",
-            format!("# Project X\n\n![[useful-queries#{qid}]]\n"),
+        let child = BlockId::generate();
+        let parent = BlockId::generate();
+        v.insert_source(child.clone(), "---\ntitle: Child\n---\nchild content\n");
+        v.insert_source(
+            parent.clone(),
+            &format!("intro\n\n![[{child}]]\n\nlink [[Child]]\n"),
         );
-        v.insert(
-            "project-y.md",
-            format!("# Project Y\n\nSee: ![[useful-queries#{qid}]]\n"),
+        (v, parent, child)
+    }
+
+    #[test]
+    fn embed_renders_card_with_live_content() {
+        let (v, parent, _child) = vault();
+        let out = render_block(&v, &parent).unwrap();
+        assert!(out.contains("child content"), "got: {out}");
+        assert!(out.contains("> ⧉ ["), "embed card header missing: {out}");
+    }
+
+    #[test]
+    fn reference_renders_mdkb_link() {
+        let (v, parent, child) = vault();
+        let out = render_block(&v, &parent).unwrap();
+        assert!(out.contains(&format!("(mdkb:{child})")), "got: {out}");
+    }
+
+    #[test]
+    fn edit_once_reflects_everywhere() {
+        let mut v = Vault::new();
+        let q = BlockId::generate();
+        let x = BlockId::generate();
+        let y = BlockId::generate();
+        v.insert_source(q.clone(), "---\ntitle: Q\n---\nStormEvents | take 10\n");
+        v.insert_source(x.clone(), &format!("![[{q}]]\n"));
+        v.insert_source(y.clone(), &format!("see ![[{q}]]\n"));
+        assert!(render_block(&v, &x).unwrap().contains("take 10"));
+        assert!(render_block(&v, &y).unwrap().contains("take 10"));
+        v.insert_source(q.clone(), "---\ntitle: Q\n---\nStormEvents | take 50\n");
+        assert!(render_block(&v, &x).unwrap().contains("take 50"));
+        assert!(!render_block(&v, &x).unwrap().contains("take 10"));
+    }
+
+    #[test]
+    fn cycle_is_broken_with_a_note() {
+        let mut v = Vault::new();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        v.insert_source(a.clone(), &format!("A ![[{b}]]\n"));
+        v.insert_source(b.clone(), &format!("B ![[{a}]]\n"));
+        let out = render_block(&v, &a).unwrap();
+        assert!(out.contains("transclusion cycle"), "got: {out}");
+        assert!(out.contains("](mdkb:"), "cycle note should link: {out}");
+    }
+
+    #[test]
+    fn dangling_embed_degrades_locally() {
+        let mut v = Vault::new();
+        let a = BlockId::generate();
+        v.insert_source(
+            a.clone(),
+            "before\n\n![[01JJJJJJJJJJJJJJJJJJJJJJJJ]]\n\nafter\n",
         );
-        v.assign_ids();
-
-        // Both pages show the current query text.
-        assert!(render_page(&v, "project-x")
-            .unwrap()
-            .contains("StormEvents | take 10"));
-        assert!(render_page(&v, "project-y")
-            .unwrap()
-            .contains("StormEvents | take 10"));
-
-        // Update the master block once...
-        v.update_block(&qid, "StormEvents | where State == 'TEXAS' | take 50")
-            .unwrap();
-
-        // ...and every embed reflects it. This is the SSOT guarantee.
-        let x = render_page(&v, "project-x").unwrap();
-        let y = render_page(&v, "project-y").unwrap();
-        assert!(x.contains("where State == 'TEXAS'"));
-        assert!(y.contains("where State == 'TEXAS'"));
-        assert!(!x.contains("take 10"));
-    }
-
-    #[test]
-    fn embeds_resolve_by_heading_anchor() {
-        let v = vault_with_ids(&[
-            ("src.md", "# Kusto Basics\n\nthe basics body\n"),
-            ("dst.md", "intro ![[src#Kusto Basics]]\n"),
-        ]);
-        let out = render_page(&v, "dst").unwrap();
-        assert!(out.contains("# Kusto Basics"));
-    }
-
-    #[test]
-    fn whole_page_embed_inlines_all_blocks() {
-        let v = vault_with_ids(&[("part.md", "alpha\n\nbeta\n"), ("host.md", "![[part]]\n")]);
-        let out = render_page(&v, "host").unwrap();
-        assert!(out.contains("alpha"));
-        assert!(out.contains("beta"));
-    }
-
-    #[test]
-    fn unresolved_embed_is_flagged() {
-        let v = vault_with_ids(&[("a.md", "![[does-not-exist]]\n")]);
-        let out = render_page(&v, "a").unwrap();
+        let out = render_block(&v, &a).unwrap();
+        assert!(out.contains("before"));
+        assert!(out.contains("after"));
         assert!(out.contains("unresolved"));
     }
 
     #[test]
-    fn cycles_are_broken() {
-        // Two blocks embedding each other must not recurse forever.
-        let mut v = Vault::new();
-        v.insert("a.md", "AAA\n");
-        v.insert("b.md", "BBB\n");
-        v.assign_ids();
-        let aid = block_id(&v, "a", "AAA");
-        let bid = block_id(&v, "b", "BBB");
-        v.update_block(&aid, &format!("A embeds ![[b#{bid}]]"))
-            .unwrap();
-        v.update_block(&bid, &format!("B embeds ![[a#{aid}]]"))
-            .unwrap();
-        let out = render_page(&v, "a").unwrap();
-        assert!(out.contains("transclusion cycle"));
-    }
-
-    #[test]
-    fn plain_links_render_as_label() {
-        let v = vault_with_ids(&[("a.md", "see [[Other Page|the docs]] now\n")]);
-        let out = render_page(&v, "a").unwrap();
-        assert_eq!(out, "see the docs now");
+    fn rendered_block_carries_raw_and_resolved() {
+        let (v, parent, _child) = vault();
+        let rb = rendered_block(&v, &parent).unwrap();
+        assert!(rb.raw.contains("![["));
+        assert!(rb.rendered.contains("> ⧉ ["));
+        assert!(!rb.rendered.contains("![["));
     }
 }

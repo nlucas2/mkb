@@ -1,81 +1,17 @@
 //! Connecting to the mdkb daemon, auto-starting it if necessary.
 //!
-//! The MCP server must talk to a running `mdkbd` (the single index owner). If none is live
-//! on the configured socket, we spawn one and wait for it to come up. This keeps the MCP
-//! server a pure client while still being convenient to launch standalone.
+//! The MCP server must talk to a running `mdkbd` (the single index owner). The actual
+//! "ping-or-spawn-detached" logic lives in [`mdkb_protocol::ensure_daemon`] so every client
+//! (this server, the desktop app, the CLI) starts the daemon identically — see the
+//! "no divergence" rule in `AGENTS.md`. This module only adds the MCP-specific CLI parsing.
 
 use std::path::Path;
-use std::process::Command;
-use std::time::{Duration, Instant};
 
 use mdkb_protocol::{Client, DaemonPaths};
 
-/// Ensure a daemon is reachable on `paths.socket`, spawning `mdkbd` if needed. Returns a
-/// connected [`Client`].
+/// Ensure a daemon is reachable on `paths.socket`, spawning a detached `mdkbd` if needed.
 pub fn ensure_daemon(paths: &DaemonPaths) -> Result<Client, String> {
-    let client = Client::new(&paths.socket);
-    if client.ping() {
-        return Ok(client);
-    }
-    spawn_daemon(paths)?;
-    wait_until_ready(&client, Duration::from_secs(30))?;
-    Ok(client)
-}
-
-fn spawn_daemon(paths: &DaemonPaths) -> Result<(), String> {
-    let exe = mdkbd_path()?;
-    eprintln!(
-        "mdkb-mcp: starting daemon: {} --vault {}",
-        exe.display(),
-        paths.vault.display()
-    );
-    Command::new(&exe)
-        .arg("--vault")
-        .arg(&paths.vault)
-        .arg("--socket")
-        .arg(&paths.socket)
-        .arg("--db")
-        .arg(&paths.db)
-        .spawn()
-        .map_err(|e| format!("failed to spawn {}: {e}", exe.display()))?;
-    Ok(())
-}
-
-/// Locate the `mdkbd` binary: prefer one beside this executable, else rely on `PATH`.
-fn mdkbd_path() -> Result<std::path::PathBuf, String> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(mdkbd_filename());
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-        }
-    }
-    // Fall back to PATH resolution.
-    Ok(std::path::PathBuf::from("mdkbd"))
-}
-
-fn mdkbd_filename() -> &'static str {
-    if cfg!(windows) {
-        "mdkbd.exe"
-    } else {
-        "mdkbd"
-    }
-}
-
-fn wait_until_ready(client: &Client, timeout: Duration) -> Result<(), String> {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if client.ping() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    Err(format!(
-        "daemon did not become ready within {}s on {}",
-        timeout.as_secs(),
-        client.socket().display()
-    ))
+    mdkb_protocol::ensure_daemon(paths, None)
 }
 
 /// Resolve daemon paths from CLI args / env (mirrors `mdkbd`'s flags).

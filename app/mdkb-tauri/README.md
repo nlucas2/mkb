@@ -1,71 +1,85 @@
 # mdkb desktop shell (Tauri)
 
-A thin [Tauri](https://tauri.app) desktop front-end for mdkb.
+A [Tauri](https://tauri.app) desktop app for mdkb. It is a **full editor and knowledge-graph
+browser**, not just a viewer — but it stays a **thin client**: all knowledge-base behavior
+(block parsing, transclusion, indexing, the link graph, writes) lives in `mdkb-core` and is
+reached over the wire through `mdkb-protocol`; HTML rendering goes through `mdkb-view`. There
+is no second copy of engine behavior here, so the desktop UI can never drift from the web UI
+or the MCP server (see the repo `AGENTS.md`).
 
 It is **not** part of the main cargo workspace (it needs the Tauri toolchain and a system
-webview, which the core product doesn't require). It is wired to the same shared crates as
-every other mdkb front-end:
+webview, which the core product doesn't require).
 
-- `mdkb-protocol` — talks to a running `mdkbd` daemon.
-- `mdkb-view` — turns resolved Markdown into HTML.
+## What it does
 
-Because rendering goes through `mdkb-view`, the desktop UI shows exactly what the web UI
-(`mdkb-web`) shows — there is no second rendering path to drift out of sync.
+- **Read / Blocks / Raw** per page:
+  - *Reading* — the page rendered with transclusions resolved (read-only).
+  - *Blocks* — an editable block list; click any block to edit its Markdown in place
+    (`Cmd/Ctrl+Enter` or blur to save, `Esc` to cancel), and `＋ Add block` to append.
+  - *Raw* — edit the whole `.md` source and save.
+- **Knowledge graph** — a force-directed page graph (nodes = pages sized by link degree,
+  edges = `[[references]]` / `![[transclusions]]`). Click a node to open the page; hover to
+  highlight neighbours. The graph is computed by `mdkb-core` (`link_graph`); the UI only draws
+  it (vendored [`force-graph`](https://github.com/vasturiano/force-graph), no network at runtime).
+- **Linked references** — each page lists the pages that link to it (and the pages it links to).
+- **New / delete page** from the sidebar.
+- **Settings** (no environment variables) — see below.
 
-## Architecture
+## Connection (Settings)
 
-```
-┌─────────────┐   Tauri IPC    ┌────────────────────┐   Unix socket   ┌────────┐
-│  ui/ (HTML) │ ─────────────▶ │ src-tauri (Rust)   │ ──────────────▶ │ mdkbd  │
-│  invoke()   │                │ commands → mdkb-view│                │ Service│
-└─────────────┘                └────────────────────┘                 └────────┘
-```
+The connection is configured in-app and saved to a per-user file
+(`~/Library/Application Support/dev.mdkb.desktop/connection.json` on macOS; the XDG/`APPDATA`
+equivalent elsewhere). Click the connection-status dot at the bottom of the sidebar.
 
-The Rust side exposes four commands (`list_pages`, `render_page`, `title_for`, `search`);
-all real work happens in the daemon and the shared crates.
+- **Local vault** — pick a folder. The app **auto-starts a background `mdkbd`** for that vault
+  (the daemon is bundled inside the app) and reuses it next time. The daemon is started
+  **detached**, so it **keeps running after you quit the app** — relaunching just reconnects.
+- **Remote daemon** — `host:port` of a `mdkbd --listen` plus its shared token.
+
+Changes apply immediately (the client reconnects without restarting the app).
+
+## Tauri commands (thin glue)
+
+`list_pages`, `render_page`, `page_blocks`, `page_source`, `graph`, `search`, `title_for`
+(reads); `save_block`, `append_block`, `save_page`, `delete_page` (writes); `get_settings`,
+`save_settings`, `connection_status`, `pick_vault` (settings). Each just forwards to the
+daemon / shared crates.
 
 ## Prerequisites
 
-- Rust (stable)
-- The Tauri CLI: `cargo install tauri-cli --version '^2'`
-- A running daemon for your vault: `mdkbd --vault /path/to/vault`
-  (the shell connects to `$MDKB_VAULT`'s socket, or the default `~/mdkb-vault`).
+- Rust (stable) + the Tauri CLI: `cargo install tauri-cli --version '^2'`
 - App icons under `src-tauri/icons/` (generate with `cargo tauri icon <png>`).
+
+## Build a bundle
+
+The bundle ships the daemon binary as a resource so local-vault mode works out of the box.
+Stage it first, then build:
+
+```sh
+# from the repo root: build the daemon and stage it into the app
+cargo build --release -p mdkbd
+mkdir -p app/mdkb-tauri/src-tauri/bin
+cp target/release/mdkbd app/mdkb-tauri/src-tauri/bin/mdkbd
+
+# build the app (produces mdkb.app + a .dmg under src-tauri/target/release/bundle/)
+cd app/mdkb-tauri
+cargo tauri build
+```
+
+(`src-tauri/bin/` is git-ignored — it is a build input, rebuilt from the workspace.)
 
 ## Run (development)
 
 ```sh
-# Local daemon:
-export MDKB_VAULT=/path/to/your/vault
-mdkbd --vault "$MDKB_VAULT" &          # start the daemon
-cd app/mdkb-tauri
-cargo tauri dev                         # build + launch the desktop window
-```
-
-### Connecting to a remote daemon
-
-The desktop app resolves its connection from the environment (via the shared
-`mdkb_protocol::Client::from_env`), so it can talk to a daemon deployed in your cluster:
-
-```sh
-export MDKB_REMOTE=mdkbd.example:7820   # host:port of the remote mdkbd --listen
-export MDKB_TOKEN=<the shared token>    # required for remote (token-gated)
 cd app/mdkb-tauri
 cargo tauri dev
 ```
 
-If `MDKB_REMOTE` is unset it falls back to the local socket for `MDKB_VAULT` (or
-`~/mdkb-vault`). `MDKB_SOCKET` can override the socket path explicitly.
-
-## Build a bundle
-
-```sh
-cd app/mdkb-tauri
-cargo tauri build
-```
+On first launch with no saved config it defaults to the local default vault (`~/mdkb-vault`)
+and auto-starts a daemon for it. Use **Settings** to point it elsewhere.
 
 ## Note
 
 This directory is excluded from the root `cargo` workspace (see the root `Cargo.toml`
 `exclude` list), so `cargo test --workspace` at the repository root does not require the
-Tauri toolchain. Build the desktop shell from within this directory as shown above.
+Tauri toolchain.

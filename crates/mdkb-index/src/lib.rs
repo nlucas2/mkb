@@ -1,19 +1,16 @@
-//! SQLite implementation of [`mdkb_core::Index`].
+//! SQLite implementation of [`mdkb_core::Index`] for the file-per-block model.
 //!
-//! Uses a bundled SQLite (so there is no system dependency) with an FTS5 virtual table for
-//! keyword search. Vector search (sqlite-vec) is layered on in a later phase behind the
-//! same trait. The index is a **rebuildable cache** of the Markdown vault: it can be thrown
-//! away and reconstructed from the files at any time, so it is never the source of truth.
+//! Bundled SQLite (no system dependency) with an FTS5 virtual table for keyword search and a
+//! per-block vector store for semantic search. The unit is the **block** (one file). The index
+//! is a **rebuildable cache** of the `blocks/` directory: it can be thrown away and
+//! reconstructed from the files at any time, so it is never the source of truth.
 
 use std::path::Path;
 
 use mdkb_core::{
-    BlockId, BlockRecord, Index, IndexError, IndexStats, LinkKind, LinkRow, Page, SearchHit,
-    SearchQuery,
+    BlockId, BlockRecord, Index, IndexError, IndexStats, LinkKind, LinkRow, SearchHit, SearchQuery,
 };
 use rusqlite::{params, params_from_iter, Connection};
-
-const LINEAGE_SEP: char = '\u{1f}';
 
 /// A SQLite-backed search index.
 pub struct SqliteIndex {
@@ -42,66 +39,46 @@ impl SqliteIndex {
         Ok(SqliteIndex { conn })
     }
 
-    /// Borrow the underlying connection (for the vector-store layer and tests).
+    /// Borrow the underlying connection (for tests).
     pub fn connection(&self) -> &Connection {
         &self.conn
     }
 
-    fn delete_page_rows(tx: &Connection, page_path: &str) -> Result<(), IndexError> {
-        // Remove FTS rows (by rowid) before deleting the backing blocks.
-        let mut stmt = tx
-            .prepare("SELECT rowid FROM blocks WHERE page_path = ?1")
-            .map_err(err)?;
-        let rowids: Vec<i64> = stmt
-            .query_map(params![page_path], |r| r.get::<_, i64>(0))
-            .map_err(err)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(err)?;
-        for rid in rowids {
+    fn delete_block_rows(tx: &Connection, id: &str) -> Result<(), IndexError> {
+        // Remove the FTS row (by rowid) before deleting the backing block row.
+        let rowid: Option<i64> = tx
+            .query_row("SELECT rowid FROM blocks WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .ok();
+        if let Some(rid) = rowid {
             tx.execute("DELETE FROM block_fts WHERE rowid = ?1", params![rid])
                 .map_err(err)?;
         }
-        tx.execute(
-            "DELETE FROM block_tags WHERE block_id IN (SELECT id FROM blocks WHERE page_path = ?1)",
-            params![page_path],
-        )
-        .map_err(err)?;
-        tx.execute(
-            "DELETE FROM links WHERE source_id IN (SELECT id FROM blocks WHERE page_path = ?1)",
-            params![page_path],
-        )
-        .map_err(err)?;
-        tx.execute(
-            "DELETE FROM block_vectors WHERE block_id IN (SELECT id FROM blocks WHERE page_path = ?1)",
-            params![page_path],
-        )
-        .map_err(err)?;
-        tx.execute(
-            "DELETE FROM blocks WHERE page_path = ?1",
-            params![page_path],
-        )
-        .map_err(err)?;
-        tx.execute("DELETE FROM pages WHERE path = ?1", params![page_path])
+        tx.execute("DELETE FROM blocks WHERE id = ?1", params![id])
+            .map_err(err)?;
+        tx.execute("DELETE FROM block_tags WHERE block_id = ?1", params![id])
+            .map_err(err)?;
+        tx.execute("DELETE FROM links WHERE source_id = ?1", params![id])
             .map_err(err)?;
         Ok(())
     }
 
-    /// Append the lang/page/tag filter clauses shared by every search path.
+    /// Append filter clauses (tags AND, lang) shared by the search paths.
     fn push_filters(
         sql: &mut String,
         args: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
         query: &SearchQuery,
     ) {
         if let Some(lang) = &query.lang {
-            args.push(Box::new(lang.clone()));
-            sql.push_str(&format!(" AND b.lang = ?{}", args.len()));
-        }
-        if let Some(page) = &query.page {
-            args.push(Box::new(page.clone()));
-            sql.push_str(&format!(" AND b.page_path = ?{}", args.len()));
+            args.push(Box::new(lang.to_lowercase()));
+            sql.push_str(&format!(
+                " AND b.id IN (SELECT block_id FROM block_langs WHERE lang = ?{})",
+                args.len()
+            ));
         }
         for tag in &query.tags {
-            args.push(Box::new(tag.clone()));
+            args.push(Box::new(tag.to_lowercase()));
             sql.push_str(&format!(
                 " AND b.id IN (SELECT block_id FROM block_tags WHERE tag = ?{})",
                 args.len()
@@ -109,7 +86,6 @@ impl SqliteIndex {
         }
     }
 
-    /// FTS5 keyword search with filters, ordered by bm25 relevance.
     fn keyword_hits(
         &self,
         query: &SearchQuery,
@@ -124,7 +100,7 @@ impl SqliteIndex {
             return Ok(Vec::new());
         }
         let mut sql = String::from(
-            "SELECT b.id, b.page_path, b.kind, b.heading_level, b.lang, b.lineage, b.content, b.contextual_text, b.tags_text, \
+            "SELECT b.id, b.title, b.langs_text, b.content, b.contextual_text, b.tags_text, b.child_count, \
              bm25(block_fts) AS rank \
              FROM block_fts JOIN blocks b ON b.rowid = block_fts.rowid \
              WHERE block_fts MATCH ?1",
@@ -137,7 +113,7 @@ impl SqliteIndex {
         let mut stmt = self.conn.prepare(&sql).map_err(err)?;
         let rows = stmt
             .query_map(params_from_iter(args.iter().map(|b| b.as_ref())), |r| {
-                let rank: f64 = r.get(9)?;
+                let rank: f64 = r.get(7)?;
                 Ok(SearchHit {
                     block: row_to_record(r)?,
                     score: -rank,
@@ -147,11 +123,6 @@ impl SqliteIndex {
         rows.collect::<rusqlite::Result<_>>().map_err(err)
     }
 
-    /// Brute-force cosine vector search with filters.
-    ///
-    /// Candidate vectors (after applying filters) are scored in Rust. This is simple and
-    /// fast enough for a personal KB; a `sqlite-vec` ANN index can replace it behind this
-    /// same method if the corpus grows large.
     fn vector_hits(
         &self,
         query: &SearchQuery,
@@ -159,13 +130,11 @@ impl SqliteIndex {
         limit: usize,
     ) -> Result<Vec<SearchHit>, IndexError> {
         let mut sql = String::from(
-            "SELECT b.id, b.page_path, b.kind, b.heading_level, b.lang, b.lineage, b.content, b.contextual_text, b.tags_text, \
+            "SELECT b.id, b.title, b.langs_text, b.content, b.contextual_text, b.tags_text, b.child_count, \
              v.embedding \
              FROM blocks b JOIN block_vectors v ON v.block_id = b.id WHERE 1=1",
         );
         let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        // Only compare vectors produced by the same embedding model, so different spaces
-        // (e.g. after an ONNX→hash fallback) are never mixed into one ranking.
         if let Some(model) = &query.vector_model {
             args.push(Box::new(model.clone()));
             sql.push_str(&format!(" AND v.model_id = ?{}", args.len()));
@@ -175,7 +144,7 @@ impl SqliteIndex {
         let mut stmt = self.conn.prepare(&sql).map_err(err)?;
         let rows = stmt
             .query_map(params_from_iter(args.iter().map(|b| b.as_ref())), |r| {
-                let blob: Vec<u8> = r.get(9)?;
+                let blob: Vec<u8> = r.get(7)?;
                 Ok((row_to_record(r)?, blob))
             })
             .map_err(err)?;
@@ -199,23 +168,19 @@ impl SqliteIndex {
         Ok(scored)
     }
 
-    /// Filter-only listing (no text, no vector): blocks in document order.
     fn filter_only_hits(
         &self,
         query: &SearchQuery,
         limit: usize,
     ) -> Result<Vec<SearchHit>, IndexError> {
         let mut sql = String::from(
-            "SELECT b.id, b.page_path, b.kind, b.heading_level, b.lang, b.lineage, b.content, b.contextual_text, b.tags_text, \
+            "SELECT b.id, b.title, b.langs_text, b.content, b.contextual_text, b.tags_text, b.child_count, \
              0.0 FROM blocks b WHERE 1=1",
         );
         let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         Self::push_filters(&mut sql, &mut args, query);
         args.push(Box::new(limit as i64));
-        sql.push_str(&format!(
-            " ORDER BY b.page_path, b.ord LIMIT ?{}",
-            args.len()
-        ));
+        sql.push_str(&format!(" ORDER BY b.id LIMIT ?{}", args.len()));
 
         let mut stmt = self.conn.prepare(&sql).map_err(err)?;
         let rows = stmt
@@ -231,75 +196,78 @@ impl SqliteIndex {
 }
 
 impl Index for SqliteIndex {
-    fn reindex_page(&mut self, page: &Page, links: &[LinkRow]) -> Result<(), IndexError> {
+    fn reindex_block(&mut self, record: &BlockRecord, links: &[LinkRow]) -> Result<(), IndexError> {
         let tx = self.conn.transaction().map_err(err)?;
-        Self::delete_page_rows(&tx, &page.path)?;
-        tx.execute("INSERT INTO pages(path) VALUES (?1)", params![page.path])
-            .map_err(err)?;
+        Self::delete_block_rows(&tx, record.id.as_str())?;
 
-        for (ord, block) in page.doc.blocks.iter().enumerate() {
-            let rec = BlockRecord::from_block(&page.path, block);
-            let lineage = rec.lineage.join(&LINEAGE_SEP.to_string());
-            let tags_text = rec.tags.join(" ");
+        let tags_text = record.tags.join(" ");
+        let langs_text = record.langs.join(" ");
+        tx.execute(
+            "INSERT INTO blocks(id, title, content, contextual_text, tags_text, langs_text, child_count) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                record.id.as_str(),
+                record.title,
+                record.content,
+                record.contextual_text,
+                tags_text,
+                langs_text,
+                record.child_count as i64,
+            ],
+        )
+        .map_err(err)?;
+        let rowid = tx.last_insert_rowid();
+
+        // FTS row: content + title + tags (so all are searchable).
+        tx.execute(
+            "INSERT INTO block_fts(rowid, content, title, tags) VALUES (?1,?2,?3,?4)",
+            params![rowid, record.contextual_text, record.title, tags_text],
+        )
+        .map_err(err)?;
+
+        for tag in &record.tags {
             tx.execute(
-                "INSERT INTO blocks(id, page_path, kind, heading_level, lang, lineage, content, contextual_text, tags_text, ord)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                params![
-                    rec.id.as_str(),
-                    rec.page_path,
-                    rec.kind,
-                    rec.heading_level,
-                    rec.lang,
-                    lineage,
-                    rec.content,
-                    rec.contextual_text,
-                    tags_text,
-                    ord as i64,
-                ],
+                "INSERT INTO block_tags(block_id, tag) VALUES (?1,?2)",
+                params![record.id.as_str(), tag.to_lowercase()],
             )
             .map_err(err)?;
-            let rowid = tx.last_insert_rowid();
-            tx.execute(
-                "INSERT INTO block_fts(rowid, content, lineage, tags) VALUES (?1,?2,?3,?4)",
-                params![
-                    rowid,
-                    rec.content,
-                    lineage.replace(LINEAGE_SEP, " "),
-                    tags_text
-                ],
-            )
-            .map_err(err)?;
-            for tag in &rec.tags {
-                tx.execute(
-                    "INSERT INTO block_tags(block_id, tag) VALUES (?1,?2)",
-                    params![rec.id.as_str(), tag],
-                )
-                .map_err(err)?;
-            }
         }
-
+        for lang in &record.langs {
+            tx.execute(
+                "INSERT INTO block_langs(block_id, lang) VALUES (?1,?2)",
+                params![record.id.as_str(), lang.to_lowercase()],
+            )
+            .map_err(err)?;
+        }
         for link in links {
             tx.execute(
-                "INSERT INTO links(source_id, target_page, target_id, target_anchor, kind)
-                 VALUES (?1,?2,?3,?4,?5)",
+                "INSERT INTO links(source_id, target_id, target, kind) VALUES (?1,?2,?3,?4)",
                 params![
                     link.source_id.as_str(),
-                    link.target_page,
-                    link.target_id.as_ref().map(|i| i.as_str().to_string()),
-                    link.target_anchor,
+                    link.target_id.as_ref().map(|t| t.as_str()),
+                    link.target,
                     link.kind.as_str(),
                 ],
             )
             .map_err(err)?;
         }
-
         tx.commit().map_err(err)?;
         Ok(())
     }
 
-    fn remove_page(&mut self, page_path: &str) -> Result<(), IndexError> {
+    fn remove_block(&mut self, id: &BlockId) -> Result<(), IndexError> {
         let tx = self.conn.transaction().map_err(err)?;
-        Self::delete_page_rows(&tx, page_path)?;
+        Self::delete_block_rows(&tx, id.as_str())?;
+        tx.execute(
+            "DELETE FROM block_langs WHERE block_id = ?1",
+            params![id.as_str()],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "DELETE FROM block_vectors WHERE block_id = ?1",
+            params![id.as_str()],
+        )
+        .map_err(err)?;
         tx.commit().map_err(err)?;
         Ok(())
     }
@@ -307,43 +275,15 @@ impl Index for SqliteIndex {
     fn clear(&mut self) -> Result<(), IndexError> {
         self.conn
             .execute_batch(
-                "DELETE FROM block_fts; DELETE FROM block_tags; DELETE FROM links; DELETE FROM blocks; DELETE FROM pages; DELETE FROM block_vectors;",
+                "DELETE FROM block_fts; DELETE FROM blocks; DELETE FROM block_tags; \
+                 DELETE FROM block_langs; DELETE FROM links; DELETE FROM block_vectors;",
             )
             .map_err(err)
-    }
-
-    fn set_embedding(
-        &mut self,
-        id: &BlockId,
-        model_id: &str,
-        vector: &[f32],
-    ) -> Result<(), IndexError> {
-        self.conn
-            .execute(
-                "INSERT INTO block_vectors(block_id, model_id, dim, embedding) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(block_id) DO UPDATE SET model_id = excluded.model_id, dim = excluded.dim, embedding = excluded.embedding",
-                params![id.as_str(), model_id, vector.len() as i64, mdkb_core::vector_to_bytes(vector)],
-            )
-            .map_err(err)?;
-        Ok(())
-    }
-
-    fn has_embedding(&self, id: &BlockId) -> Result<bool, IndexError> {
-        let n: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM block_vectors WHERE block_id = ?1",
-                params![id.as_str()],
-                |r| r.get(0),
-            )
-            .map_err(err)?;
-        Ok(n > 0)
     }
 
     fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, IndexError> {
         let limit = query.effective_limit();
         match (&query.text, &query.vector) {
-            // Hybrid: fuse keyword and vector rankings via reciprocal rank fusion.
             (Some(_), Some(vector)) => {
                 let kw = self.keyword_hits(query, limit * 4)?;
                 let vec = self.vector_hits(query, vector, limit * 4)?;
@@ -373,7 +313,7 @@ impl Index for SqliteIndex {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, page_path, kind, heading_level, lang, lineage, content, contextual_text, tags_text, 0.0 \
+                "SELECT id, title, langs_text, content, contextual_text, tags_text, child_count, 0.0 \
                  FROM blocks WHERE id = ?1",
             )
             .map_err(err)?;
@@ -389,9 +329,7 @@ impl Index for SqliteIndex {
     fn links_from(&self, id: &BlockId) -> Result<Vec<LinkRow>, IndexError> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT source_id, target_page, target_id, target_anchor, kind FROM links WHERE source_id = ?1",
-            )
+            .prepare("SELECT source_id, target_id, target, kind FROM links WHERE source_id = ?1")
             .map_err(err)?;
         let rows = stmt
             .query_map(params![id.as_str()], row_to_link)
@@ -402,9 +340,7 @@ impl Index for SqliteIndex {
     fn backlinks(&self, id: &BlockId) -> Result<Vec<LinkRow>, IndexError> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT source_id, target_page, target_id, target_anchor, kind FROM links WHERE target_id = ?1",
-            )
+            .prepare("SELECT source_id, target_id, target, kind FROM links WHERE target_id = ?1")
             .map_err(err)?;
         let rows = stmt
             .query_map(params![id.as_str()], row_to_link)
@@ -413,10 +349,6 @@ impl Index for SqliteIndex {
     }
 
     fn stats(&self) -> Result<IndexStats, IndexError> {
-        let pages: usize = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM pages", [], |r| r.get::<_, i64>(0))
-            .map_err(err)? as usize;
         let blocks: usize = self
             .conn
             .query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get::<_, i64>(0))
@@ -428,46 +360,73 @@ impl Index for SqliteIndex {
             })
             .unwrap_or(0) as usize;
         Ok(IndexStats {
-            pages,
             blocks,
+            roots: 0, // filled in by the Service from the vault
             embedded,
         })
+    }
+
+    fn set_embedding(
+        &mut self,
+        id: &BlockId,
+        model_id: &str,
+        vector: &[f32],
+    ) -> Result<(), IndexError> {
+        let blob = mdkb_core::vector_to_bytes(vector);
+        self.conn
+            .execute(
+                "INSERT INTO block_vectors(block_id, model_id, dim, embedding) VALUES (?1,?2,?3,?4) \
+                 ON CONFLICT(block_id) DO UPDATE SET model_id=?2, dim=?3, embedding=?4",
+                params![id.as_str(), model_id, vector.len() as i64, blob],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+
+    fn has_embedding(&self, id: &BlockId) -> Result<bool, IndexError> {
+        let n: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM block_vectors WHERE block_id = ?1",
+                params![id.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        Ok(n > 0)
     }
 }
 
 fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<BlockRecord> {
-    let lineage: String = r.get(5)?;
-    let tags_text: String = r.get(8)?;
+    let title: Option<String> = r.get(1)?;
+    let langs_text: String = r.get(2)?;
+    let tags_text: String = r.get(5)?;
     Ok(BlockRecord {
         id: BlockId::parse(&r.get::<_, String>(0)?).unwrap_or_else(|_| BlockId::generate()),
-        page_path: r.get(1)?,
-        kind: r.get(2)?,
-        heading_level: r.get(3)?,
-        lang: r.get(4)?,
-        lineage: if lineage.is_empty() {
-            Vec::new()
-        } else {
-            lineage.split(LINEAGE_SEP).map(|s| s.to_string()).collect()
-        },
-        tags: if tags_text.is_empty() {
-            Vec::new()
-        } else {
-            tags_text.split(' ').map(|s| s.to_string()).collect()
-        },
-        content: r.get(6)?,
-        contextual_text: r.get(7)?,
+        title,
+        langs: split_ws(&langs_text),
+        content: r.get(3)?,
+        contextual_text: r.get(4)?,
+        tags: split_ws(&tags_text),
+        child_count: r.get::<_, i64>(6)? as usize,
     })
+}
+
+fn split_ws(s: &str) -> Vec<String> {
+    if s.trim().is_empty() {
+        Vec::new()
+    } else {
+        s.split_whitespace().map(|x| x.to_string()).collect()
+    }
 }
 
 fn row_to_link(r: &rusqlite::Row<'_>) -> rusqlite::Result<LinkRow> {
     let source: String = r.get(0)?;
-    let target_id: Option<String> = r.get(2)?;
-    let kind: String = r.get(4)?;
+    let target_id: Option<String> = r.get(1)?;
+    let kind: String = r.get(3)?;
     Ok(LinkRow {
         source_id: BlockId::parse(&source).unwrap_or_else(|_| BlockId::generate()),
-        target_page: r.get(1)?,
         target_id: target_id.and_then(|s| BlockId::parse(&s).ok()),
-        target_anchor: r.get(3)?,
+        target: r.get(2)?,
         kind: if kind == "transcludes" {
             LinkKind::Transcludes
         } else {
@@ -478,9 +437,8 @@ fn row_to_link(r: &rusqlite::Row<'_>) -> rusqlite::Result<LinkRow> {
 
 /// Turn arbitrary user text into a safe FTS5 MATCH expression: alphanumeric tokens, each
 /// quoted, joined by ` OR ` so a block matches when it contains *any* query term (ranked by
-/// bm25). Implicit AND (joining by space) would require *every* term to be present, which
-/// makes natural-language / paraphrased queries — where only some words overlap the block —
-/// match nothing. Quoting each token avoids FTS5 syntax errors from punctuation.
+/// bm25). Implicit AND (joining by space) makes paraphrased queries match nothing; quoting
+/// each token avoids FTS5 syntax errors from punctuation.
 fn to_fts_query(text: &str) -> String {
     let tokens: Vec<String> = text
         .split(|c: char| !c.is_alphanumeric())
@@ -494,24 +452,16 @@ const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS pages (
-    path TEXT PRIMARY KEY
-);
-
 CREATE TABLE IF NOT EXISTS blocks (
     rowid           INTEGER PRIMARY KEY,
     id              TEXT UNIQUE NOT NULL,
-    page_path       TEXT NOT NULL,
-    kind            TEXT NOT NULL,
-    heading_level   INTEGER,
-    lang            TEXT,
-    lineage         TEXT NOT NULL,
+    title           TEXT,
     content         TEXT NOT NULL,
     contextual_text TEXT NOT NULL,
     tags_text       TEXT NOT NULL,
-    ord             INTEGER NOT NULL
+    langs_text      TEXT NOT NULL,
+    child_count     INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_blocks_page ON blocks(page_path);
 
 CREATE TABLE IF NOT EXISTS block_tags (
     block_id TEXT NOT NULL,
@@ -520,20 +470,25 @@ CREATE TABLE IF NOT EXISTS block_tags (
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON block_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_tags_block ON block_tags(block_id);
 
+CREATE TABLE IF NOT EXISTS block_langs (
+    block_id TEXT NOT NULL,
+    lang     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_langs_lang ON block_langs(lang);
+CREATE INDEX IF NOT EXISTS idx_langs_block ON block_langs(block_id);
+
 CREATE TABLE IF NOT EXISTS links (
-    source_id     TEXT NOT NULL,
-    target_page   TEXT,
-    target_id     TEXT,
-    target_anchor TEXT,
-    kind          TEXT NOT NULL
+    source_id TEXT NOT NULL,
+    target_id TEXT,
+    target    TEXT NOT NULL,
+    kind      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_id);
 CREATE INDEX IF NOT EXISTS idx_links_target_id ON links(target_id);
-CREATE INDEX IF NOT EXISTS idx_links_target_page ON links(target_page);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS block_fts USING fts5(
     content,
-    lineage,
+    title,
     tags,
     tokenize = 'porter unicode61'
 );
@@ -549,282 +504,112 @@ CREATE TABLE IF NOT EXISTS block_vectors (
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mdkb_core::{page_links, Vault};
+    use mdkb_core::{block_links, BlockRecord, Vault};
 
-    fn indexed_vault(pages: &[(&str, &str)]) -> (SqliteIndex, Vault) {
+    fn indexed(blocks: &[&str]) -> (SqliteIndex, Vault, Vec<BlockId>) {
         let mut v = Vault::new();
-        for (p, s) in pages {
-            v.insert(*p, *s);
+        let mut ids = Vec::new();
+        for src in blocks {
+            let id = BlockId::generate();
+            v.insert_source(id.clone(), src);
+            ids.push(id);
         }
-        v.assign_ids();
         let mut idx = SqliteIndex::open_in_memory().unwrap();
         idx.rebuild(&v).unwrap();
-        (idx, v)
+        (idx, v, ids)
     }
 
     #[test]
-    fn keyword_search_finds_blocks() {
-        let (idx, _v) = indexed_vault(&[(
-            "ops.md",
-            "# Nginx\n\nTo restart nginx run the bounce script.\n",
-        )]);
-        // Semantic-ish: searching different words that share the token "restart".
-        let hits = idx.search(&SearchQuery::text("restart")).unwrap();
-        assert!(hits
-            .iter()
-            .any(|h| h.block.content.contains("bounce script")));
+    fn keyword_search_finds_block() {
+        let (idx, _v, _ids) =
+            indexed(&["---\ntitle: Nginx\n---\nrestart the web server with systemctl\n"]);
+        let hits = idx.search(&SearchQuery::text("restart server")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].block.content.contains("systemctl"));
     }
 
     #[test]
-    fn to_fts_query_joins_terms_with_or() {
-        // Locks OR semantics: a multi-term query must not require every term present.
+    fn or_join_matches_paraphrase() {
+        // Only one of the query terms is present, but OR-join + bm25 still finds it.
+        let (idx, _v, _ids) = indexed(&["reboot the machine cleanly\n"]);
+        let hits = idx
+            .search(&SearchQuery::text("restart the machine"))
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn filters_by_tag_and_lang() {
+        let (idx, _v, _ids) = indexed(&[
+            "---\ntitle: A\ntags: [ops]\n---\n```kusto\nStormEvents\n```\n",
+            "---\ntitle: B\ntags: [notes]\n---\njust prose\n",
+        ]);
+        let by_tag = idx
+            .search(&SearchQuery {
+                tags: vec!["ops".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_tag.len(), 1);
+        let by_lang = idx
+            .search(&SearchQuery {
+                lang: Some("kusto".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_lang.len(), 1);
+    }
+
+    #[test]
+    fn backlinks_track_transclusions() {
+        let mut v = Vault::new();
+        let child = BlockId::generate();
+        let parent = BlockId::generate();
+        v.insert_source(child.clone(), "---\ntitle: Child\n---\nx\n");
+        v.insert_source(parent.clone(), &format!("![[{child}]]\n"));
+        let mut idx = SqliteIndex::open_in_memory().unwrap();
+        idx.rebuild(&v).unwrap();
+        let back = idx.backlinks(&child).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].source_id, parent);
+        assert_eq!(back[0].kind, LinkKind::Transcludes);
+    }
+
+    #[test]
+    fn remove_block_clears_everything() {
+        let (mut idx, _v, ids) = indexed(&["alpha #tag\n"]);
+        assert_eq!(idx.stats().unwrap().blocks, 1);
+        idx.remove_block(&ids[0]).unwrap();
+        assert_eq!(idx.stats().unwrap().blocks, 0);
+        assert!(idx.search(&SearchQuery::text("alpha")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reindex_replaces_stale_content() {
+        let id = BlockId::generate();
+        let mut v = Vault::new();
+        v.insert_source(id.clone(), "original text\n");
+        let mut idx = SqliteIndex::open_in_memory().unwrap();
+        idx.rebuild(&v).unwrap();
+        // Update the block and reindex just it.
+        v.insert_source(id.clone(), "replacement words\n");
+        let rec = BlockRecord::from_block(v.block(&id).unwrap(), 0);
+        idx.reindex_block(&rec, &block_links(&v, v.block(&id).unwrap()))
+            .unwrap();
+        assert!(idx.search(&SearchQuery::text("replacement")).unwrap().len() == 1);
+        assert!(idx
+            .search(&SearchQuery::text("original"))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn to_fts_query_or_joins_and_sanitizes() {
         assert_eq!(
             to_fts_query("restart the server"),
             "\"restart\" OR \"the\" OR \"server\""
         );
         assert_eq!(to_fts_query("single"), "\"single\"");
         assert_eq!(to_fts_query("  -- ,. "), "");
-    }
-
-    #[test]
-    fn keyword_search_matches_any_term_not_all() {
-        // A paraphrased, multi-word query where only *some* terms appear in the block must
-        // still match. Under the old implicit-AND join (`"a" "b" "c"`) this returned nothing
-        // because "database" is absent; OR (`"a" OR "b" OR "c"`) ranks it via the shared terms.
-        let (idx, _v) = indexed_vault(&[(
-            "ops.md",
-            "# Web server\n\nBounce the nginx service: systemctl restart nginx\n",
-        )]);
-        let hits = idx
-            .search(&SearchQuery::text("restart the database server"))
-            .unwrap();
-        assert!(
-            hits.iter().any(|h| h.block.content.contains("nginx")),
-            "OR query should match a block that shares only some of the terms"
-        );
-    }
-
-    #[test]
-    fn search_filters_by_lang() {
-        let (idx, _v) = indexed_vault(&[(
-            "q.md",
-            "# Queries\n\n```kusto\nStormEvents | take 10\n```\n\n```bash\nls -la\n```\n",
-        )]);
-        let q = SearchQuery {
-            lang: Some("kusto".to_string()),
-            ..Default::default()
-        };
-        let hits = idx.search(&q).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert!(hits[0].block.content.contains("StormEvents"));
-    }
-
-    #[test]
-    fn search_filters_by_tag() {
-        let (idx, _v) = indexed_vault(&[("n.md", "alpha #keep\n\nbeta #drop\n")]);
-        let q = SearchQuery {
-            tags: vec!["keep".to_string()],
-            ..Default::default()
-        };
-        let hits = idx.search(&q).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert!(hits[0].block.content.contains("alpha"));
-    }
-
-    #[test]
-    fn reindex_page_removes_stale_blocks() {
-        let mut v = Vault::new();
-        v.insert("a.md", "one\n\ntwo\n");
-        v.assign_ids();
-        let mut idx = SqliteIndex::open_in_memory().unwrap();
-        idx.rebuild(&v).unwrap();
-        assert_eq!(idx.stats().unwrap().blocks, 2);
-
-        // Shrink the page to a single block and reindex.
-        v.insert("a.md", "only one now\n");
-        v.assign_ids();
-        let page = v.page("a").unwrap().clone();
-        let links = page_links(&v, &page);
-        idx.reindex_page(&page, &links).unwrap();
-        assert_eq!(idx.stats().unwrap().blocks, 1);
-    }
-
-    #[test]
-    fn backlinks_track_transclusions() {
-        let mut v = Vault::new();
-        v.insert("src.md", "# Q\n\nthe query\n");
-        v.assign_ids();
-        let qid = v
-            .page("src")
-            .unwrap()
-            .doc
-            .blocks
-            .iter()
-            .find(|b| b.content.contains("the query"))
-            .unwrap()
-            .id
-            .clone();
-        v.insert("dst.md", format!("![[src#{qid}]]\n"));
-        v.assign_ids();
-        let mut idx = SqliteIndex::open_in_memory().unwrap();
-        idx.rebuild(&v).unwrap();
-        let back = idx.backlinks(&qid).unwrap();
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0].kind, LinkKind::Transcludes);
-    }
-
-    #[test]
-    fn remove_page_clears_everything() {
-        let (mut idx, _v) = indexed_vault(&[("a.md", "hello\n")]);
-        assert_eq!(idx.stats().unwrap().pages, 1);
-        idx.remove_page("a.md").unwrap();
-        let s = idx.stats().unwrap();
-        assert_eq!(s.pages, 0);
-        assert_eq!(s.blocks, 0);
-    }
-
-    #[test]
-    fn vector_search_ranks_by_cosine() {
-        use mdkb_core::{Embedder, HashEmbedder};
-        let (mut idx, v) = indexed_vault(&[(
-            "n.md",
-            "# Server\n\nrestart the nginx web server\n\nfavourite pizza toppings\n",
-        )]);
-        let embedder = HashEmbedder::new(512);
-        // Embed every block.
-        for page in v.pages() {
-            for b in &page.doc.blocks {
-                let vec = embedder.embed_one(&b.contextual_text()).unwrap();
-                idx.set_embedding(&b.id, &embedder.model_id(), &vec)
-                    .unwrap();
-            }
-        }
-        assert!(idx.stats().unwrap().embedded >= 2);
-
-        let q = SearchQuery {
-            vector: Some(embedder.embed_one("how do I restart nginx").unwrap()),
-            ..Default::default()
-        };
-        let hits = idx.search(&q).unwrap();
-        assert!(!hits.is_empty());
-        // The nginx block should outrank the pizza block.
-        assert!(hits[0].block.content.contains("nginx"));
-    }
-
-    #[test]
-    fn vector_search_excludes_other_model_embeddings() {
-        use mdkb_core::{Embedder, HashEmbedder};
-        let (mut idx, v) = indexed_vault(&[("n.md", "restart the nginx server\n")]);
-        let embedder = HashEmbedder::new(512);
-        for page in v.pages() {
-            for b in &page.doc.blocks {
-                let vec = embedder.embed_one(&b.contextual_text()).unwrap();
-                idx.set_embedding(&b.id, "model-A", &vec).unwrap();
-            }
-        }
-        // Query tagged with a DIFFERENT model id must not match model-A vectors (no silent
-        // cross-space comparison).
-        let q = SearchQuery {
-            vector: Some(embedder.embed_one("nginx").unwrap()),
-            vector_model: Some("model-B".to_string()),
-            ..Default::default()
-        };
-        assert!(idx.search(&q).unwrap().is_empty());
-        // Same model id matches.
-        let q_same = SearchQuery {
-            vector: Some(embedder.embed_one("nginx").unwrap()),
-            vector_model: Some("model-A".to_string()),
-            ..Default::default()
-        };
-        assert!(!idx.search(&q_same).unwrap().is_empty());
-    }
-
-    #[test]
-    fn hybrid_search_fuses_keyword_and_vector() {
-        use mdkb_core::{Embedder, HashEmbedder};
-        let (mut idx, v) = indexed_vault(&[(
-            "n.md",
-            "# Ops\n\nbounce the nginx service script\n\nunrelated grocery list\n",
-        )]);
-        let embedder = HashEmbedder::new(512);
-        for page in v.pages() {
-            for b in &page.doc.blocks {
-                let vec = embedder.embed_one(&b.contextual_text()).unwrap();
-                idx.set_embedding(&b.id, &embedder.model_id(), &vec)
-                    .unwrap();
-            }
-        }
-        let q = SearchQuery {
-            text: Some("nginx".to_string()),
-            vector: Some(embedder.embed_one("restart nginx service").unwrap()),
-            ..Default::default()
-        };
-        let hits = idx.search(&q).unwrap();
-        assert!(hits.iter().any(|h| h.block.content.contains("nginx")));
-        assert!(hits[0].block.content.contains("nginx"));
-    }
-
-    #[test]
-    fn reindex_drops_stale_embeddings() {
-        use mdkb_core::{page_links, Embedder, HashEmbedder};
-        let mut v = Vault::new();
-        v.insert("a.md", "alpha block\n\nbeta block\n");
-        v.assign_ids();
-        let mut idx = SqliteIndex::open_in_memory().unwrap();
-        idx.rebuild(&v).unwrap();
-        let embedder = HashEmbedder::new(64);
-        for b in &v.page("a").unwrap().doc.blocks {
-            idx.set_embedding(
-                &b.id,
-                &embedder.model_id(),
-                &embedder.embed_one(&b.content).unwrap(),
-            )
-            .unwrap();
-        }
-        assert_eq!(idx.stats().unwrap().embedded, 2);
-        // Shrink page; reindex clears the page's embeddings (re-embedding is the engine's
-        // job), so the stale "beta" embedding cannot linger.
-        v.insert("a.md", "alpha block\n");
-        v.assign_ids();
-        let page = v.page("a").unwrap().clone();
-        idx.reindex_page(&page, &page_links(&v, &page)).unwrap();
-        assert_eq!(idx.stats().unwrap().embedded, 0);
-        // Re-embedding the surviving block yields exactly one embedding.
-        for b in &page.doc.blocks {
-            idx.set_embedding(
-                &b.id,
-                &embedder.model_id(),
-                &embedder.embed_one(&b.content).unwrap(),
-            )
-            .unwrap();
-        }
-        assert_eq!(idx.stats().unwrap().embedded, 1);
-    }
-
-    #[test]
-    fn engine_semantic_search_end_to_end() {
-        use mdkb_core::{HashEmbedder, SyncEngine};
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(
-            root.path().join("ops.md"),
-            "# Web server\n\nbounce the nginx service to apply config\n\npicking ripe avocados\n",
-        )
-        .unwrap();
-
-        let idx = SqliteIndex::open_in_memory().unwrap();
-        let mut engine =
-            SyncEngine::new(root.path(), idx).with_embedder(Box::new(HashEmbedder::new(512)));
-        engine.reconcile().unwrap();
-        assert!(engine.index().stats().unwrap().embedded >= 2);
-
-        // A semantically related query with no shared keywords beyond "nginx".
-        let hits = engine
-            .search(SearchQuery {
-                text: Some("restart nginx".to_string()),
-                ..Default::default()
-            })
-            .unwrap();
-        assert!(!hits.is_empty());
-        assert!(hits[0].block.content.contains("nginx"));
     }
 }

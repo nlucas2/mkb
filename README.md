@@ -6,16 +6,23 @@ mdkb stores knowledge as plain Markdown files (the single source of truth) and s
 equal consumers:
 
 - **You**, the human, via a desktop app that renders the knowledge cleanly with live
-  transclusion (update a block once, every page that embeds it reflects the change).
+  transclusion (edit a block once, every block that embeds it reflects the change).
 - **AI clients** (e.g. GitHub Copilot) via an MCP server exposing deterministic
   search / write / link tools.
 
 The store works fully with all AI turned off. It is decoupled from any agent: agents are
 clients, not part of the store.
 
-> Status: **feature-complete** across all planned phases (parser, transclusion, index,
-> semantic search, daemon, MCP, web + desktop UIs, cluster deploy). Versioned `0.0.0` /
-> pre-release. See "Roadmap" for what each phase delivered.
+> **Model: file-per-block.** A *block* is the unit of knowledge and **is a file**
+> (`blocks/<ULID>.md`). A block can embed other blocks (`![[id]]` = a live child /
+> transclusion) or link to them (`[[id]]` = a reference). A "page" is just a block you open at
+> the top — there is no separate page concept. This makes reuse uniform (a reusable chunk is
+> its own block, embedded anywhere, edited once) and **sync-friendly** (editing one block
+> touches one small file). See **[`docs/architecture.md`](./docs/architecture.md)** for the
+> design and **[`docs/SPEC.md`](./docs/SPEC.md)** for the exact on-disk format.
+
+> Status: core re-architected to the file-per-block model (parser, transclusion, index,
+> semantic search, daemon, MCP, web + desktop UIs). Versioned `0.0.0` / pre-release.
 
 ## Two ways to run it
 
@@ -56,9 +63,10 @@ remote setup.
 - **Markdown files are the source of truth.** Clean, diffable, editable in any editor.
 - **The index is a rebuildable cache** (never synced, never authoritative). Delete it and
   re-derive from the Markdown — nothing is lost.
-- **Block-level identity + transclusion** — every block has a stable id, encoded as an
-  invisible HTML comment (`<!-- mdkb:<ulid> -->`) so files stay clean.
-- **One shared core.** The MCP server, CLI, and desktop UI are thin clients of
+- **Block = file = page.** Every block is a file `blocks/<ULID>.md`; the ULID filename is its
+  stable identity. Reuse is uniform: `![[id]]` embeds a block (and its subtree) live, `[[id]]`
+  links to it. A page is just a root block.
+- **One shared core.** The MCP server, CLI, web UI, and desktop UI are thin clients of
   `mdkb-core`; behavior is never implemented twice. See [`AGENTS.md`](./AGENTS.md).
 
 ## Workspace layout
@@ -96,58 +104,63 @@ cargo run -p mdkb-cli -- --help
 ## Components
 
 - `mdkb-core`:
-  - `id` — `BlockId` (ULID) + `IdCodec` trait with the native `<!-- mdkb:<ulid> -->` encoding.
-  - `block` / `document` — a fidelity-preserving Markdown parser producing block-level
-    nodes (headings, paragraphs, code fences, quotes, list items, thematic breaks, HTML),
-    with heading lineage, code-fence `lang`, and tags (inline `#tag`, frontmatter, lang).
-    Eager id assignment splices invisible markers in without reformatting the file.
-  - `link` — `[[...]]` / `![[...]]` reference parsing (page, id/heading anchor, display).
-  - `vault` — in-memory or directory-backed page collection with name/id resolution,
-    id assignment, and fidelity-preserving block edits.
-  - `render` — transclusion resolver: inlines `![[...]]` embeds (the "update once,
-    reflects everywhere" guarantee), renders links, breaks cycles.
+  - `id` — `BlockId` (ULID): a block's identity is its filename stem.
+  - `blockfile` — parse a block file (`blocks/<ULID>.md`): YAML frontmatter (`title:`, `tags:`)
+    + clean Markdown body; collects inline `#tags` and code-fence languages.
+  - `block` — the block model (id, title, tags, langs, body) + derived views (children,
+    references, contextual text for embeddings).
+  - `link` — `[[target]]` / `![[target]]` directive parsing (target = ULID or title, display alias).
+  - `vault` — the DAG: a map of `BlockId → Block` loaded from `blocks/`, with id/title
+    resolution, children/backlinks, and root detection.
+  - `render` — the transclusion resolver: expands `![[id]]` children (the "edit once, reflects
+    everywhere" guarantee), renders `[[id]]` as `mdkb:` links, and is **total** — breaks cycles
+    and degrades dangling targets locally with a visible note.
   - `index` — storage-agnostic `Index` trait, owned records, search query/hit types, link
-    extraction, and pure hybrid ranking (reciprocal rank fusion).
-  - `sync` — `SyncEngine`: reconciles a vault directory with an index (hash-skip unchanged
-    files, eager id assignment, incremental reindex, deletion detection).
-- `mdkb-index` — SQLite + FTS5 implementation of `Index` (keyword search, tag/lang/page
-  filters, vector storage, brute-force cosine, hybrid keyword+vector fusion, backlinks,
-  stats). Bundled SQLite, no system dependency.
-- `mdkb-embed` — `Embedder` backends: the offline deterministic `HashEmbedder` (default)
-  and an optional local ONNX model via `fastembed` (build with `--features onnx`).
-- `mdkb-core::service` — the shared `Service` API (search / get / render / upsert / link /
-  delete / reconcile) with a `RequestContext` + capability gate on every call. Every client
-  goes through this; behavior is never reimplemented per client.
-- `mdkb-protocol` — newline-delimited JSON wire types, a blocking local-socket `Client`, and
-  the shared `dispatch` request handler.
-- `mdkbd` — the headless daemon: owns a `SyncEngine` over SQLite + the vault, a `notify`
-  file watcher that auto-reconciles external edits, and a local-socket server (Unix socket / Windows named pipe). Can also
-  serve a **token-gated TCP** listener (opt-in via `--listen`, fail-closed) for remote/cluster
-  clients.
-- `mdkb` CLI commands: `render`, `assign-ids`, `list`, `search` (keyword + semantic),
-  `stats`, and `daemon` (talk to a running `mdkbd`: `ping`/`stats`/`list`/`search`/`render`/
-  `rebuild`/`conflicts`).
+    extraction, the knowledge graph, transclusion-reachability, and hybrid ranking (RRF).
+  - `sync` — `SyncEngine`: reconciles the `blocks/` directory with an index (hash-skip
+    unchanged files, incremental reindex, deletion + conflict-copy detection); owns block
+    create/update/delete/carve writes.
+- `mdkb-index` — SQLite + FTS5 implementation of `Index` (keyword search, tag/lang filters,
+  vector storage, brute-force cosine, hybrid keyword+vector fusion, backlinks, stats). Bundled
+  SQLite, no system dependency.
+- `mdkb-embed` — `Embedder` backends: the offline deterministic `HashEmbedder` and a bundled
+  INT8 ONNX model (no runtime download); configurable per vault.
+- `mdkb-core::service` — the shared `Service` API (search / get / render / create / update /
+  delete / carve / link / reconcile) with a `RequestContext` + capability gate on every call.
+  Every client goes through this; behavior is never reimplemented per client.
+- `mdkb-protocol` — newline-delimited JSON wire types, a blocking `Client` (local socket or
+  token-gated TCP), the shared `dispatch` handler, and the shared connection layer
+  (`ConnectionConfig` / `connect` / `ensure_daemon` — auto-starts a **detached** daemon).
+- `mdkbd` — the headless daemon: owns a `SyncEngine` over SQLite + the vault, a `notify` file
+  watcher that auto-reconciles external edits, and a local-socket server (Unix socket / Windows
+  named pipe). Can also serve a **token-gated TCP** listener (opt-in via `--listen`,
+  fail-closed) for remote/cluster clients.
+- `mdkb` CLI commands: `render <id>`, `list`, `search` (keyword + semantic), `stats`, and
+  `daemon` (talk to a running `mdkbd`: `ping`/`stats`/`list`/`search`/`render`/`rebuild`/`conflicts`).
 - `mdkb-mcp` — an MCP server (JSON-RPC 2.0 over stdio) exposing the knowledge base as tools
-  (`search`, `get_block`, `get_page`, `render_page`, `list_pages`, `backlinks`,
-  `links_from`, `upsert_block`, `save_page`, `delete_page`, `link_blocks`, `stats`). It is a
-  thin client that forwards every call to the daemon and auto-starts `mdkbd` if needed.
+  (`search`, `get_block`, `render_block`, `list_blocks`, `list_roots`, `graph`, `backlinks`,
+  `links_from`, `create_block`, `update_block`, `delete_block`, `carve_block`, `link_blocks`,
+  `stats`, `rebuild`, `conflicts`). A thin client that forwards every call to the daemon and
+  auto-starts `mdkbd` if needed.
 
 ## Usage (current)
 
 ```sh
-# assign stable ids to every block (writes invisible markers into your .md files)
-cargo run -p mdkb-cli -- assign-ids ./my-vault
+# start the daemon for a vault (creates blocks/ + .mdkb/ as needed)
+cargo run -p mdkbd -- --vault ./my-vault &
 
-# render a page with all transclusions resolved
-cargo run -p mdkb-cli -- render ./my-vault useful-queries
+# the daemon owns writes; talk to it over its socket:
+SOCK=./my-vault/.mdkb/mdkbd.sock
+cargo run -p mdkb-cli -- daemon "$SOCK" list                 # root blocks: id  title
+cargo run -p mdkb-cli -- daemon "$SOCK" search "restart nginx"
+cargo run -p mdkb-cli -- daemon "$SOCK" render <block-id>    # children inlined
 
-# search — combines keyword (FTS) and semantic (vector) ranking, with optional filters
-cargo run -p mdkb-cli -- search ./my-vault "how do I restart nginx"
-cargo run -p mdkb-cli -- search ./my-vault --lang=kusto
-cargo run -p mdkb-cli -- search ./my-vault --tag=ops --limit=10
-
-# list pages / index stats
+# read-only CLI directly over a vault directory (no daemon):
 cargo run -p mdkb-cli -- list ./my-vault
+cargo run -p mdkb-cli -- search ./my-vault "how do I restart nginx"
+cargo run -p mdkb-cli -- search ./my-vault kusto --lang=kusto
+cargo run -p mdkb-cli -- search ./my-vault ops --tag=ops --limit=10
+cargo run -p mdkb-cli -- render ./my-vault <block-id>
 cargo run -p mdkb-cli -- stats ./my-vault
 ```
 
@@ -233,9 +246,25 @@ both connect using the two paradigms above — a **local** socket or a **remote*
   cargo run -p mdkb-web -- --remote mdkbd.example:7820 --token "$MDKB_TOKEN"
   ```
 
-- **Desktop shell** (`app/mdkb-tauri`) — a Tauri app over the same crates; environment-driven
-  (`MDKB_REMOTE` + `MDKB_TOKEN` for a remote daemon, else the local socket). Lives in its own
-  workspace (needs the Tauri toolchain); see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
+- **Desktop shell** (`app/mdkb-tauri`) — a Tauri app over the same crates. It is a full
+  **editor and graph browser**, not just a viewer:
+  - **Read / Edit** per block — read with children (transclusions) resolved into embed cards
+    and references shown as chips, or edit the block's title + Markdown body in place.
+  - **New block / Carve / Delete** — create a block, **carve** a reusable child out of a block
+    in place (non-destructive: the chunk becomes its own block, embedded where it was), or
+    delete a block.
+  - **Knowledge graph** — a force-directed block graph (nodes = blocks sized by link degree,
+    roots highlighted; edges = `[[refs]]` / `![[transclusions]]`); click a node to open it,
+    hover to highlight neighbours. The graph is computed in `mdkb-core` (`link_graph`) and only
+    rendered by the UI (vendored `force-graph`, offline).
+  - **Linked references** — every block lists the blocks that link to or embed it.
+  - **Settings** (no env vars) — choose a **Local vault** (the app auto-starts a background
+    `mdkbd` for that folder and reuses it; the daemon keeps running after you quit) or a
+    **Remote daemon** (`host:port` + token). Saved to a per-user config file and applied
+    without restarting the app. The connection status dot in the sidebar opens Settings.
+
+  Lives in its own workspace (needs the Tauri toolchain); see
+  [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
 
 ## Roadmap
 

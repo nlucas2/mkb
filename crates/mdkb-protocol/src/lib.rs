@@ -1,22 +1,23 @@
 //! The mdkb wire protocol: request/response types, a blocking client, and the shared
 //! request dispatcher.
 //!
-//! Both ends speak newline-delimited JSON over a transport (a Unix socket today). The
+//! Both ends speak newline-delimited JSON over a transport (a local socket or TCP). The
 //! [`dispatch`] function maps a [`Request`] onto a [`mdkb_core::Service`] and is the single
-//! place request handling lives — the daemon is just transport glue around it, and any
-//! other host (tests, an embedded server) reuses the exact same logic. This upholds the
-//! "no divergence" rule in `AGENTS.md`.
+//! place request handling lives — the daemon is just transport glue around it. This upholds
+//! the "no divergence" rule in `AGENTS.md`. The unit everywhere is the **block** (one file).
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+pub mod connect;
 pub mod paths;
 pub mod transport;
+pub use connect::{connect, ensure_daemon, ConnectionConfig};
 pub use paths::DaemonPaths;
 
 use mdkb_core::{
-    BlockId, BlockRecord, Index, IndexStats, LinkRow, RequestContext, SearchHit, SearchQuery,
-    Service,
+    BlockId, BlockRecord, GraphData, Index, IndexStats, LinkOutcome, LinkRow, RenderedBlock,
+    RequestContext, SearchHit, SearchQuery, Service,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,27 +29,36 @@ pub enum Request {
     Ping,
     /// Index statistics.
     Stats,
-    /// List page paths.
-    ListPages,
+    /// List all block ids.
+    ListBlocks,
+    /// List root block ids (top-level entries).
+    ListRoots,
+    /// The block-level knowledge graph.
+    Graph,
     /// Search (keyword + semantic).
     Search {
         /// The query.
         query: SearchQuery,
     },
-    /// Fetch a block by id.
+    /// Fetch a block record by id.
     GetBlock {
         /// Block id.
         id: BlockId,
     },
-    /// Raw Markdown source of a page.
-    GetPageSource {
-        /// Page path.
-        page: String,
+    /// Raw Markdown body of a block (for editing).
+    GetBlockSource {
+        /// Block id.
+        id: BlockId,
     },
-    /// Render a page with transclusions resolved.
-    RenderPage {
-        /// Page path.
-        page: String,
+    /// Render a block with its children (transclusions) resolved.
+    RenderBlock {
+        /// Block id.
+        id: BlockId,
+    },
+    /// Render a block as raw + resolved Markdown.
+    RenderedBlock {
+        /// Block id.
+        id: BlockId,
     },
     /// Outgoing links from a block.
     LinksFrom {
@@ -60,43 +70,50 @@ pub enum Request {
         /// Block id.
         id: BlockId,
     },
-    /// Upsert a block (update by id, or append a new block to a page).
-    UpsertBlock {
-        /// Existing block id to update, or `None` to create.
-        id: Option<BlockId>,
-        /// The block text.
-        text: String,
-        /// Target page (required when creating).
-        page: Option<String>,
+    /// Dangling links (unresolved targets) across the vault — for the health view.
+    Dangling,
+    /// Create a new block (optional title + body). Returns the new id.
+    CreateBlock {
+        /// Optional title.
+        title: Option<String>,
+        /// Markdown body.
+        body: String,
     },
-    /// Save (create/overwrite) a whole page.
-    SavePage {
-        /// Page path.
-        page: String,
-        /// Markdown source.
-        source: String,
+    /// Overwrite a block's title + body.
+    UpdateBlock {
+        /// Block id.
+        id: BlockId,
+        /// Optional title.
+        title: Option<String>,
+        /// Markdown body.
+        body: String,
     },
-    /// Delete a page.
-    DeletePage {
-        /// Page path.
-        page: String,
+    /// Delete a block.
+    DeleteBlock {
+        /// Block id.
+        id: BlockId,
     },
-    /// Create a link/transclusion from one block to a target.
+    /// Carve a new child block out of an existing block. Returns the new child id.
+    CarveBlock {
+        /// Parent block id.
+        parent_id: BlockId,
+        /// Optional title for the new child.
+        title: Option<String>,
+        /// Markdown body for the new child.
+        body: String,
+    },
+    /// Link or embed one block to another (embed may downgrade to a reference to avoid a cycle).
     LinkBlocks {
         /// Source block id.
         source_id: BlockId,
-        /// Target page.
-        target_page: Option<String>,
         /// Target block id.
-        target_id: Option<BlockId>,
-        /// Target heading anchor.
-        target_anchor: Option<String>,
-        /// `true` to embed (`![[...]]`), `false` to link (`[[...]]`).
+        target_id: BlockId,
+        /// `true` to embed (`![[...]]`), `false` to reference (`[[...]]`).
         embed: bool,
     },
-    /// Reconcile the vault directory with the index.
+    /// Reconcile the `blocks/` directory with the index.
     Reconcile,
-    /// Rebuild the entire index from the vault files (clear + re-ingest).
+    /// Rebuild the entire index from the block files.
     Rebuild,
     /// List cloud-sync conflict files detected at the last reconcile.
     Conflicts,
@@ -115,18 +132,26 @@ pub enum Response {
     Pong,
     /// Index statistics.
     Stats(IndexStats),
-    /// Page paths.
-    Pages(Vec<String>),
+    /// A list of block ids.
+    Ids(Vec<BlockId>),
+    /// String names (e.g. conflict files).
+    Names(Vec<String>),
+    /// The block-level knowledge graph.
+    Graph(GraphData),
     /// Search results.
     Hits(Vec<SearchHit>),
-    /// A single (optional) block.
+    /// A single (optional) block record.
     Block(Option<BlockRecord>),
-    /// Optional text (page source / rendered page).
+    /// A single (optional) rendered block.
+    Rendered(Option<RenderedBlock>),
+    /// Optional text (block source / rendered block).
     Text(Option<String>),
     /// Link rows.
     Links(Vec<LinkRow>),
-    /// An affected block id (e.g. after upsert).
+    /// An affected block id (e.g. after create/carve).
     BlockId(BlockId),
+    /// The outcome of a link/embed write (may report a cycle-avoiding downgrade).
+    Linked(LinkOutcome),
     /// Success with no payload.
     Ok,
     /// An error with a human-readable message.
@@ -167,49 +192,56 @@ fn handle<I: Index>(
     Ok(match request {
         Request::Ping => Response::Pong,
         Request::Stats => Response::Stats(service.stats(ctx).map_err(to_str)?),
-        Request::ListPages => Response::Pages(service.list_pages(ctx).map_err(to_str)?),
+        Request::ListBlocks => Response::Ids(service.list_blocks(ctx).map_err(to_str)?),
+        Request::ListRoots => Response::Ids(service.list_roots(ctx).map_err(to_str)?),
+        Request::Graph => Response::Graph(service.graph(ctx).map_err(to_str)?),
         Request::Search { query } => Response::Hits(service.search(ctx, query).map_err(to_str)?),
         Request::GetBlock { id } => Response::Block(service.get_block(ctx, &id).map_err(to_str)?),
-        Request::GetPageSource { page } => {
-            Response::Text(service.get_page_source(ctx, &page).map_err(to_str)?)
+        Request::GetBlockSource { id } => {
+            Response::Text(service.get_block_source(ctx, &id).map_err(to_str)?)
         }
-        Request::RenderPage { page } => {
-            Response::Text(service.render_page(ctx, &page).map_err(to_str)?)
+        Request::RenderBlock { id } => {
+            Response::Text(service.render_block(ctx, &id).map_err(to_str)?)
+        }
+        Request::RenderedBlock { id } => {
+            Response::Rendered(service.rendered_block(ctx, &id).map_err(to_str)?)
         }
         Request::LinksFrom { id } => Response::Links(service.links_from(ctx, &id).map_err(to_str)?),
         Request::Backlinks { id } => Response::Links(service.backlinks(ctx, &id).map_err(to_str)?),
-        Request::UpsertBlock { id, text, page } => Response::BlockId(
+        Request::Dangling => Response::Links(service.dangling_links(ctx).map_err(to_str)?),
+        Request::CreateBlock { title, body } => Response::BlockId(
             service
-                .upsert_block(ctx, id, &text, page.as_deref())
+                .create_block(ctx, title.as_deref(), &body)
                 .map_err(to_str)?,
         ),
-        Request::SavePage { page, source } => {
-            service.save_page(ctx, &page, &source).map_err(to_str)?;
-            Response::Ok
-        }
-        Request::DeletePage { page } => {
-            service.delete_page(ctx, &page).map_err(to_str)?;
-            Response::Ok
-        }
-        Request::LinkBlocks {
-            source_id,
-            target_page,
-            target_id,
-            target_anchor,
-            embed,
-        } => {
+        Request::UpdateBlock { id, title, body } => {
             service
-                .link_blocks(
-                    ctx,
-                    &source_id,
-                    target_page.as_deref(),
-                    target_id.as_ref(),
-                    target_anchor.as_deref(),
-                    embed,
-                )
+                .update_block(ctx, &id, title.as_deref(), &body)
                 .map_err(to_str)?;
             Response::Ok
         }
+        Request::DeleteBlock { id } => {
+            service.delete_block(ctx, &id).map_err(to_str)?;
+            Response::Ok
+        }
+        Request::CarveBlock {
+            parent_id,
+            title,
+            body,
+        } => Response::BlockId(
+            service
+                .carve_block(ctx, &parent_id, title.as_deref(), &body)
+                .map_err(to_str)?,
+        ),
+        Request::LinkBlocks {
+            source_id,
+            target_id,
+            embed,
+        } => Response::Linked(
+            service
+                .link_blocks(ctx, &source_id, &target_id, embed)
+                .map_err(to_str)?,
+        ),
         Request::Reconcile => {
             service.reconcile(ctx).map_err(to_str)?;
             Response::Ok
@@ -218,9 +250,7 @@ fn handle<I: Index>(
             service.rebuild(ctx).map_err(to_str)?;
             Response::Ok
         }
-        Request::Conflicts => Response::Pages(service.conflicts(ctx).map_err(to_str)?),
-        // Authentication is handled by the transport layer (the server upgrades the
-        // connection's context); reaching dispatch means it was used out of place.
+        Request::Conflicts => Response::Names(service.conflicts(ctx).map_err(to_str)?),
         Request::Authenticate { .. } => Response::Error {
             message: "authenticate is handled by the transport layer".to_string(),
         },
@@ -283,7 +313,6 @@ enum Transport {
 pub struct Client {
     transport: Transport,
 }
-
 impl Client {
     /// Point a client at a daemon local socket path (Unix socket / Windows named pipe).
     pub fn new(socket: impl Into<PathBuf>) -> Self {
@@ -379,7 +408,6 @@ impl Client {
             }
         }
     }
-
     /// Convenience: search.
     pub fn search(&self, query: SearchQuery) -> io::Result<Vec<SearchHit>> {
         match self.call(&Request::Search { query })? {
@@ -396,12 +424,163 @@ impl Client {
         }
     }
 
-    /// Convenience: render a page.
-    pub fn render_page(&self, page: &str) -> io::Result<Option<String>> {
-        match self.call(&Request::RenderPage {
-            page: page.to_string(),
-        })? {
+    /// Convenience: list all block ids.
+    pub fn list_blocks(&self) -> io::Result<Vec<BlockId>> {
+        match self.call(&Request::ListBlocks)? {
+            Response::Ids(v) => Ok(v),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: list root block ids.
+    pub fn list_roots(&self) -> io::Result<Vec<BlockId>> {
+        match self.call(&Request::ListRoots)? {
+            Response::Ids(v) => Ok(v),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: the knowledge graph.
+    pub fn graph(&self) -> io::Result<GraphData> {
+        match self.call(&Request::Graph)? {
+            Response::Graph(g) => Ok(g),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: fetch a block record.
+    pub fn get_block(&self, id: BlockId) -> io::Result<Option<BlockRecord>> {
+        match self.call(&Request::GetBlock { id })? {
+            Response::Block(b) => Ok(b),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: raw Markdown body of a block.
+    pub fn get_block_source(&self, id: BlockId) -> io::Result<Option<String>> {
+        match self.call(&Request::GetBlockSource { id })? {
             Response::Text(t) => Ok(t),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: render a block (transclusions resolved).
+    pub fn render_block(&self, id: BlockId) -> io::Result<Option<String>> {
+        match self.call(&Request::RenderBlock { id })? {
+            Response::Text(t) => Ok(t),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: render a block as raw + resolved Markdown.
+    pub fn rendered_block(&self, id: BlockId) -> io::Result<Option<RenderedBlock>> {
+        match self.call(&Request::RenderedBlock { id })? {
+            Response::Rendered(b) => Ok(b),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: outgoing links from a block.
+    pub fn links_from(&self, id: BlockId) -> io::Result<Vec<LinkRow>> {
+        match self.call(&Request::LinksFrom { id })? {
+            Response::Links(l) => Ok(l),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: incoming references / transclusions of a block.
+    pub fn backlinks(&self, id: BlockId) -> io::Result<Vec<LinkRow>> {
+        match self.call(&Request::Backlinks { id })? {
+            Response::Links(l) => Ok(l),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: dangling links across the vault.
+    pub fn dangling(&self) -> io::Result<Vec<LinkRow>> {
+        match self.call(&Request::Dangling)? {
+            Response::Links(l) => Ok(l),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: create a block.
+    pub fn create_block(&self, title: Option<&str>, body: &str) -> io::Result<BlockId> {
+        match self.call(&Request::CreateBlock {
+            title: title.map(str::to_string),
+            body: body.to_string(),
+        })? {
+            Response::BlockId(id) => Ok(id),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: update a block.
+    pub fn update_block(&self, id: BlockId, title: Option<&str>, body: &str) -> io::Result<()> {
+        match self.call(&Request::UpdateBlock {
+            id,
+            title: title.map(str::to_string),
+            body: body.to_string(),
+        })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: delete a block.
+    pub fn delete_block(&self, id: BlockId) -> io::Result<()> {
+        match self.call(&Request::DeleteBlock { id })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: carve a child block out of a parent.
+    pub fn carve_block(
+        &self,
+        parent_id: BlockId,
+        title: Option<&str>,
+        body: &str,
+    ) -> io::Result<BlockId> {
+        match self.call(&Request::CarveBlock {
+            parent_id,
+            title: title.map(str::to_string),
+            body: body.to_string(),
+        })? {
+            Response::BlockId(id) => Ok(id),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: link or embed two blocks. Returns the [`LinkOutcome`].
+    pub fn link(
+        &self,
+        source_id: BlockId,
+        target_id: BlockId,
+        embed: bool,
+    ) -> io::Result<LinkOutcome> {
+        match self.call(&Request::LinkBlocks {
+            source_id,
+            target_id,
+            embed,
+        })? {
+            Response::Linked(o) => Ok(o),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: rebuild the index.
+    pub fn rebuild(&self) -> io::Result<()> {
+        match self.call(&Request::Rebuild)? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: conflict file names.
+    pub fn conflicts(&self) -> io::Result<Vec<String>> {
+        match self.call(&Request::Conflicts)? {
+            Response::Names(n) => Ok(n),
             other => Err(unexpected(other)),
         }
     }
@@ -419,7 +598,6 @@ fn unexpected(resp: Response) -> io::Error {
         .unwrap_or_else(|| format!("unexpected response: {resp:?}"));
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,30 +612,31 @@ mod tests {
 
     #[test]
     fn request_response_json_round_trip() {
-        let req = Request::UpsertBlock {
-            id: None,
-            text: "hello".into(),
-            page: Some("a.md".into()),
+        let req = Request::CreateBlock {
+            title: Some("T".into()),
+            body: "hello".into(),
         };
         let line = encode_request(&req).unwrap();
         let decoded: Request = serde_json::from_str(line.trim_end()).unwrap();
-        assert!(matches!(decoded, Request::UpsertBlock { .. }));
+        assert!(matches!(decoded, Request::CreateBlock { .. }));
     }
 
     #[test]
     fn every_response_variant_serializes_and_round_trips() {
-        // Guards against tagged-enum serialization pitfalls (e.g. sequences in newtype
-        // variants) that would otherwise only surface as a runtime hang.
         let id = mdkb_core::BlockId::generate();
         let variants = vec![
             Response::Pong,
             Response::Stats(IndexStats::default()),
-            Response::Pages(vec!["a.md".into(), "b.md".into()]),
+            Response::Ids(vec![id.clone()]),
+            Response::Names(vec!["a".into()]),
+            Response::Graph(GraphData::default()),
             Response::Hits(vec![]),
             Response::Block(None),
+            Response::Rendered(None),
             Response::Text(Some("hi".into())),
             Response::Links(vec![]),
             Response::BlockId(id),
+            Response::Linked(LinkOutcome::DowngradedToReference),
             Response::Ok,
             Response::Error {
                 message: "boom".into(),
@@ -475,97 +654,106 @@ mod tests {
     }
 
     #[test]
-    fn search_request_accepts_partial_query() {
-        // A client should be able to send only the fields it cares about.
-        let line = r#"{"op":"search","query":{"text":"index"}}"#;
-        let req = decode_request(line).expect("partial query must decode");
-        match req {
-            Request::Search { query } => {
-                assert_eq!(query.text.as_deref(), Some("index"));
-                assert!(query.tags.is_empty());
-                assert!(query.lang.is_none());
-            }
-            other => panic!("expected search, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn from_env_resolves_remote_socket_and_default() {
-        // This test mutates process env, so keep all cases in one test to avoid races.
-        for k in ["MDKB_REMOTE", "MDKB_TOKEN", "MDKB_SOCKET", "MDKB_VAULT"] {
-            std::env::remove_var(k);
-        }
-        // Default: local socket.
-        let c = Client::from_env().unwrap();
-        assert!(c.endpoint().starts_with("local:"));
-
-        // Explicit socket override.
-        std::env::set_var("MDKB_SOCKET", "/tmp/custom.sock");
-        let c = Client::from_env().unwrap();
-        assert_eq!(c.endpoint(), "local:/tmp/custom.sock");
-
-        // Remote requires a token: set remote without token → error.
-        std::env::set_var("MDKB_REMOTE", "host.example:7820");
-        assert!(Client::from_env().is_err());
-
-        // Remote + token → TCP, and takes precedence over the socket.
-        std::env::set_var("MDKB_TOKEN", "secret");
-        let c = Client::from_env().unwrap();
-        assert_eq!(c.endpoint(), "tcp:host.example:7820");
-
-        for k in ["MDKB_REMOTE", "MDKB_TOKEN", "MDKB_SOCKET", "MDKB_VAULT"] {
-            std::env::remove_var(k);
-        }
-    }
-
-    #[test]
     fn dispatch_executes_writes_and_reads() {
         let (_dir, mut svc) = service();
         let ctx = RequestContext::local();
 
-        // Create a block.
         let id = match dispatch(
             &mut svc,
             &ctx,
-            Request::UpsertBlock {
-                id: None,
-                text: "StormEvents | take 10".into(),
-                page: Some("queries.md".into()),
+            Request::CreateBlock {
+                title: Some("Q".into()),
+                body: "StormEvents | take 10".into(),
             },
         ) {
             Response::BlockId(id) => id,
             other => panic!("expected block id, got {other:?}"),
         };
 
-        // Read it back via dispatch.
         match dispatch(&mut svc, &ctx, Request::GetBlock { id: id.clone() }) {
             Response::Block(Some(b)) => assert_eq!(b.content, "StormEvents | take 10"),
             other => panic!("expected block, got {other:?}"),
         }
 
-        // Stats reflect one page / one block.
         match dispatch(&mut svc, &ctx, Request::Stats) {
-            Response::Stats(s) => {
-                assert_eq!(s.pages, 1);
-                assert_eq!(s.blocks, 1);
-            }
+            Response::Stats(s) => assert_eq!(s.blocks, 1),
             other => panic!("expected stats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_serves_graph_and_link_with_downgrade() {
+        let (_dir, mut svc) = service();
+        let ctx = RequestContext::local();
+        let a = match dispatch(
+            &mut svc,
+            &ctx,
+            Request::CreateBlock {
+                title: None,
+                body: "A".into(),
+            },
+        ) {
+            Response::BlockId(id) => id,
+            o => panic!("{o:?}"),
+        };
+        let b = match dispatch(
+            &mut svc,
+            &ctx,
+            Request::CreateBlock {
+                title: None,
+                body: "B".into(),
+            },
+        ) {
+            Response::BlockId(id) => id,
+            o => panic!("{o:?}"),
+        };
+        // A embeds B.
+        assert!(matches!(
+            dispatch(
+                &mut svc,
+                &ctx,
+                Request::LinkBlocks {
+                    source_id: a.clone(),
+                    target_id: b.clone(),
+                    embed: true
+                }
+            ),
+            Response::Linked(LinkOutcome::Transclusion)
+        ));
+        // B embedding A would cycle -> downgrade.
+        assert!(matches!(
+            dispatch(
+                &mut svc,
+                &ctx,
+                Request::LinkBlocks {
+                    source_id: b.clone(),
+                    target_id: a.clone(),
+                    embed: true
+                }
+            ),
+            Response::Linked(LinkOutcome::DowngradedToReference)
+        ));
+        match dispatch(&mut svc, &ctx, Request::Graph) {
+            Response::Graph(g) => assert_eq!(g.nodes.len(), 2),
+            o => panic!("expected graph, got {o:?}"),
         }
     }
 
     #[test]
     fn dispatch_reports_errors_as_response() {
         let (_dir, mut svc) = service();
-        let ctx = RequestContext::local();
-        let resp = dispatch(
-            &mut svc,
-            &ctx,
-            Request::UpsertBlock {
-                id: None,
-                text: "x".into(),
-                page: None, // missing page → error
-            },
-        );
-        assert!(resp.error_message().is_some());
+        let ctx = RequestContext::remote("agent");
+        match dispatch(&mut svc, &ctx, Request::ListBlocks) {
+            Response::Error { message } => assert!(message.contains("unauthorized")),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_env_resolves_remote_socket_and_default() {
+        std::env::remove_var("MDKB_REMOTE");
+        std::env::remove_var("MDKB_SOCKET");
+        let c = Client::from_env().unwrap();
+        assert!(c.endpoint().starts_with("local:"));
     }
 }

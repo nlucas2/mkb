@@ -1,138 +1,158 @@
 //! The in-memory block model.
 //!
-//! A [`Block`] is the atomic addressable unit of a document: a heading, paragraph,
-//! fenced code block, block quote, list item, etc. Parsing lives in [`crate::document`];
-//! this module just defines the data.
-
-use std::ops::Range;
+//! In the **file-per-block** model a [`Block`] *is* a file (`blocks/<ulid>.md`): the ULID is
+//! the filename stem, the block's content is the file body, and the directives inside that
+//! body define its edges — `![[target]]` marks a **child** (transclusion) and `[[target]]` a
+//! plain **reference**. Parsing a file into a `Block` lives in [`crate::blockfile`]; this
+//! module just defines the data and derived views.
 
 use crate::id::BlockId;
+use crate::link::{extract_references, Reference};
 
-/// The structural kind of a block.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BlockKind {
-    /// An ATX heading (`#`..`######`) with its level (1-6).
-    Heading { level: u8 },
-    /// A plain paragraph (one or more non-blank lines).
-    Paragraph,
-    /// A fenced code block. The fence language, if any, is on [`Block::lang`].
-    CodeFence,
-    /// A block quote (`>`-prefixed lines).
-    Quote,
-    /// A single list item (and any of its continuation/nested lines).
-    ListItem,
-    /// A standalone HTML block that is not an mdkb id marker.
-    Html,
-    /// A thematic break (`---`, `***`, `___`).
-    ThematicBreak,
-}
-
-impl BlockKind {
-    /// The structural kind as a short stable string (for indexing/filtering).
-    pub fn kind_str(&self) -> &'static str {
-        match self {
-            BlockKind::Heading { .. } => "heading",
-            BlockKind::Paragraph => "paragraph",
-            BlockKind::CodeFence => "code",
-            BlockKind::Quote => "quote",
-            BlockKind::ListItem => "list",
-            BlockKind::Html => "html",
-            BlockKind::ThematicBreak => "break",
-        }
-    }
-
-    /// The heading level, if this is a heading.
-    pub fn heading_level(&self) -> Option<u8> {
-        match self {
-            BlockKind::Heading { level } => Some(*level),
-            _ => None,
-        }
-    }
-}
-
-/// Where a tag came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TagSource {
-    /// An inline `#tag` written in the block text.
-    Inline,
-    /// Inherited from the page's YAML frontmatter `tags:`.
-    Frontmatter,
-    /// Implied by a fenced code block's language (e.g. ```` ```kusto ````).
-    Lang,
-}
-
-/// A tag attached to a block.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Tag {
-    /// The tag text, without a leading `#`.
-    pub name: String,
-    /// How the tag was derived.
-    pub source: TagSource,
-}
-
-impl Tag {
-    /// Convenience constructor.
-    pub fn new(name: impl Into<String>, source: TagSource) -> Self {
-        Tag {
-            name: name.into(),
-            source,
-        }
-    }
-}
-
-/// A parsed block.
-///
-/// `content` is the exact source text of the block (excluding its id marker line).
-/// `content_range` and `marker_range` index into the owning [`crate::document::Document`]'s
-/// source string and exist so writers can splice edits in without disturbing the rest of
-/// the file.
+/// A single block: one file in the vault.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
-    /// Stable identity.
+    /// Stable identity (the filename stem).
     pub id: BlockId,
-    /// Structural kind.
-    pub kind: BlockKind,
-    /// Fence language for [`BlockKind::CodeFence`], else `None`.
-    pub lang: Option<String>,
-    /// Breadcrumb of ancestor heading texts, nearest-last.
-    pub lineage: Vec<String>,
-    /// Tags attached to this block.
-    pub tags: Vec<Tag>,
-    /// Exact block source text, without the id marker line.
-    pub content: String,
-    /// Byte range of `content` within the document source.
-    pub content_range: Range<usize>,
-    /// Byte range of the existing id marker line within the document source, if the block
-    /// already carried one on disk. `None` means the id was assigned in memory and is not
-    /// yet persisted.
-    pub marker_range: Option<Range<usize>>,
+    /// Optional human title (from frontmatter `title:`).
+    pub title: Option<String>,
+    /// Tags attached to this block (frontmatter `tags:` + inline `#tag`), deduplicated.
+    pub tags: Vec<String>,
+    /// Fenced-code languages appearing in the body (for language-filtered search).
+    pub langs: Vec<String>,
+    /// The Markdown body (everything after frontmatter), verbatim.
+    pub body: String,
 }
 
 impl Block {
-    /// Whether this block's id was already present on disk.
-    pub fn has_persisted_id(&self) -> bool {
-        self.marker_range.is_some()
+    /// All directives in the body, in source order.
+    pub fn references(&self) -> Vec<Reference> {
+        extract_references(&self.body)
     }
 
-    /// The text used for embedding/search: lineage breadcrumb prepended to the content,
-    /// which fixes "context starvation" (a bare block is meaningless without its heading
-    /// path).
+    /// The raw targets of the block's **children** (`![[...]]`), in order. Targets are ULIDs
+    /// or titles; resolution to ids is the vault's job.
+    pub fn child_targets(&self) -> Vec<String> {
+        self.references()
+            .into_iter()
+            .filter(|r| r.embed)
+            .map(|r| r.target)
+            .collect()
+    }
+
+    /// The raw targets of the block's plain **references** (`[[...]]`), in order.
+    pub fn reference_targets(&self) -> Vec<String> {
+        self.references()
+            .into_iter()
+            .filter(|r| !r.embed)
+            .map(|r| r.target)
+            .collect()
+    }
+
+    /// A short display title: the explicit title, else the first non-empty line of the body
+    /// (stripped of Markdown heading markers), else the id.
+    pub fn display_title(&self) -> String {
+        if let Some(t) = &self.title {
+            if !t.trim().is_empty() {
+                return t.trim().to_string();
+            }
+        }
+        for line in self.body.lines() {
+            let t = line.trim().trim_start_matches('#').trim();
+            if !t.is_empty() {
+                let t = strip_inline_markup(t);
+                return truncate_chars(&t, 80);
+            }
+        }
+        self.id.to_string()
+    }
+
+    /// The text used for embedding/search: the title (context) prepended to the plain-text
+    /// body, with directives reduced to their labels. Mirrors the old "lineage-prepended"
+    /// contextual text — a bare block is meaningless without its title/context.
     pub fn contextual_text(&self) -> String {
-        if self.lineage.is_empty() {
-            self.content.clone()
-        } else {
-            format!("{}\n\n{}", self.lineage.join(" > "), self.content)
+        let plain = directives_to_text(&self.body);
+        match &self.title {
+            Some(t) if !t.trim().is_empty() => format!("{}\n\n{}", t.trim(), plain),
+            _ => plain,
         }
     }
 
-    /// All tag names (deduplicated, order-preserving) regardless of source.
+    /// All tag names (deduplicated, order-preserving).
     pub fn tag_names(&self) -> Vec<&str> {
-        let mut seen = Vec::new();
+        let mut seen: Vec<&str> = Vec::new();
         for t in &self.tags {
-            if !seen.contains(&t.name.as_str()) {
-                seen.push(t.name.as_str());
+            if !seen.contains(&t.as_str()) {
+                seen.push(t.as_str());
             }
         }
         seen
+    }
+}
+
+/// Replace `[[t]]` / `![[t|label]]` directives with their label text, for plain-text uses
+/// (search/embedding context) where the wiki syntax would only add noise.
+fn directives_to_text(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut cursor = 0usize;
+    for r in extract_references(body) {
+        out.push_str(&body[cursor..r.span.start]);
+        out.push_str(r.label());
+        cursor = r.span.end;
+    }
+    out.push_str(&body[cursor..]);
+    out
+}
+
+fn strip_inline_markup(s: &str) -> String {
+    s.replace(['*', '_', '`'], "")
+}
+
+fn truncate_chars(s: &str, n: usize) -> String {
+    if s.chars().count() > n {
+        let cut: String = s.chars().take(n).collect();
+        format!("{cut}…")
+    } else {
+        s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block(body: &str) -> Block {
+        Block {
+            id: BlockId::generate(),
+            title: None,
+            tags: vec![],
+            langs: vec![],
+            body: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn separates_children_from_references() {
+        let b = block("intro ![[01ARZ3NDEKTSV4RRFFQ69G5FAV]] and a [[link-target]] here");
+        assert_eq!(b.child_targets(), vec!["01ARZ3NDEKTSV4RRFFQ69G5FAV"]);
+        assert_eq!(b.reference_targets(), vec!["link-target"]);
+    }
+
+    #[test]
+    fn contextual_text_prepends_title_and_flattens_directives() {
+        let mut b = block("see [[ideas|the ideas page]] now");
+        b.title = Some("Home".into());
+        let ctx = b.contextual_text();
+        assert!(ctx.starts_with("Home"));
+        assert!(ctx.contains("the ideas page"));
+        assert!(!ctx.contains("[["));
+    }
+
+    #[test]
+    fn display_title_prefers_title_then_first_line() {
+        let mut b = block("# Heading One\n\nbody");
+        assert_eq!(b.display_title(), "Heading One");
+        b.title = Some("Explicit".into());
+        assert_eq!(b.display_title(), "Explicit");
     }
 }

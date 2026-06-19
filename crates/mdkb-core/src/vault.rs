@@ -1,40 +1,26 @@
-//! The vault: a collection of Markdown pages forming the knowledge base.
+//! The vault: the collection of block files that form the knowledge base.
 //!
-//! A [`Vault`] can be built in memory (great for tests) or loaded from a directory of
-//! `.md` files. It owns the parsed [`Document`]s, resolves page names and block ids, and
-//! performs id assignment and block edits while preserving file fidelity.
+//! In the file-per-block model a [`Vault`] is a map of [`BlockId`] → [`Block`], one entry per
+//! `blocks/<ulid>.md` file. Edges are derived from each block's directives: `![[target]]`
+//! (children / transclusions) and `[[target]]` (references). A *target* is resolved to a
+//! concrete id by ULID first, then by an exact (case-insensitive) title match.
 
-use crate::block::Block;
-use crate::document::Document;
-use crate::id::{BlockId, IdCodec, NativeIdCodec};
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-/// A single page: its vault-relative path (forward-slash, no `./`) and parsed document.
-#[derive(Debug, Clone)]
-pub struct Page {
-    /// Vault-relative path including the `.md` extension, using `/` separators.
-    pub path: String,
-    /// The parsed document.
-    pub doc: Document,
-}
+use crate::block::Block;
+use crate::blockfile::parse_block;
+use crate::id::BlockId;
 
-impl Page {
-    /// The page "name": the file stem (filename without directory or `.md`).
-    pub fn name(&self) -> &str {
-        let file = self.path.rsplit('/').next().unwrap_or(&self.path);
-        file.strip_suffix(".md").unwrap_or(file)
-    }
-}
+/// The directory (relative to the vault root) that holds block files.
+pub const BLOCKS_DIR: &str = "blocks";
 
-/// An in-memory collection of pages with name/id resolution.
+/// An in-memory collection of block files with id/title resolution.
 #[derive(Debug, Clone, Default)]
 pub struct Vault {
-    pages: Vec<Page>,
-    by_path: HashMap<String, usize>,
-    by_stem: HashMap<String, Vec<usize>>,
-    by_block: HashMap<BlockId, usize>,
+    blocks: HashMap<BlockId, Block>,
+    by_title: HashMap<String, BlockId>,
 }
 
 impl Vault {
@@ -43,151 +29,171 @@ impl Vault {
         Vault::default()
     }
 
-    /// Number of pages.
+    /// Number of blocks.
     pub fn len(&self) -> usize {
-        self.pages.len()
+        self.blocks.len()
     }
 
-    /// Whether the vault has no pages.
+    /// Whether the vault has no blocks.
     pub fn is_empty(&self) -> bool {
-        self.pages.is_empty()
+        self.blocks.is_empty()
     }
 
-    /// All pages, in insertion order.
-    pub fn pages(&self) -> &[Page] {
-        &self.pages
+    /// Insert (or replace) a block from its raw file source.
+    pub fn insert_source(&mut self, id: BlockId, source: &str) {
+        let block = parse_block(id, source);
+        self.insert(block);
     }
 
-    /// Insert (or replace) a page from raw Markdown source.
-    pub fn insert(&mut self, path: impl Into<String>, source: impl Into<String>) {
-        let path = normalize_path(&path.into());
-        let doc = Document::parse(source.into());
-        match self.by_path.get(&key(&path)).copied() {
-            Some(i) => self.pages[i] = Page { path, doc },
-            None => self.pages.push(Page { path, doc }),
+    /// Insert (or replace) a parsed block.
+    pub fn insert(&mut self, block: Block) {
+        self.blocks.insert(block.id.clone(), block);
+        self.reindex_titles();
+    }
+
+    /// Remove a block by id. Returns whether it existed.
+    pub fn remove(&mut self, id: &BlockId) -> bool {
+        let existed = self.blocks.remove(id).is_some();
+        if existed {
+            self.reindex_titles();
         }
-        self.reindex();
+        existed
     }
 
-    /// Load every `.md` file under `root` (recursively) into a vault.
+    /// Fetch a block by id.
+    pub fn block(&self, id: &BlockId) -> Option<&Block> {
+        self.blocks.get(id)
+    }
+
+    /// All blocks, in a stable (id-sorted) order.
+    pub fn blocks(&self) -> Vec<&Block> {
+        let mut v: Vec<&Block> = self.blocks.values().collect();
+        v.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        v
+    }
+
+    /// All block ids, sorted.
+    pub fn ids(&self) -> Vec<BlockId> {
+        let mut v: Vec<BlockId> = self.blocks.keys().cloned().collect();
+        v.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        v
+    }
+
+    /// Resolve a directive target (a ULID or a title) to a concrete block id.
+    pub fn resolve(&self, target: &str) -> Option<BlockId> {
+        let t = target.trim();
+        if let Ok(id) = BlockId::parse(t) {
+            if self.blocks.contains_key(&id) {
+                return Some(id);
+            }
+        }
+        self.by_title.get(&t.to_lowercase()).cloned()
+    }
+
+    /// The resolved child ids of a block, in document order (unresolved targets dropped).
+    pub fn children(&self, id: &BlockId) -> Vec<BlockId> {
+        self.blocks
+            .get(id)
+            .map(|b| {
+                b.child_targets()
+                    .iter()
+                    .filter_map(|t| self.resolve(t))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The resolved reference ids of a block (unresolved targets dropped).
+    pub fn references(&self, id: &BlockId) -> Vec<BlockId> {
+        self.blocks
+            .get(id)
+            .map(|b| {
+                b.reference_targets()
+                    .iter()
+                    .filter_map(|t| self.resolve(t))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Blocks that embed (transclude) `id` — incoming child edges.
+    pub fn transcluded_by(&self, id: &BlockId) -> Vec<BlockId> {
+        let mut out: Vec<BlockId> = self
+            .blocks
+            .values()
+            .filter(|b| self.children(&b.id).contains(id))
+            .map(|b| b.id.clone())
+            .collect();
+        out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        out
+    }
+
+    /// Blocks that reference (`[[...]]`) `id` — incoming reference edges.
+    pub fn referenced_by(&self, id: &BlockId) -> Vec<BlockId> {
+        let mut out: Vec<BlockId> = self
+            .blocks
+            .values()
+            .filter(|b| self.references(&b.id).contains(id))
+            .map(|b| b.id.clone())
+            .collect();
+        out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        out
+    }
+
+    /// "Root" blocks: those that nothing transcludes (top-level entries / pages).
+    pub fn roots(&self) -> Vec<BlockId> {
+        let mut out: Vec<BlockId> = self
+            .blocks
+            .keys()
+            .filter(|id| self.transcluded_by(id).is_empty())
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        out
+    }
+
+    /// Load every block file under `<root>/blocks/` into a vault.
     pub fn from_dir(root: impl AsRef<Path>) -> io::Result<Vault> {
-        let root = root.as_ref();
         let mut vault = Vault::new();
-        for (rel, abs) in markdown_files(root)? {
-            let source = std::fs::read_to_string(&abs)?;
-            vault.insert(rel, source);
+        for (id, _abs, source) in read_block_files(root.as_ref())? {
+            vault.insert_source(id, &source);
         }
         Ok(vault)
     }
 
-    /// Remove a page from the in-memory vault (does not touch the filesystem).
-    pub fn remove(&mut self, path: &str) -> bool {
-        let k = key(&normalize_path(path));
-        match self.by_path.get(&k).copied() {
-            Some(i) => {
-                self.pages.remove(i);
-                self.reindex();
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Resolve a page by name or relative path (case-insensitive).
-    pub fn page(&self, key_or_name: &str) -> Option<&Page> {
-        let normalized = normalize_path(key_or_name);
-        // Try as a path, with and without `.md`.
-        let candidates = [key(&normalized), key(&format!("{normalized}.md"))];
-        for c in candidates {
-            if let Some(&i) = self.by_path.get(&c) {
-                return Some(&self.pages[i]);
-            }
-        }
-        // Fall back to a unique stem match.
-        let stem = key(normalized.strip_suffix(".md").unwrap_or(&normalized));
-        let stem = stem.rsplit('/').next().unwrap_or(&stem).to_string();
-        match self.by_stem.get(&stem) {
-            Some(v) if v.len() == 1 => Some(&self.pages[v[0]]),
-            _ => None,
-        }
-    }
-
-    /// Find the page and block for a given block id.
-    pub fn block(&self, id: &BlockId) -> Option<(&Page, &Block)> {
-        let &i = self.by_block.get(id)?;
-        let page = &self.pages[i];
-        let block = page.doc.block(id)?;
-        Some((page, block))
-    }
-
-    /// Replace the textual content of a block (identified by id) with `new_text`.
-    ///
-    /// The change is spliced into the page source so the rest of the file — including the
-    /// block's id marker — is preserved, then the page is re-parsed. Returns the new page
-    /// source on success, or `None` if the id is unknown.
-    pub fn update_block(&mut self, id: &BlockId, new_text: &str) -> Option<String> {
-        let &i = self.by_block.get(id)?;
-        let range = self.pages[i].doc.block(id)?.content_range.clone();
-        let mut source = self.pages[i].doc.source.clone();
-        source.replace_range(range, new_text);
-        self.pages[i].doc = Document::parse(source.clone());
-        self.reindex();
-        Some(source)
-    }
-
-    /// Assign ids to every block lacking one, across all pages, using the native codec.
-    /// Returns the set of pages whose source changed, as `(path, new_source)`.
-    pub fn assign_ids(&mut self) -> Vec<(String, String)> {
-        self.assign_ids_with(&NativeIdCodec)
-    }
-
-    /// As [`Vault::assign_ids`] but with an explicit codec.
-    pub fn assign_ids_with(&mut self, codec: &dyn IdCodec) -> Vec<(String, String)> {
-        let mut changed = Vec::new();
-        for page in &mut self.pages {
-            if let Some(new_source) = page.doc.with_assigned_ids(codec) {
-                page.doc = Document::parse_with(codec, new_source.clone());
-                changed.push((page.path.clone(), new_source));
-            }
-        }
-        self.reindex();
-        changed
-    }
-
-    fn reindex(&mut self) {
-        self.by_path.clear();
-        self.by_stem.clear();
-        self.by_block.clear();
-        for (i, page) in self.pages.iter().enumerate() {
-            self.by_path.insert(key(&page.path), i);
-            self.by_stem.entry(key(page.name())).or_default().push(i);
-            for b in &page.doc.blocks {
-                self.by_block.insert(b.id.clone(), i);
+    fn reindex_titles(&mut self) {
+        self.by_title.clear();
+        // Deterministic: assign titles in id order so collisions resolve predictably.
+        let mut ids: Vec<&BlockId> = self.blocks.keys().collect();
+        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        for id in ids {
+            if let Some(t) = self.blocks[id].title.as_ref() {
+                let key = t.trim().to_lowercase();
+                if !key.is_empty() {
+                    self.by_title.entry(key).or_insert_with(|| id.clone());
+                }
             }
         }
     }
 }
 
-fn normalize_path(p: &str) -> String {
-    p.replace('\\', "/")
-        .trim_start_matches("./")
-        .trim_start_matches('/')
-        .to_string()
+/// The on-disk path of a block file, relative to the vault root.
+pub fn block_rel_path(id: &BlockId) -> String {
+    format!("{BLOCKS_DIR}/{}.md", id.as_str())
 }
 
 /// Validate and normalise a caller-supplied vault-relative path, confining it to the vault.
 ///
-/// Rejects absolute paths and any `..` traversal (and odd components), so a path obtained
-/// from an external caller (a write/delete API) can never escape the vault root via
-/// `Path::join`. Returns the cleaned forward-slash relative path. This is the single
-/// confinement boundary every filesystem write must pass through.
+/// Rejects absolute paths and any `..` traversal (and odd components), so a path obtained from
+/// an external caller can never escape the vault root via `Path::join`. Returns the cleaned
+/// forward-slash relative path. Block writes always go through [`block_rel_path`] (ULID-named,
+/// inherently safe); this remains the confinement boundary for any other path input.
 pub fn safe_relative_path(rel: &str) -> Result<String, String> {
     let normalized = rel.replace('\\', "/");
     let trimmed = normalized.trim();
     if trimmed.is_empty() {
         return Err("empty path".to_string());
     }
-    // Reject Unix and Windows absolute paths (incl. drive letters like `C:`).
     let p = std::path::Path::new(trimmed);
     if p.is_absolute() || trimmed.starts_with('/') {
         return Err(format!("absolute paths are not allowed: {rel}"));
@@ -197,7 +203,6 @@ pub fn safe_relative_path(rel: &str) -> Result<String, String> {
         match comp {
             "" | "." => continue,
             ".." => return Err(format!("path traversal is not allowed: {rel}")),
-            // A bare drive-letter / Windows prefix component.
             c if c.contains(':') => return Err(format!("invalid path component {c:?} in {rel}")),
             c => clean.push(c),
         }
@@ -208,40 +213,37 @@ pub fn safe_relative_path(rel: &str) -> Result<String, String> {
     Ok(clean.join("/"))
 }
 
-fn key(s: &str) -> String {
-    s.to_lowercase()
-}
-
-/// Recursively list `.md` files under `root`, returning `(vault-relative path, absolute
-/// path)` pairs. Hidden directories (those starting with `.`) are skipped.
-pub fn markdown_files(root: impl AsRef<Path>) -> io::Result<Vec<(String, std::path::PathBuf)>> {
-    let root = root.as_ref();
+/// Read every `blocks/<ulid>.md` file under `root`, returning `(id, abs path, source)`.
+/// Files whose stem is not a valid ULID are skipped (they are not mdkb blocks).
+pub fn read_block_files(root: &Path) -> io::Result<Vec<(BlockId, std::path::PathBuf, String)>> {
+    let dir = root.join(BLOCKS_DIR);
     let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries {
-            let entry = entry?;
-            let p = entry.path();
-            if p.is_dir() {
-                if !p
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with('.'))
-                {
-                    stack.push(p);
-                }
-            } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-                let rel = p.strip_prefix(root).unwrap_or(&p);
-                let rel = rel.to_string_lossy().replace('\\', "/");
-                out.push((rel, p));
-            }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(ref e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
         }
+        let stem = match p.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        let id = match BlockId::parse(stem) {
+            Ok(id) => id,
+            Err(_) => continue, // not a block file
+        };
+        let source = match std::fs::read_to_string(&p) {
+            Ok(s) => s,
+            Err(_) => continue, // unreadable / non-UTF-8: skip, never mangle
+        };
+        out.push((id, p, source));
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
     Ok(out)
 }
 
@@ -249,63 +251,45 @@ pub fn markdown_files(root: impl AsRef<Path>) -> io::Result<Vec<(String, std::pa
 mod tests {
     use super::*;
 
-    #[test]
-    fn safe_relative_path_accepts_normal_paths() {
-        assert_eq!(
-            safe_relative_path("notes/arch.md").unwrap(),
-            "notes/arch.md"
-        );
-        assert_eq!(safe_relative_path("./a/./b.md").unwrap(), "a/b.md");
-        assert_eq!(safe_relative_path("a\\b.md").unwrap(), "a/b.md");
+    fn id() -> BlockId {
+        BlockId::generate()
     }
 
     #[test]
-    fn safe_relative_path_rejects_traversal_and_absolute() {
-        assert!(safe_relative_path("../../etc/passwd").is_err());
-        assert!(safe_relative_path("a/../../b.md").is_err());
-        assert!(safe_relative_path("/etc/passwd").is_err());
-        assert!(safe_relative_path("/abs/x.md").is_err());
-        assert!(safe_relative_path("C:/Windows/x.md").is_err());
-        assert!(safe_relative_path("").is_err());
-        assert!(safe_relative_path("..").is_err());
-        assert!(safe_relative_path("./").is_err());
-    }
-
-    #[test]
-    fn resolves_pages_by_name_and_path() {
+    fn resolves_by_id_and_title() {
         let mut v = Vault::new();
-        v.insert("topic/useful-queries.md", "# Queries\n");
-        assert!(v.page("useful-queries").is_some());
-        assert!(v.page("Useful-Queries").is_some());
-        assert!(v.page("topic/useful-queries").is_some());
-        assert!(v.page("topic/useful-queries.md").is_some());
-        assert!(v.page("missing").is_none());
+        let a = id();
+        v.insert_source(a.clone(), "---\ntitle: Alpha\n---\nbody\n");
+        assert_eq!(v.resolve(a.as_str()), Some(a.clone()));
+        assert_eq!(v.resolve("alpha"), Some(a.clone()));
+        assert_eq!(v.resolve("ALPHA"), Some(a));
+        assert_eq!(v.resolve("missing"), None);
     }
 
     #[test]
-    fn assign_ids_then_resolve_blocks() {
+    fn children_and_backlinks_via_embeds() {
         let mut v = Vault::new();
-        v.insert("a.md", "first\n\nsecond\n");
-        let changed = v.assign_ids();
-        assert_eq!(changed.len(), 1);
-        // Every block is now resolvable by id.
-        let page = v.page("a").unwrap();
-        for b in page.doc.blocks.clone() {
-            assert!(v.block(&b.id).is_some());
-        }
-        // Idempotent: a second pass changes nothing.
-        assert!(v.assign_ids().is_empty());
+        let child = id();
+        let parent = id();
+        v.insert_source(child.clone(), "---\ntitle: Child\n---\nchild body\n");
+        v.insert_source(parent.clone(), &format!("intro ![[{child}]] end\n"));
+        assert_eq!(v.children(&parent), vec![child.clone()]);
+        assert_eq!(v.transcluded_by(&child), vec![parent.clone()]);
+        // child is not a root (it is transcluded); parent is a root.
+        assert!(v.roots().contains(&parent));
+        assert!(!v.roots().contains(&child));
     }
 
     #[test]
-    fn update_block_preserves_id_and_changes_text() {
+    fn references_are_separate_from_children() {
         let mut v = Vault::new();
-        v.insert("a.md", "hello world\n");
-        v.assign_ids();
-        let id = v.page("a").unwrap().doc.blocks[0].id.clone();
-        v.update_block(&id, "goodbye world").unwrap();
-        let (_, block) = v.block(&id).unwrap();
-        assert_eq!(block.content, "goodbye world");
-        assert_eq!(block.id, id, "id must survive an edit");
+        let t = id();
+        let s = id();
+        v.insert_source(t.clone(), "---\ntitle: Target\n---\nx\n");
+        v.insert_source(s.clone(), "see [[Target]] and embed ![[Target]]\n");
+        assert_eq!(v.references(&s), vec![t.clone()]);
+        assert_eq!(v.children(&s), vec![t.clone()]);
+        assert_eq!(v.referenced_by(&t), vec![s.clone()]);
+        assert_eq!(v.transcluded_by(&t), vec![s]);
     }
 }

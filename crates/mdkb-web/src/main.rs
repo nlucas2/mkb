@@ -13,8 +13,8 @@ use std::net::TcpListener;
 use std::process::ExitCode;
 
 use mdkb_core::SearchQuery;
-use mdkb_protocol::{Client, DaemonPaths, Request, Response};
-use mdkb_view::ResultRow;
+use mdkb_protocol::{Client, DaemonPaths};
+use mdkb_view::{block_title, NavEntry, ResultRow};
 
 use routes::Backend;
 
@@ -24,20 +24,31 @@ struct DaemonBackend {
 }
 
 impl Backend for DaemonBackend {
-    fn list_pages(&self) -> Result<Vec<String>, String> {
-        match self
-            .client
-            .call(&Request::ListPages)
-            .map_err(|e| e.to_string())?
-        {
-            Response::Pages(p) => Ok(p),
-            Response::Error { message } => Err(message),
-            other => Err(format!("unexpected response: {other:?}")),
+    fn nav_entries(&self) -> Result<Vec<NavEntry>, String> {
+        let roots = self.client.list_roots().map_err(|e| e.to_string())?;
+        let mut entries = Vec::new();
+        for id in roots {
+            let title = self
+                .client
+                .get_block(id.clone())
+                .map_err(|e| e.to_string())?
+                .map(|b| block_title(b.title.as_deref(), &b.content))
+                .unwrap_or_else(|| id.to_string());
+            entries.push(NavEntry {
+                id: id.to_string(),
+                title,
+            });
         }
+        Ok(entries)
     }
 
-    fn render_page(&self, page: &str) -> Result<Option<String>, String> {
-        self.client.render_page(page).map_err(|e| e.to_string())
+    fn render_block(&self, id: &str) -> Result<Option<(String, String)>, String> {
+        let bid = match mdkb_core::BlockId::parse(id) {
+            Ok(b) => b,
+            Err(_) => return Ok(None),
+        };
+        let rendered = self.client.rendered_block(bid).map_err(|e| e.to_string())?;
+        Ok(rendered.map(|rb| (rb.title, rb.rendered)))
     }
 
     fn search(&self, query: &str) -> Result<Vec<ResultRow>, String> {
@@ -49,9 +60,9 @@ impl Backend for DaemonBackend {
         Ok(hits
             .into_iter()
             .map(|h| ResultRow {
-                page_path: h.block.page_path,
                 id: h.block.id.to_string(),
-                lineage: h.block.lineage,
+                title: block_title(h.block.title.as_deref(), &h.block.content),
+                tags: h.block.tags,
                 content: h.block.content,
             })
             .collect())
