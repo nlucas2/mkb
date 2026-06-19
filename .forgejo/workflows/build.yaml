@@ -1,8 +1,8 @@
 name: Build and Release
 
-# Build the multi-arch mdkbd image and the client binaries on every push to main; the
-# binaries are published as a downloadable workflow artifact. When the push is a version
-# tag (v*), additionally cut a Forgejo release with those binaries attached.
+# Build the multi-arch mdkbd image + native Linux tarballs (daemon + clients + model) on every
+# push to main, and a Windows x64 zip via a separate cross-compile job. All are published as
+# downloadable workflow artifacts. On a version tag (v*), they are also attached to a release.
 on:
   push:
     branches: [main]
@@ -145,6 +145,110 @@ jobs:
           fi
           echo "release id: $REL_ID"
           for f in mdkb-*.tar.gz SHA256SUMS.txt; do
+            curl -sf -X POST "$API/releases/$REL_ID/assets?name=$f" \
+              -H "Authorization: token $TOKEN" \
+              -F "attachment=@$f" >/dev/null
+            echo "uploaded $f"
+          done
+
+  # ── Windows x64 — cross-compiled from the Linux runner via cargo-xwin ──────────
+  # Separate job so a Windows hiccup never blocks the Linux image/tarball pipeline.
+  # Targets x86_64-pc-windows-msvc (the ABI onnxruntime's prebuilt ships for); cargo-xwin
+  # supplies the MSVC CRT/SDK and lld-link. Produces a self-contained zip (daemon + clients
+  # + the SHA-256-pinned model laid out beside the binaries for the <exe_dir>/model lookup).
+  windows:
+    runs-on: docker
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain (rust + llvm + cargo-xwin)
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq curl ca-certificates clang llvm lld zip jq
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          . "$HOME/.cargo/env"
+          rustup target add x86_64-pc-windows-msvc
+          cargo install --locked cargo-xwin
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch + verify embedding model
+        run: |
+          set -eux
+          mkdir -p model
+          REPO=https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main
+          curl -fsSL "$REPO/onnx/model_quantized.onnx" -o model/model_quantized.onnx
+          curl -fsSL "$REPO/tokenizer.json"            -o model/tokenizer.json
+          curl -fsSL "$REPO/config.json"               -o model/config.json
+          curl -fsSL "$REPO/tokenizer_config.json"     -o model/tokenizer_config.json
+          curl -fsSL "$REPO/special_tokens_map.json"   -o model/special_tokens_map.json
+          cd model
+          echo "6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4  model_quantized.onnx"    | sha256sum -c -
+          echo "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66  tokenizer.json"          | sha256sum -c -
+          echo "fa73f90bf92c8cace1fbcb709626306f2bdbc9ea3e5b5f94b440df9b6aa56350  config.json"             | sha256sum -c -
+          echo "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3  tokenizer_config.json"   | sha256sum -c -
+          echo "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3  special_tokens_map.json" | sha256sum -c -
+
+      - name: Cross-compile for Windows (x86_64-msvc)
+        run: |
+          . "$HOME/.cargo/env"
+          # Daemon with the local ONNX embedder; clients are thin (no onnx).
+          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkbd --features onnx
+          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkb-cli -p mdkb-mcp -p mdkb-web
+
+      - name: Package zip
+        run: |
+          set -eux
+          D=target/x86_64-pc-windows-msvc/release
+          rm -rf dist && mkdir -p dist
+          cp "$D/mdkbd.exe" "$D/mdkb.exe" "$D/mdkb-mcp.exe" "$D/mdkb-web.exe" dist/
+          cp -r model dist/model
+          ( cd dist && zip -qr "../mdkb-${{ steps.ver.outputs.version }}-windows-x64.zip" \
+              mdkbd.exe mdkb.exe mdkb-mcp.exe mdkb-web.exe model )
+          sha256sum mdkb-*-windows-x64.zip > SHA256SUMS-windows.txt
+
+      - name: Upload Windows payload (workflow artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mdkb-${{ steps.ver.outputs.version }}-windows
+          path: |
+            mdkb-*-windows-x64.zip
+            SHA256SUMS-windows.txt
+          if-no-files-found: error
+
+      - name: Publish to Forgejo release
+        if: steps.ver.outputs.release == 'true'
+        env:
+          TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          API: https://registry.example/api/v1/repos/${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.version }}
+        run: |
+          set -e
+          # The release is created by whichever job (Linux or Windows) reaches it first;
+          # the other finds it by tag. Idempotent.
+          REL_ID=$(curl -s -X POST "$API/releases" \
+            -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
+            -d "$(jq -nc --arg t "$TAG" '{tag_name:$t, name:$t}')" \
+            | jq -r '.id // empty')
+          if [ -z "$REL_ID" ]; then
+            REL_ID=$(curl -sf "$API/releases/tags/$TAG" -H "Authorization: token $TOKEN" | jq -r '.id')
+          fi
+          echo "release id: $REL_ID"
+          for f in mdkb-*-windows-x64.zip SHA256SUMS-windows.txt; do
             curl -sf -X POST "$API/releases/$REL_ID/assets?name=$f" \
               -H "Authorization: token $TOKEN" \
               -F "attachment=@$f" >/dev/null
