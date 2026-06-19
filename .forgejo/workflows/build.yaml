@@ -116,7 +116,7 @@ jobs:
 
       # Every push (and tag) publishes the payload as a downloadable workflow artifact.
       - name: Upload release payload (workflow artifact)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: mdkb-${{ steps.ver.outputs.version }}
           path: |
@@ -205,7 +205,7 @@ jobs:
           sha256sum mdkb-*-windows-x64.zip > SHA256SUMS-windows.txt
 
       - name: Upload Windows payload (workflow artifact)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: mdkb-${{ steps.ver.outputs.version }}-windows
           path: |
