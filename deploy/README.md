@@ -107,11 +107,23 @@ Required Forgejo Actions configuration:
 |------|------|----------|
 | `REGISTRY` | variable | Container registry host (e.g. `registry.example`); used for `docker login` and as the image-ref base. |
 | `REGISTRY_ORG` | variable | Registry namespace/org (e.g. `containers`); the image ref is `$REGISTRY/$REGISTRY_ORG/mdkb`. |
+| `MODEL_REPO` | variable (optional) | Base URL of an embedding-model mirror you control (e.g. `https://huggingface.co/<you>/bge-small-en-v1.5-int8/resolve/main`). When unset, the Dockerfile's upstream default is used. Files are SHA-256-pinned either way. |
 | `REGISTRY_TOKEN` | secret | `docker login $REGISTRY` to push images |
 | `RELEASE_TOKEN` | secret | Forgejo API token to create the release + upload assets (tags only) |
 
 The Forgejo API host is read from `github.server_url` (the instance's own URL), so it is
 never hardcoded.
+
+### Native release binaries via GitHub (tags only)
+
+This repo push-mirrors to GitHub. `.github/workflows/release.yml` runs **only on GitHub-hosted
+runners** (guarded by `github.server_url`, so Forgejo ignores it) and **only on `v*` tags**. When
+a tag rides the mirror up, GitHub builds **native** binaries — Linux amd64/arm64, macOS
+arm64/x86_64, Windows x64 — each with the ONNX embedder and the bundled model, and attaches them
+to a GitHub Release via the built-in `GITHUB_TOKEN` (no PAT). This covers the platforms the
+Forgejo Linux runner can't produce: macOS (Apple SDK licensing) and Windows-with-onnx. Set a
+GitHub Actions variable `MODEL_REPO` (same meaning as above) if you want it to pull the model
+from your mirror; otherwise it falls back to upstream.
 
 Cutting a release:
 

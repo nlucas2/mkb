@@ -1,0 +1,128 @@
+name: Release (native binaries)
+
+# Tag-only. This repo's primary CI lives in Forgejo (.forgejo/workflows). This GitHub
+# workflow exists solely to cut NATIVE release binaries on GitHub-hosted runners for the
+# platforms we cannot build on the Forgejo Linux runner — macOS (Apple SDK licensing) and
+# Windows-with-onnx (a real Windows runner validates the onnxruntime link/DLL) — plus native
+# Linux x64/arm64. It runs when a version tag rides the Forgejo->GitHub push-mirror up.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # No-op anywhere but GitHub: Forgejo populates github.server_url with its own instance URL,
+    # so if it ever reads this file the job is simply skipped (it also has no macOS/Windows
+    # runners). On GitHub this is https://github.com and the job runs.
+    if: ${{ github.server_url == 'https://github.com' }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  name: linux-amd64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, name: linux-arm64 }
+          - { os: macos-13,         target: x86_64-apple-darwin,       name: macos-amd64 }
+          - { os: macos-14,         target: aarch64-apple-darwin,      name: macos-arm64 }
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,    name: windows-amd64 }
+
+    env:
+      # Base URL of the embedding-model mirror you control (e.g.
+      # https://huggingface.co/<you>/bge-small-en-v1.5-int8/resolve/main). Set this as a
+      # GitHub repo/org Actions *variable* named MODEL_REPO. Falls back to the upstream repo.
+      MODEL_REPO: ${{ vars.MODEL_REPO || 'https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      # Fetch the vendored model from the mirror and SHA-256-verify every file. Same int8
+      # BGE-small export the Docker image bakes in; the pins make the source interchangeable.
+      - name: Fetch + verify embedding model
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p model
+          curl -fsSL "$MODEL_REPO/onnx/model_quantized.onnx" -o model/model_quantized.onnx
+          curl -fsSL "$MODEL_REPO/tokenizer.json"            -o model/tokenizer.json
+          curl -fsSL "$MODEL_REPO/config.json"               -o model/config.json
+          curl -fsSL "$MODEL_REPO/tokenizer_config.json"     -o model/tokenizer_config.json
+          curl -fsSL "$MODEL_REPO/special_tokens_map.json"   -o model/special_tokens_map.json
+          # Portable checksum verify (sha256sum on Linux/Git-Bash, shasum on macOS).
+          verify() { echo "$1  $2" | sha256sum -c - 2>/dev/null || echo "$1  $2" | shasum -a 256 -c -; }
+          cd model
+          verify 6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4 model_quantized.onnx
+          verify d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66 tokenizer.json
+          verify fa73f90bf92c8cace1fbcb709626306f2bdbc9ea3e5b5f94b440df9b6aa56350 config.json
+          verify 9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3 tokenizer_config.json
+          verify b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3 special_tokens_map.json
+
+      # Daemon with the local ONNX embedder (ort downloads the platform's prebuilt onnxruntime
+      # at build time); clients are thin.
+      - name: Build (native, onnx)
+        shell: bash
+        run: |
+          set -eux
+          cargo build --release --target ${{ matrix.target }} -p mdkbd --features onnx
+          cargo build --release --target ${{ matrix.target }} -p mdkb-cli -p mdkb-mcp -p mdkb-web
+
+      - name: Assemble (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eux
+          D="target/${{ matrix.target }}/release"
+          mkdir -p dist
+          cp "$D/mdkbd" "$D/mdkb" "$D/mdkb-mcp" "$D/mdkb-web" dist/
+          # Ship any dynamically-linked onnxruntime next to the binaries (usually static, but
+          # be safe). The model dir sits beside the binaries for the <exe_dir>/model lookup.
+          for lib in "$D"/libonnxruntime*.so* "$D"/libonnxruntime*.dylib; do
+            [ -e "$lib" ] && cp "$lib" dist/ || true
+          done
+          cp -r model dist/model
+          A="mdkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz"
+          tar -C dist -czf "$A" .
+          ( sha256sum "$A" 2>/dev/null || shasum -a 256 "$A" ) > "$A.sha256"
+
+      - name: Assemble (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $D = "target/${{ matrix.target }}/release"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "$D/mdkbd.exe","$D/mdkb.exe","$D/mdkb-mcp.exe","$D/mdkb-web.exe" dist/
+          # ort may produce onnxruntime.dll alongside the exe; ship it if present.
+          Get-ChildItem "$D" -Filter "onnxruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination dist/
+          Copy-Item -Recurse model dist/model
+          $A = "mdkb-${{ github.ref_name }}-${{ matrix.name }}.zip"
+          Compress-Archive -Path dist/* -DestinationPath $A -Force
+          (Get-FileHash $A -Algorithm SHA256).Hash.ToLower() + "  " + $A | Out-File -Encoding ascii "$A.sha256"
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            mdkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+            mdkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz.sha256
+            mdkb-${{ github.ref_name }}-${{ matrix.name }}.zip
+            mdkb-${{ github.ref_name }}-${{ matrix.name }}.zip.sha256
+          fail_on_unmatched_files: false

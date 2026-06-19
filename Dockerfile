@@ -32,6 +32,10 @@ ARG ONNX=true
 # in lets the daemon run the neural embedder fully offline. Every file is SHA-256-pinned: if
 # any upstream byte changes, the build fails loudly rather than silently shipping a different
 # model. ~32 MB on disk; loaded via MDKB_BUNDLED_MODEL_DIR.
+#
+# MODEL_REPO is overridable (build-arg / the workflow's MODEL_REPO variable) so you can pull
+# from a mirror you control instead of depending on the upstream repo; the SHA-256 pins make
+# the source interchangeable. The default below is only a fallback for `docker build .`.
 FROM debian:trixie-slim AS model
 ARG MODEL_REPO=https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \

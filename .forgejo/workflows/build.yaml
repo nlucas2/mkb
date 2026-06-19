@@ -17,6 +17,10 @@ on:
 env:
   REGISTRY: ${{ vars.REGISTRY }}
   IMAGE: ${{ vars.REGISTRY }}/${{ vars.REGISTRY_ORG }}/mdkb
+  # Source for the vendored embedding model. Set the `MODEL_REPO` Actions variable to a
+  # base URL you control (e.g. your own HF mirror's .../resolve/main); when unset, the
+  # Dockerfile's default is used. The files are SHA-256-pinned regardless of source.
+  MODEL_REPO: ${{ vars.MODEL_REPO }}
 
 jobs:
   build:
@@ -71,6 +75,7 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --target final-amd64 \
+            ${MODEL_REPO:+--build-arg MODEL_REPO="$MODEL_REPO"} \
             --tag ${IMAGE}:latest-amd64 \
             --tag ${IMAGE}:${{ steps.ver.outputs.version }}-amd64 \
             --cache-from type=registry,ref=${IMAGE}:cache-amd64 \
@@ -85,6 +90,7 @@ jobs:
           docker buildx build \
             --platform linux/arm64 \
             --target final-arm64 \
+            ${MODEL_REPO:+--build-arg MODEL_REPO="$MODEL_REPO"} \
             --tag ${IMAGE}:latest-arm64 \
             --tag ${IMAGE}:${{ steps.ver.outputs.version }}-arm64 \
             --cache-from type=registry,ref=${IMAGE}:cache-arm64 \
@@ -112,6 +118,7 @@ jobs:
           for arch in amd64 arm64; do
             docker buildx build \
               --target artifacts-$arch \
+              ${MODEL_REPO:+--build-arg MODEL_REPO="$MODEL_REPO"} \
               --cache-from type=registry,ref=${IMAGE}:cache-$arch \
               --output type=local,dest=out/$arch \
               .
