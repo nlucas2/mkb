@@ -9,6 +9,15 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# The registry host and org are kept out of source (this repo mirrors to a public GitHub
+# repo). Set repo/org Actions variables `REGISTRY` (e.g. your-registry.example) and
+# `REGISTRY_ORG` (the namespace, e.g. `containers`); the image ref is $REGISTRY/$ORG/mdkb.
+# `mdkb` is the project/repo name and stays literal. The Forgejo API host is taken from
+# `github.server_url`, which Forgejo populates with this instance's own URL.
+env:
+  REGISTRY: ${{ vars.REGISTRY }}
+  IMAGE: ${{ vars.REGISTRY }}/${{ vars.REGISTRY_ORG }}/mdkb
+
 jobs:
   build:
     runs-on: docker
@@ -34,7 +43,7 @@ jobs:
           docker buildx inspect --bootstrap
 
       - name: Log in to Forgejo registry
-        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login registry.example -u "${{ github.actor }}" --password-stdin
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
       # Registry-based cache: slow on first run, fast on subsequent builds.
       - name: Run tests
@@ -42,8 +51,8 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --target tester \
-            --cache-from type=registry,ref=registry.example/containers/mdkb:cache-tester \
-            --cache-to   type=registry,ref=registry.example/containers/mdkb:cache-tester,mode=max \
+            --cache-from type=registry,ref=${IMAGE}:cache-tester \
+            --cache-to   type=registry,ref=${IMAGE}:cache-tester,mode=max \
             .
 
       - name: Resolve version
@@ -62,10 +71,10 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --target final-amd64 \
-            --tag registry.example/containers/mdkb:latest-amd64 \
-            --tag registry.example/containers/mdkb:${{ steps.ver.outputs.version }}-amd64 \
-            --cache-from type=registry,ref=registry.example/containers/mdkb:cache-amd64 \
-            --cache-to   type=registry,ref=registry.example/containers/mdkb:cache-amd64,mode=max \
+            --tag ${IMAGE}:latest-amd64 \
+            --tag ${IMAGE}:${{ steps.ver.outputs.version }}-amd64 \
+            --cache-from type=registry,ref=${IMAGE}:cache-amd64 \
+            --cache-to   type=registry,ref=${IMAGE}:cache-amd64,mode=max \
             --push \
             .
 
@@ -76,10 +85,10 @@ jobs:
           docker buildx build \
             --platform linux/arm64 \
             --target final-arm64 \
-            --tag registry.example/containers/mdkb:latest-arm64 \
-            --tag registry.example/containers/mdkb:${{ steps.ver.outputs.version }}-arm64 \
-            --cache-from type=registry,ref=registry.example/containers/mdkb:cache-arm64 \
-            --cache-to   type=registry,ref=registry.example/containers/mdkb:cache-arm64,mode=max \
+            --tag ${IMAGE}:latest-arm64 \
+            --tag ${IMAGE}:${{ steps.ver.outputs.version }}-arm64 \
+            --cache-from type=registry,ref=${IMAGE}:cache-arm64 \
+            --cache-to   type=registry,ref=${IMAGE}:cache-arm64,mode=max \
             --push \
             .
 
@@ -89,13 +98,13 @@ jobs:
         run: |
           V=${{ steps.ver.outputs.version }}
           docker buildx imagetools create \
-            --tag registry.example/containers/mdkb:latest \
-            registry.example/containers/mdkb:latest-amd64 \
-            registry.example/containers/mdkb:latest-arm64
+            --tag ${IMAGE}:latest \
+            ${IMAGE}:latest-amd64 \
+            ${IMAGE}:latest-arm64
           docker buildx imagetools create \
-            --tag registry.example/containers/mdkb:${V} \
-            registry.example/containers/mdkb:${V}-amd64 \
-            registry.example/containers/mdkb:${V}-arm64
+            --tag ${IMAGE}:${V} \
+            ${IMAGE}:${V}-amd64 \
+            ${IMAGE}:${V}-arm64
 
       # ── Release payload (daemon + clients + model) — extracted every build, attached to tags ──
       - name: Extract release payload
@@ -103,7 +112,7 @@ jobs:
           for arch in amd64 arm64; do
             docker buildx build \
               --target artifacts-$arch \
-              --cache-from type=registry,ref=registry.example/containers/mdkb:cache-$arch \
+              --cache-from type=registry,ref=${IMAGE}:cache-$arch \
               --output type=local,dest=out/$arch \
               .
             # Bundle the daemon, the thin clients, and the vendored model together. The model/
@@ -140,12 +149,12 @@ jobs:
         if: steps.ver.outputs.release == 'true'
         env:
           TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          API: https://registry.example/api/v1/repos/${{ github.repository }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
           TAG: ${{ steps.ver.outputs.version }}
         run: |
           set -e
           apt-get install -y -qq jq
-          BODY="mdkb ${TAG}\n\nSelf-contained daemon + clients for Linux (amd64/arm64), with the embedding model bundled. Also available as the container image registry.example/containers/mdkb:${TAG}."
+          BODY="mdkb ${TAG}\n\nSelf-contained daemon + clients for Linux (amd64/arm64), with the embedding model bundled. Also available as the container image ${IMAGE}:${TAG}."
           # Create the release; if the tag already has one, fall back to looking it up.
           REL_ID=$(curl -s -X POST "$API/releases" \
             -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
@@ -228,7 +237,7 @@ jobs:
         if: steps.ver.outputs.release == 'true'
         env:
           TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          API: https://registry.example/api/v1/repos/${{ github.repository }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
           TAG: ${{ steps.ver.outputs.version }}
         run: |
           set -e

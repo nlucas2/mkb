@@ -94,19 +94,24 @@ conflicts` so you can resolve them in plain text. The Markdown stays authoritati
 `.forgejo/workflows/build.yaml` runs on every push to `main` (and version tags):
 
 - **Every push to `main`** — runs `cargo test --workspace` (the Dockerfile `tester` stage),
-  builds and pushes the multi-arch daemon image to `registry.example/containers/mdkb:latest` and
-  `:<short-sha>` (amd64 + arm64 manifests), and publishes the client binaries (`mdkb`,
-  `mdkb-mcp`, `mdkb-web`, per-arch tarballs + `SHA256SUMS.txt`) as a **downloadable workflow
-  artifact** on the run.
+  builds and pushes the multi-arch daemon image to `$REGISTRY/containers/mdkb:latest` and
+  `:<short-sha>` (amd64 + arm64 manifests), and publishes the daemon + client binaries
+  (`mdkbd`, `mdkb`, `mdkb-mcp`, `mdkb-web`, per-arch tarballs with the model bundled +
+  checksums) as **downloadable workflow artifacts** on the run.
 - **A version tag `vX.Y.Z`** — does all of the above tagged with the version, **and** cuts a
-  Forgejo release with the same client binaries attached.
+  Forgejo release with the same binaries attached.
 
-Required Forgejo Actions secrets:
+Required Forgejo Actions configuration:
 
-| Secret | Used for |
-|--------|----------|
-| `REGISTRY_TOKEN` | `docker login registry.example` to push images |
-| `RELEASE_TOKEN` | Forgejo API token to create the release + upload assets (tags only) |
+| Name | Kind | Used for |
+|------|------|----------|
+| `REGISTRY` | variable | Container registry host (e.g. `registry.example`); used for `docker login` and as the image-ref base. |
+| `REGISTRY_ORG` | variable | Registry namespace/org (e.g. `containers`); the image ref is `$REGISTRY/$REGISTRY_ORG/mdkb`. |
+| `REGISTRY_TOKEN` | secret | `docker login $REGISTRY` to push images |
+| `RELEASE_TOKEN` | secret | Forgejo API token to create the release + upload assets (tags only) |
+
+The Forgejo API host is read from `github.server_url` (the instance's own URL), so it is
+never hardcoded.
 
 Cutting a release:
 
