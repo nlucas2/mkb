@@ -64,7 +64,7 @@ pub fn write_block(title: Option<&str>, tags: &[String], body: &str) -> String {
 
     let mut fm = String::from("---\n");
     if let Some(t) = title {
-        fm.push_str(&format!("title: {t}\n"));
+        fm.push_str(&format!("title: {}\n", yaml_scalar(t)));
     }
     if !clean_tags.is_empty() {
         fm.push_str(&format!("tags: [{}]\n", clean_tags.join(", ")));
@@ -106,13 +106,80 @@ fn split_frontmatter(source: &str) -> (Option<&str>, &str) {
 fn parse_title(fm: &str) -> Option<String> {
     for line in fm.lines() {
         if let Some(rest) = line.trim().strip_prefix("title:") {
-            let v = rest.trim().trim_matches(['"', '\'']).trim();
+            let v = parse_scalar(rest);
             if !v.is_empty() {
-                return Some(v.to_string());
+                return Some(v);
             }
         }
     }
     None
+}
+
+/// Serialize a string as a YAML scalar that survives a standard YAML parser: a plain scalar
+/// when unambiguous, otherwise a double-quoted scalar with `\`, `"`, newlines and tabs escaped.
+/// This keeps frontmatter valid YAML even for titles containing `:`, `#`, or quotes — honoring
+/// the SPEC promise that a raw vault is recoverable with or without mdkb.
+fn yaml_scalar(s: &str) -> String {
+    if is_plain_yaml_safe(s) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Whether `s` can be written as a YAML plain (unquoted) scalar without ambiguity.
+fn is_plain_yaml_safe(s: &str) -> bool {
+    if s.is_empty() || s != s.trim() {
+        return false;
+    }
+    let first = s.chars().next().expect("non-empty");
+    if "-?:,[]{}#&*!|>'\"%@`".contains(first) {
+        return false;
+    }
+    if s.contains(": ") || s.ends_with(':') || s.contains(" #") {
+        return false;
+    }
+    !s.chars().any(char::is_control)
+}
+
+/// Parse a YAML scalar value as our writer produces it: a double-quoted string (with `\\`,
+/// `\"`, `\n`, `\t` escapes), a single-quoted string (`''` → `'`), or a plain scalar.
+fn parse_scalar(raw: &str) -> String {
+    let raw = raw.trim();
+    if let Some(inner) = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some('"') => out.push('"'),
+                    Some('\\') => out.push('\\'),
+                    Some(other) => out.push(other),
+                    None => {}
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    } else if let Some(inner) = raw.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')) {
+        inner.replace("''", "'")
+    } else {
+        raw.to_string()
+    }
 }
 
 /// Parse `tags:` from frontmatter, supporting both flow (`tags: [a, b]`) and block list form
@@ -297,5 +364,38 @@ mod tests {
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.fm_tags, vec!["solo"]);
         assert_eq!(b.title, None);
+    }
+
+    #[test]
+    fn write_block_quotes_title_with_colon() {
+        // A title containing `: ` would be invalid YAML unquoted; it must be double-quoted.
+        let text = write_block(Some("SPEC: A block file"), &[], "body\n");
+        assert!(
+            text.contains("title: \"SPEC: A block file\"\n"),
+            "title should be quoted: {text}"
+        );
+        let b = parse_block(BlockId::generate(), &text);
+        assert_eq!(b.title.as_deref(), Some("SPEC: A block file"));
+    }
+
+    #[test]
+    fn write_block_leaves_plain_title_unquoted() {
+        // Common titles stay plain so existing vault files don't churn.
+        let text = write_block(Some("Deploying to k3s"), &[], "body\n");
+        assert!(text.contains("title: Deploying to k3s\n"), "{text}");
+    }
+
+    #[test]
+    fn write_block_round_trips_title_with_quotes_and_backslash() {
+        let title = "He said \"hi\" \\ bye";
+        let text = write_block(Some(title), &[], "body\n");
+        let b = parse_block(BlockId::generate(), &text);
+        assert_eq!(b.title.as_deref(), Some(title));
+    }
+
+    #[test]
+    fn parse_title_unescapes_double_quoted() {
+        let b = p("---\ntitle: \"a: b \\\"c\\\"\"\n---\n\nbody\n");
+        assert_eq!(b.title.as_deref(), Some("a: b \"c\""));
     }
 }

@@ -2,3 +2,5 @@
 # Skills carry their own YAML frontmatter; the @generated banner is spliced after it.
 docs/skills/mdkb-cli/SKILL.md        CLI skill page
 docs/skills/mdkb-knowledge/SKILL.md  MCP skill page
+# The on-disk format spec, authored as blocks.
+docs/SPEC.md                         SPEC page

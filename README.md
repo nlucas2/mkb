@@ -136,9 +136,11 @@ cargo run -p mdkb-cli -- export vault            # regenerate the mapped docs
 cargo run -p mdkb-cli -- export vault --check    # verify they're current
 ```
 
-The CLI/MCP skills are the first docs generated this way: the `mdkb-cli` and `mdkb-knowledge`
+The CLI/MCP skills were the first docs generated this way: the `mdkb-cli` and `mdkb-knowledge`
 skills share the same knowledge blocks and differ only in their per-transport surface, so editing
-a shared block once updates both.
+a shared block once updates both. **[`docs/SPEC.md`](./docs/SPEC.md)** is also generated — from a
+`SPEC page` block that transcludes one block per section — so the on-disk-format reference is itself
+kept in the vault it describes.
 
 - `mdkb-core`:
   - `id` — `BlockId` (ULID): a block's identity is its filename stem.
