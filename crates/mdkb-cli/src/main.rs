@@ -44,6 +44,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("set-tags") => cmd_set_tags(&args[1..]),
         Some("link") => cmd_link(&args[1..]),
         Some("carve") => cmd_carve(&args[1..]),
+        Some("flatten") => cmd_flatten(&args[1..]),
         Some("delete") => cmd_delete(&args[1..]),
         // maintenance
         Some("rebuild") => cmd_rebuild(&args[1..]),
@@ -88,6 +89,8 @@ writes (body is read from stdin where noted):
   set-tags <vault> <id> [tag ...]            set managed (frontmatter) tags ([] clears)
   link <vault> <src> <dst> [--embed]         reference (or --embed: transclude) dst from src
   carve <vault> <parent> [--title=T] < body  carve a new child block; prints the child id
+  flatten <vault> <parent> <child>           inline parent's single ![[child]] embed and delete it
+                                             (only when child is referenced exactly once)
   delete <vault> <id>                        delete a block
 
 maintenance:
@@ -389,6 +392,15 @@ fn cmd_carve(args: &[String]) -> Result<(), String> {
         .carve_block(parent, title.as_deref(), &body)
         .map_err(|e| e.to_string())?;
     println!("{child}");
+    Ok(())
+}
+
+fn cmd_flatten(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let parent = parse_id(req(args, 1, "<parent-id>")?)?;
+    let child = parse_id(req(args, 2, "<child-id>")?)?;
+    c.flatten(parent, child).map_err(|e| e.to_string())?;
+    println!("ok");
     Ok(())
 }
 

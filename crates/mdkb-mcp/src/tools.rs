@@ -151,6 +151,18 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "flatten_block",
+            description: "Flatten (uncarve): inline a parent's single ![[child]] embed back into the parent body and delete the child block. The inverse of carve_block. Only valid when the child is referenced in exactly one place in the whole vault (a single ![[child]] embed in the given parent, with no other embedders and no [[references]]); errors otherwise and changes nothing. The child's own ![[grandchild]] embeds are preserved.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "parent_id": {"type": "string"},
+                    "child_id": {"type": "string"}
+                },
+                "required": ["parent_id", "child_id"]
+            }),
+        },
+        ToolDef {
             name: "link_blocks",
             description: "Link or embed one block into another. embed=true writes a transclusion (![[id]]); false a plain reference ([[id]]). An embed that would create a cycle is auto-downgraded to a reference.",
             schema: json!({
@@ -251,6 +263,10 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             title: s("title"),
             body: req_s("body")?,
         },
+        "flatten_block" => Request::FlattenBlock {
+            parent_id: req_id("parent_id")?,
+            child_id: req_id("child_id")?,
+        },
         "link_blocks" => Request::LinkBlocks {
             source_id: req_id("source_id")?,
             target_id: req_id("target_id")?,
@@ -320,7 +336,7 @@ mod tests {
         let id = BlockId::generate().to_string();
         let args = json!({
             "query": "q", "id": id, "source_id": id, "target_id": id, "parent_id": id,
-            "title": "T", "body": "b", "embed": true, "tags": ["x"]
+            "child_id": id, "title": "T", "body": "b", "embed": true, "tags": ["x"]
         });
         for d in tool_definitions() {
             build_request(d.name, &args)

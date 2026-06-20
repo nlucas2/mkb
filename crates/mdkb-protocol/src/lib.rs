@@ -131,6 +131,14 @@ pub enum Request {
         /// End byte offset (exclusive).
         end: usize,
     },
+    /// Flatten (uncarve): inline `parent`'s single `![[child]]` embed back into its body and
+    /// delete the child. Only valid when the child has exactly one reference in the whole vault.
+    FlattenBlock {
+        /// Parent block id (holds the single `![[child]]` embed).
+        parent_id: BlockId,
+        /// Child block id to inline and delete.
+        child_id: BlockId,
+    },
     /// Link or embed one block to another (embed may downgrade to a reference to avoid a cycle).
     LinkBlocks {
         /// Source block id.
@@ -286,6 +294,15 @@ fn handle<I: Index>(
                 .carve_selection(ctx, &parent_id, start, end)
                 .map_err(to_str)?,
         ),
+        Request::FlattenBlock {
+            parent_id,
+            child_id,
+        } => {
+            service
+                .flatten_block(ctx, &parent_id, &child_id)
+                .map_err(to_str)?;
+            Response::Ok
+        }
         Request::LinkBlocks {
             source_id,
             target_id,
@@ -652,6 +669,18 @@ impl Client {
             end,
         })? {
             Response::BlockId(id) => Ok(id),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: flatten (uncarve) a parent's single `![[child]]` embed back inline and delete
+    /// the child. Errors unless the child has exactly one reference in the vault.
+    pub fn flatten(&self, parent_id: BlockId, child_id: BlockId) -> io::Result<()> {
+        match self.call(&Request::FlattenBlock {
+            parent_id,
+            child_id,
+        })? {
+            Response::Ok => Ok(()),
             other => Err(unexpected(other)),
         }
     }

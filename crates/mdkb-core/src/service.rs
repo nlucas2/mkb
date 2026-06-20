@@ -15,7 +15,11 @@ use crate::index::{
     block_links, link_graph, transclusion_reaches, BlockRecord, GraphData, Index, IndexError,
     IndexStats, LinkOutcome, LinkRow, SearchHit, SearchQuery, TagCount,
 };
-use crate::render::{render_block, render_flat, rendered_block, RenderedBlock};
+use crate::link::extract_references;
+use crate::render::{
+    current_line_width, reindent_continuation, render_block, render_flat, rendered_block,
+    RenderedBlock,
+};
 use crate::sync::{SyncEngine, SyncReport};
 
 /// Who is making a request.
@@ -362,6 +366,95 @@ impl<I: Index> Service<I> {
         Ok(child)
     }
 
+    /// **Flatten / uncarve** — the inverse of carve. Inline the `![[child]]` embed in `parent`
+    /// back into the parent's body (the child's raw content replaces the directive in place,
+    /// re-indented to the call-site column) and **delete** the now-redundant child block.
+    ///
+    /// **Strict single-reference semantic.** This only applies when `child` is referenced in
+    /// **exactly one** place in the whole vault — a single `![[child]]` embed, located in
+    /// `parent`, with no other embedders and no `[[references]]`. If the child is used anywhere
+    /// else (another embed, the parent embedding it twice, or any reference), flatten **errors**
+    /// and changes nothing — it never partially inlines a block that is still used elsewhere.
+    ///
+    /// One level only: the child's own `![[grandchild]]` directives come along verbatim and stay
+    /// their own blocks. Cycles are a non-issue (embeds can't cycle). The child's removal is safe
+    /// precisely because it had a single embedder, which this call rewrites.
+    pub fn flatten_block(
+        &mut self,
+        ctx: &RequestContext,
+        parent_id: &BlockId,
+        child_id: &BlockId,
+    ) -> Result<(), IndexError> {
+        ctx.authorize(Capability::Write)?;
+
+        // Read phase: validate, count every directive occurrence targeting the child across the
+        // vault, and capture the single occurrence's span (so the immutable borrow ends before we
+        // mutate). Counting is by directive *occurrence*, so a parent embedding the child twice is
+        // two references and (correctly) rejected.
+        let (parent_body, parent_title, child_body, span) = {
+            let vault = self.engine.vault();
+            let parent = vault
+                .block(parent_id)
+                .ok_or_else(|| IndexError::new(format!("unknown block: {parent_id}")))?;
+            let child = vault
+                .block(child_id)
+                .ok_or_else(|| IndexError::new(format!("unknown block: {child_id}")))?;
+
+            let mut total = 0usize;
+            let mut here: Option<(bool, std::ops::Range<usize>)> = None;
+            for b in vault.blocks() {
+                for r in extract_references(&b.body) {
+                    if vault.resolve(&r.target).as_ref() == Some(child_id) {
+                        total += 1;
+                        if &b.id == parent_id {
+                            here = Some((r.embed, r.span.clone()));
+                        }
+                    }
+                }
+            }
+
+            if total != 1 {
+                return Err(IndexError::new(format!(
+                    "cannot flatten {child_id}: it is referenced in {total} place(s); \
+                     flatten requires exactly one (a single ![[…]] embed in the parent)"
+                )));
+            }
+            let (embed, span) = here.ok_or_else(|| {
+                IndexError::new(format!(
+                    "cannot flatten {child_id}: its only reference is not in {parent_id}"
+                ))
+            })?;
+            if !embed {
+                return Err(IndexError::new(format!(
+                    "cannot flatten {child_id}: its single reference is a [[reference]], \
+                     not a ![[embed]]"
+                )));
+            }
+            (
+                parent.body.clone(),
+                parent.title.clone(),
+                child.body.clone(),
+                span,
+            )
+        };
+
+        // Splice the child's raw body in place of the directive, re-indented to the call-site
+        // column (so an embed inside a list item / YAML scalar stays well-formed; column 0 is a
+        // no-op). Surrounding blank lines on the child are trimmed so no extra spacing creeps in.
+        let col = current_line_width(&parent_body[..span.start]);
+        let inlined = reindent_continuation(child_body.trim_matches('\n'), col);
+        let mut new_body = String::with_capacity(parent_body.len() + inlined.len());
+        new_body.push_str(&parent_body[..span.start]);
+        new_body.push_str(&inlined);
+        new_body.push_str(&parent_body[span.end..]);
+
+        // Apply: rewrite the parent (dropping its embed of the child), then delete the orphan.
+        self.engine
+            .update_block(parent_id, parent_title.as_deref(), &new_body)?;
+        self.engine.delete_block(child_id)?;
+        Ok(())
+    }
+
     /// Link or embed `source_id` to `target_id`. `embed = true` appends `![[target]]`,
     /// `false` appends `[[target]]`.
     ///
@@ -508,6 +601,111 @@ mod tests {
         let parent = svc.create_block(&ctx, None, "short").unwrap();
         assert!(svc.carve_selection(&ctx, &parent, 3, 3).is_err()); // empty
         assert!(svc.carve_selection(&ctx, &parent, 0, 999).is_err()); // out of range
+    }
+
+    #[test]
+    fn flatten_inlines_single_use_child_and_deletes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        // Carve a chunk out, then flatten it back — the round trip restores the in-place content.
+        let body = "before SHARED after";
+        let parent = svc.create_block(&ctx, Some("Guide"), body).unwrap();
+        let start = body.find("SHARED").unwrap();
+        let child = svc
+            .carve_selection(&ctx, &parent, start, start + "SHARED".len())
+            .unwrap();
+        assert_eq!(
+            svc.get_block_source(&ctx, &parent).unwrap().unwrap(),
+            format!("before ![[{child}]] after")
+        );
+
+        svc.flatten_block(&ctx, &parent, &child).unwrap();
+
+        // Content is back inline, the embed is gone, and the child block no longer exists.
+        assert_eq!(
+            svc.get_block_source(&ctx, &parent).unwrap().unwrap(),
+            "before SHARED after"
+        );
+        assert!(svc.get_block(&ctx, &child).unwrap().is_none());
+    }
+
+    #[test]
+    fn flatten_errors_when_child_has_multiple_embedders() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let child = svc
+            .create_block(&ctx, Some("Shared"), "shared body")
+            .unwrap();
+        let a = svc
+            .create_block(&ctx, Some("A"), &format!("a ![[{child}]]"))
+            .unwrap();
+        let _b = svc
+            .create_block(&ctx, Some("B"), &format!("b ![[{child}]]"))
+            .unwrap();
+        // Two embedders → not flattenable; nothing changes.
+        assert!(svc.flatten_block(&ctx, &a, &child).is_err());
+        assert!(svc.get_block(&ctx, &child).unwrap().is_some());
+        assert!(svc.engine().vault().children(&a).contains(&child));
+    }
+
+    #[test]
+    fn flatten_errors_when_child_also_referenced() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let child = svc
+            .create_block(&ctx, Some("Shared"), "shared body")
+            .unwrap();
+        let parent = svc
+            .create_block(&ctx, Some("Parent"), &format!("p ![[{child}]]"))
+            .unwrap();
+        // A second block *references* the child → total references = 2 → error.
+        let _ref = svc
+            .create_block(&ctx, Some("Linker"), &format!("see [[{child}]]"))
+            .unwrap();
+        assert!(svc.flatten_block(&ctx, &parent, &child).is_err());
+        assert!(svc.get_block(&ctx, &child).unwrap().is_some());
+    }
+
+    #[test]
+    fn flatten_errors_when_single_reference_is_not_an_embed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let child = svc.create_block(&ctx, Some("Target"), "body").unwrap();
+        let parent = svc
+            .create_block(&ctx, Some("Parent"), &format!("see [[{child}]]"))
+            .unwrap();
+        // The lone reference is a [[ref]], not a ![[embed]] → not flattenable.
+        assert!(svc.flatten_block(&ctx, &parent, &child).is_err());
+        assert!(svc.get_block(&ctx, &child).unwrap().is_some());
+    }
+
+    #[test]
+    fn flatten_preserves_grandchild_embeds_and_reindents() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let grand = svc.create_block(&ctx, Some("Grand"), "grand body").unwrap();
+        // The child embeds a grandchild; the child is embedded once, inside a list item.
+        let child = svc
+            .create_block(&ctx, Some("Mid"), &format!("first line\n![[{grand}]]"))
+            .unwrap();
+        let parent = svc
+            .create_block(&ctx, Some("Parent"), &format!("- item ![[{child}]]"))
+            .unwrap();
+
+        svc.flatten_block(&ctx, &parent, &child).unwrap();
+
+        let src = svc.get_block_source(&ctx, &parent).unwrap().unwrap();
+        // Child gone; its grandchild embed survives in the parent (one level only).
+        assert!(svc.get_block(&ctx, &child).unwrap().is_none());
+        assert!(src.contains(&format!("![[{grand}]]")), "got: {src}");
+        // Continuation line re-indented to the call-site column (under the list item).
+        assert!(src.contains("- item first line\n"), "got: {src}");
+        assert!(svc.engine().vault().children(&parent).contains(&grand));
     }
 
     #[test]

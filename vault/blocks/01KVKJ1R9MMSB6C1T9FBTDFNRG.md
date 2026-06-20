@@ -38,9 +38,9 @@ tags: [doc, readme]
 - `mdkb` CLI — a **thin daemon client** (auto-starts `mdkbd` for the vault, then dispatches over
   the socket; reads *and* writes, a full equivalent of the MCP surface). Reads: `list`, `render`,
   `get`, `search`, `tags`, `backlinks`, `links`, `stats`, `conflicts`, `ping`. Writes: `create`,
-  `update`, `set-tags`, `link`, `carve`, `delete`. Maintenance: `rebuild`, `export`.
+  `update`, `set-tags`, `link`, `carve`, `flatten`, `delete`. Maintenance: `rebuild`, `export`.
 - `mdkb-mcp` — an MCP server (JSON-RPC 2.0 over stdio) exposing the knowledge base as tools
   (`search`, `get_block`, `render_block`, `list_blocks`, `list_roots`, `graph`, `list_tags`,
   `backlinks`, `links_from`, `create_block`, `update_block`, `set_tags`, `delete_block`,
-  `carve_block`, `link_blocks`, `stats`, `rebuild`, `conflicts`). A thin client that forwards
+  `carve_block`, `flatten_block`, `link_blocks`, `stats`, `rebuild`, `conflicts`). A thin client that forwards
   every call to the daemon and auto-starts `mdkbd` if needed.

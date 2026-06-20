@@ -283,7 +283,7 @@ fn render_flat_body(
 
 /// Width (in chars) of the current, in-progress last line of `s` — i.e. how far indented the
 /// next text appended to `s` will start. Used as the re-indent column for a transcluded block.
-fn current_line_width(s: &str) -> usize {
+pub(crate) fn current_line_width(s: &str) -> usize {
     match s.rfind('\n') {
         Some(i) => s[i + 1..].chars().count(),
         None => s.chars().count(),
@@ -301,7 +301,7 @@ fn current_line_width(s: &str) -> usize {
 /// is correct for every case we actually have (YAML scalars, list items, prose), so we keep the
 /// model simple — "everything is a block, reuse is `![[]]`" — and would only add an override if a
 /// concrete need appears.
-fn reindent_continuation(text: &str, col: usize) -> String {
+pub(crate) fn reindent_continuation(text: &str, col: usize) -> String {
     if col == 0 {
         return text.to_string();
     }

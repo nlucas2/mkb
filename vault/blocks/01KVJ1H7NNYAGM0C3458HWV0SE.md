@@ -1,5 +1,5 @@
 ---
-title: Skill: MCP surface
+title: "Skill: MCP surface"
 tags: [skill, surface, mcp]
 ---
 
@@ -10,6 +10,8 @@ tags: [skill, surface, mcp]
 
 **Write:** `create_block` (title?, body), `update_block` (id, title?, body - overwrites the
 whole body), `set_tags` (id, tags - replaces managed tags), `carve_block` (parent_id, body),
-`link_blocks` (source_id, target_id, embed - embed=true is `![[...]]`), `delete_block`.
+`flatten_block` (parent_id, child_id - inverse of carve: inline a single-use embed and delete the
+child; errors unless the child is referenced exactly once), `link_blocks` (source_id, target_id,
+embed - embed=true is `![[...]]`), `delete_block`.
 
 **Maintain:** `stats`, `conflicts`, `rebuild`.
