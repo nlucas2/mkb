@@ -27,11 +27,42 @@
       html, body { height:100%; }
       body { margin:0; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
       .layout { display:flex; height:100vh; }
-      nav { width:270px; flex:0 0 270px; background:var(--panel); border-right:1px solid var(--border); padding:1rem; display:flex; flex-direction:column; }
+      nav { width:var(--navw,270px); flex:0 0 var(--navw,270px); background:var(--panel); padding:1rem; display:flex; flex-direction:column; min-width:0; overflow:hidden; }
+      nav.collapsed { width:0; flex-basis:0; padding:0; }
+      /* The seam: the divider between nav and main. Drag to resize, double-click to auto-fit.
+         The pill button on it collapses/expands. It is a sibling of nav so it stays visible
+         (to re-open) even when collapsed. */
+      .seam { flex:0 0 6px; position:relative; background:var(--border); cursor:col-resize; }
+      .seam:hover, .seam.dragging { background:var(--accent); }
+      /* Widen the drag hit area beyond the visible 6px so it's easy to grab. */
+      .seam::before { content:""; position:absolute; top:0; bottom:0; left:-5px; right:-5px; }
+      .seam .tab { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:16px; height:50px; border-radius:7px; background:var(--panel); border:1px solid var(--border); color:var(--muted); display:flex; align-items:center; justify-content:center; font-size:.85rem; cursor:pointer; z-index:2; }
+      /* Generous invisible click target around the pill (esp. helps re-expanding). */
+      .seam .tab::after { content:""; position:absolute; inset:-10px; }
+      .seam:hover .tab { border-color:var(--accent); color:var(--fg); }
+      /* When collapsed, make the pill a bigger, easier target to click open. */
+      nav.collapsed + .seam { flex-basis:9px; }
+      nav.collapsed + .seam .tab { width:22px; height:66px; font-size:1rem; }
+      nav.collapsed + .seam .tab::after { inset:-14px; }
       nav input { width:100%; padding:.5rem .6rem; margin-bottom:.6rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
       .navbtns { display:flex; gap:.4rem; margin-bottom:.6rem; }
-      .navbtns button { flex:1; }
-      .navhd { display:flex; align-items:center; justify-content:space-between; margin:.2rem 0 .4rem; font-size:.75em; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+      .navbtns button { flex:1; white-space:nowrap; padding:.4rem .25rem; font-size:.85em; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; justify-content:center; gap:.3rem; }
+      .navbtns .ico { flex:0 0 auto; }
+      /* Narrow: the button row becomes a left-aligned vertical menu — icon + label per row
+         (a "hamburger" menu that still reads). Only at the extreme do labels drop. */
+      nav.narrow .navbtns { flex-direction:column; }
+      nav.narrow .navbtns button { justify-content:flex-start; padding:.4rem .55rem; }
+      nav.narrow input { font-size:.8em; }
+      nav.iconly .navbtns button { justify-content:center; padding:.4rem .25rem; }
+      nav.iconly .navbtns button .label { display:none; }
+      nav.iconly .navhd span, nav.iconly .status #statustext { display:none; }
+      .navhd { display:flex; align-items:center; justify-content:space-between; margin:.2rem 0 .4rem; font-size:.75em; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); gap:.3rem; }
+      /* Full-width create action anchored directly under the block list (always visible). */
+      .addrow { width:100%; margin-top:.4rem; display:flex; align-items:center; justify-content:center; gap:.4rem; color:var(--accent); border-color:var(--border); border-style:dashed; }
+      .addrow:hover { background:var(--accent); color:var(--panel); border-style:solid; border-color:var(--accent); }
+      .addrow .ico { font-size:1.1em; line-height:1; }
+      nav.iconly .addrow { font-size:0; }
+      nav.iconly .addrow .ico { font-size:1.2rem; }
       .seg.small button { padding:.1rem .4rem; font-size:.9em; }
       button { background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.35rem .6rem; cursor:pointer; font:inherit; }
       button:hover { background:var(--hover); }
@@ -41,7 +72,10 @@
       nav li a { display:block; padding:.3rem .5rem; border-radius:6px; color:var(--fg); text-decoration:none; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       nav li a:hover { background:var(--hover); }
       nav li.active a { background:var(--accent); color:var(--panel); font-weight:600; }
-      .status { margin-top:.6rem; padding-top:.6rem; border-top:1px solid var(--border); font-size:.8em; color:var(--muted); display:flex; align-items:center; gap:.4rem; cursor:pointer; }
+      .status { margin-top:.6rem; padding:.45rem .5rem; border-top:1px solid var(--border); font-size:.8em; color:var(--muted); display:flex; align-items:center; gap:.4rem; cursor:pointer; border-radius:6px; }
+      .status:hover { background:var(--hover); color:var(--fg); }
+      .status .gear { margin-left:auto; flex:0 0 auto; opacity:.8; font-size:1.05em; }
+      .status:hover .gear { opacity:1; }
       .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); flex:0 0 auto; }
       .dot.ok { background:var(--ok); }
       main { flex:1; overflow:auto; position:relative; }
@@ -128,21 +162,22 @@
   </head>
   <body>
     <div class="layout">
-      <nav>
+      <nav id="nav">
         <input id="search" type="search" placeholder="Search…  (tag:  #tag  lang:rust)" />
         <div class="navbtns">
-          <button id="newblock">＋ Block</button>
-          <button id="graphbtn">◎ Graph</button>
-          <button id="tagsbtn">＃ Tags</button>
+          <button id="graphbtn"><span class="ico">◎</span><span class="label">Graph</span></button>
+          <button id="tagsbtn"><span class="ico">#</span><span class="label">Tags</span></button>
         </div>
         <div class="navhd"><span>Blocks</span>
           <div class="seg small"><button id="tabRoots" class="on">Roots</button><button id="tabAll">All</button></div>
         </div>
         <ul id="blocks"></ul>
-        <div class="status" id="status" title="Connection settings">
-          <span class="dot" id="dot"></span><span id="statustext">…</span>
+        <button id="newblock" class="addrow" title="New block (⌘↵ to save · Esc to discard)"><span class="ico">+</span> New block</button>
+        <div class="status" id="status" title="Connection &amp; settings">
+          <span class="dot" id="dot"></span><span id="statustext">…</span><span class="gear">⚙️</span>
         </div>
       </nav>
+      <div class="seam" id="seam" title="Drag to resize · click to collapse"><span class="tab" id="seamtab">‹</span></div>
       <main id="main"></main>
     </div>
 
@@ -154,13 +189,89 @@
       const dotEl = document.getElementById("dot");
       const statusTextEl = document.getElementById("statustext");
 
+      // ---------- sidebar: resize / collapse / responsive ----------
+      // Hoisted: relayoutGraph() (called during init below) references fg, so it must exist.
+      let fg = null;
+      // The seam between nav and main: drag it to resize, double-click to auto-fit. The pill
+      // button on it collapses/expands. Width and collapsed state persist in localStorage.
+      const navEl = document.getElementById("nav");
+      const seamEl = document.getElementById("seam");
+      const seamTab = document.getElementById("seamtab");
+      const NARROW_AT = 240, ICONONLY_AT = 120;   // vertical menu, then icon-only
+      const NAV_MIN = 56, NAV_MAX = 520, NAV_DEFAULT = 270;
+      let lastWidth = parseInt(localStorage.getItem("mdkb.navw") || String(NAV_DEFAULT), 10);
+      function relayoutGraph() { if (fg) setTimeout(() => fg.width(mainEl.clientWidth).height(mainEl.clientHeight), 0); }
+      function applyNavWidth(px) {
+        const w = Math.max(NAV_MIN, Math.min(NAV_MAX, px));
+        lastWidth = w;
+        document.documentElement.style.setProperty("--navw", w + "px");
+        navEl.classList.toggle("narrow", w < NARROW_AT);
+        navEl.classList.toggle("iconly", w < ICONONLY_AT);
+        localStorage.setItem("mdkb.navw", String(w));
+        relayoutGraph();
+      }
+      function setCollapsed(yes) {
+        navEl.classList.toggle("collapsed", yes);
+        seamTab.textContent = yes ? "›" : "‹";
+        seamTab.title = yes ? "Expand sidebar" : "Collapse sidebar";
+        localStorage.setItem("mdkb.navcollapsed", yes ? "1" : "0");
+        relayoutGraph();
+      }
+      function isCollapsed() { return navEl.classList.contains("collapsed"); }
+      // Auto-fit: width that fits the longest sidebar row (block titles), but at least the
+      // default and never past the max. Measured with a hidden span so it works even collapsed.
+      function fitWidth() {
+        if (isCollapsed()) setCollapsed(false);
+        const meas = document.createElement("span");
+        meas.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap;font:inherit;";
+        navEl.appendChild(meas);
+        let widest = 0;
+        navEl.querySelectorAll("#blocks li a").forEach((a) => {
+          meas.textContent = a.textContent;
+          widest = Math.max(widest, meas.offsetWidth);
+        });
+        meas.remove();
+        // widest text + li padding (~16) + nav padding (32) + scrollbar slack (18).
+        const desired = widest ? widest + 16 + 32 + 18 : NAV_DEFAULT;
+        applyNavWidth(Math.max(NAV_DEFAULT, desired));
+      }
+      // Restore persisted state (does NOT touch `fg`, which isn't created yet).
+      applyNavWidth(lastWidth);
+      if (localStorage.getItem("mdkb.navcollapsed") === "1") setCollapsed(true);
+      // The pill button toggles collapse; stop its mousedown from starting a seam drag.
+      seamTab.addEventListener("mousedown", (e) => e.stopPropagation());
+      seamTab.addEventListener("click", (e) => { e.stopPropagation(); setCollapsed(!isCollapsed()); });
+      // Double-click the seam → auto-fit width.
+      seamEl.addEventListener("dblclick", (e) => { if (e.target === seamTab) return; fitWidth(); });
+      // Drag the seam → resize (a plain click does nothing now; collapse is the pill's job).
+      (() => {
+        let down = null, dragging = false;
+        seamEl.addEventListener("mousedown", (e) => {
+          down = { x: e.clientX, left: navEl.getBoundingClientRect().left };
+          dragging = false; e.preventDefault();
+        });
+        window.addEventListener("mousemove", (e) => {
+          if (!down) return;
+          if (!dragging && Math.abs(e.clientX - down.x) > 4) {
+            dragging = true; seamEl.classList.add("dragging");
+            document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
+            if (isCollapsed()) setCollapsed(false);
+          }
+          if (dragging) applyNavWidth(e.clientX - down.left);
+        });
+        window.addEventListener("mouseup", () => {
+          if (!down) return;
+          down = null; dragging = false; seamEl.classList.remove("dragging");
+          document.body.style.cursor = ""; document.body.style.userSelect = "";
+        });
+      })();
+
       let roots = [];          // current sidebar list [{id,title}]
       let navScope = "roots";  // roots | all
       let indexCache = null;   // [{id,title}] of ALL blocks (picker)
       let active = null;       // current block id
       let mode = "read";       // read (clean) | blocks (interactive) | edit (raw)
       let graphCache = null;
-      let fg = null;
 
       const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
 
@@ -526,13 +637,46 @@
       }
 
       // ---------- block ops ----------
-      async function newBlock() {
-        // No prompt() — Tauri's webview returns null from prompt(). Create an untitled block
-        // and drop into Edit mode (title + body) immediately.
-        try {
-          const id = await invoke("create_block", { title: null, body: "" });
-          invalidate(); await loadBlocks(id); mode = "edit"; openBlock(id, true);
-        } catch (e) { alert(String(e)); }
+      // New block: open an UNSAVED draft editor. Nothing is written to disk until you Save —
+      // Escape or Cancel discards it, so clicking + and changing your mind never leaves a stray
+      // empty block. Creation happens on save via create_block.
+      function newBlock() {
+        active = null; renderNav(); mode = "edit"; mainEl.scrollTop = 0;
+        mainEl.innerHTML = topbarDraft() + `<div class="pad" id="body"></div>`;
+        const body = mainEl.querySelector("#body");
+        body.innerHTML = `<input class="titleedit" id="t" placeholder="Title (optional)" />
+          <textarea class="editarea" id="b" spellcheck="false" style="min-height:50vh" placeholder="Write Markdown…  ⌘↵ to create · Esc to discard"></textarea>
+          <div class="editbar">
+            <button class="primary" id="save">Create block</button>
+            <button id="cancel">Cancel</button>
+            <span class="muted" id="msg">New block — nothing is saved until you create it. Type <code>[[</code> to link.</span>
+          </div>`;
+        const tt = body.querySelector("#t"), ta = body.querySelector("#b");
+        attachPicker(ta);
+        const discard = () => { mode = "read"; loadBlocks(); if (active) openBlock(active); else mainEl.innerHTML = `<div class="pad"><p class="muted">Select or create a block.</p></div>`; };
+        const create = async () => {
+          const title = tt.value.trim() || null;
+          if (!title && !ta.value.trim()) { discard(); return; }  // empty → just discard
+          try {
+            const id = await invoke("create_block", { title, body: ta.value });
+            invalidate(); await loadBlocks(id); mode = "edit"; openBlock(id, true);
+          } catch (e) { body.querySelector("#msg").textContent = String(e); }
+        };
+        body.querySelector("#save").onclick = create;
+        body.querySelector("#cancel").onclick = discard;
+        // Esc discards the draft (unless the [[ picker is open, which eats Esc to close itself).
+        tt.addEventListener("keydown", draftKeys);
+        ta.addEventListener("keydown", draftKeys);
+        function draftKeys(e) {
+          if (e.key === "Escape" && !pickerOpen()) { e.preventDefault(); discard(); }
+          else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); create(); }
+        }
+        tt.focus();
+      }
+
+      // A minimal topbar for the unsaved draft (no view tabs, no tag editor, no delete).
+      function topbarDraft() {
+        return `<div class="topbar"><div class="titlewrap"><h1>New block</h1></div></div>`;
       }
 
       // Add a new child block to the current block: create it, embed it, edit it inline.
