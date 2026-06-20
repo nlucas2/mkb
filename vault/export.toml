@@ -29,3 +29,8 @@ block = "AGENTS page"
 [[doc]]
 path  = "README.md"
 block = "README page"
+
+# Design rationale for the file-per-block model.
+[[doc]]
+path  = "docs/architecture.md"
+block = "Architecture page"
