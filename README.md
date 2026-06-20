@@ -362,6 +362,11 @@ both connect using the two paradigms above — a **local** socket or a **remote*
     races the shared WebView2 profile lock at `%LOCALAPPDATA%\dev.mdkb.desktop\EBWebView`).
     Normal launches, and relaunch-after-crash, were reliable in testing. The file log above is
     what would let us confirm/deny this in the wild rather than theorize.
+- **Knowledge graph — distinguish transclusions from references** *(planned)*: the graph
+  currently collapses `[[refs]]` and `![[transclusions]]` into one undifferentiated edge type.
+  Tag each edge with its kind in `mdkb-core` (`link_graph`) so the two are distinguishable in
+  the data, then render them differently in the UI (e.g. solid edges for `![[transclusions]]`,
+  dashed for `[[refs]]`) so a reused/embedded block reads visibly different from a plain link.
 
 ## Deployment
 
