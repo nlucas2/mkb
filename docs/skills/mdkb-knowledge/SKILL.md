@@ -135,6 +135,7 @@ mdkb search <vault-dir> "tag:k8s lang:kusto cluster health"   # operators or --t
 mdkb tags   <vault-dir>                                        # all tags with block counts
 mdkb list   <vault-dir>                                        # ids + titles
 mdkb render <vault-dir> <block-id>                             # assembled (embeds resolved)
+mdkb export <vault-dir> [--check]                              # generate repo docs from blocks (docs-as-data)
 mdkb stats  <vault-dir>
 mdkb daemon --vault <dir>                                      # run the daemon; subcmds: ping|stats|list|search|render|rebuild|conflicts
 ```

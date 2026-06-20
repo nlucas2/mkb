@@ -5,7 +5,7 @@
 
 use std::process::ExitCode;
 
-use mdkb_core::{render_block, BlockId, Index, SearchQuery, SyncEngine};
+use mdkb_core::{export, render_block, BlockId, Index, SearchQuery, SyncEngine};
 use mdkb_index::SqliteIndex;
 
 fn main() -> ExitCode {
@@ -25,6 +25,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("list") => cmd_list(&args[1..]),
         Some("search") => cmd_search(&args[1..]),
         Some("tags") => cmd_tags(&args[1..]),
+        Some("export") => cmd_export(&args[1..]),
         Some("stats") => cmd_stats(&args[1..]),
         Some("daemon") => cmd_daemon(&args[1..]),
         Some("--version") | Some("-V") => {
@@ -47,6 +48,10 @@ usage:
        flags: --lang=<lang> --tag=<tag> (repeatable) --limit=<n>
        query also accepts inline operators: tag:<t>  #<t>  lang:<l>  code:<l>
   mdkb tags <vault-dir>                     list all tags with block counts
+  mdkb export <vault-dir> [flags]           generate docs from blocks (docs-as-data)
+       flags: --manifest=<path> (default <vault>/export.manifest)
+              --root=<dir>      output root for relative paths (default: cwd)
+              --check           verify files are up to date; non-zero exit on drift
   mdkb stats <vault-dir>                    index statistics
   mdkb daemon <socket> <subcmd> [args]      talk to a running mdkbd over its socket
        subcmds: ping | stats | list | search <query> | render <id> | rebuild | conflicts
@@ -151,6 +156,83 @@ fn cmd_tags(args: &[String]) -> Result<(), String> {
         println!("{:>4}  #{}", t.count, t.tag);
     }
     Ok(())
+}
+
+fn cmd_export(args: &[String]) -> Result<(), String> {
+    let dir = args.first().ok_or("missing <vault-dir>")?;
+    let mut manifest_path = format!("{dir}/export.manifest");
+    let mut root = ".".to_string();
+    let mut check = false;
+    for flag in &args[1..] {
+        if let Some(p) = flag.strip_prefix("--manifest=") {
+            manifest_path = p.to_string();
+        } else if let Some(r) = flag.strip_prefix("--root=") {
+            root = r.to_string();
+        } else if flag == "--check" {
+            check = true;
+        } else {
+            return Err(format!("unknown flag: {flag}"));
+        }
+    }
+
+    let manifest_text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("reading manifest {manifest_path}: {e}"))?;
+    let manifest = export::Manifest::parse(&manifest_text)?;
+    let engine = readonly_engine(dir)?;
+    let docs = export::plan_exports(engine.vault(), &manifest)?;
+
+    let root = std::path::Path::new(&root);
+    let mut drifted = Vec::new();
+    let mut wrote = 0usize;
+    for doc in &docs {
+        let out = root.join(&doc.path);
+        let current = std::fs::read_to_string(&out).ok();
+        let up_to_date = current.as_deref() == Some(doc.content.as_str());
+        if check {
+            if !up_to_date {
+                drifted.push(doc.path.clone());
+            }
+            continue;
+        }
+        if up_to_date {
+            println!("unchanged  {}", doc.path);
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&out, &doc.content)
+            .map_err(|e| format!("writing {}: {e}", out.display()))?;
+        println!(
+            "{}  {}",
+            if current.is_some() {
+                "updated"
+            } else {
+                "created"
+            },
+            doc.path
+        );
+        wrote += 1;
+    }
+
+    if check {
+        if drifted.is_empty() {
+            println!("up to date ({} doc(s))", docs.len());
+            Ok(())
+        } else {
+            for p in &drifted {
+                eprintln!("drift: {p}");
+            }
+            Err(format!(
+                "{} doc(s) out of date; run `mdkb export {dir}` to regenerate",
+                drifted.len()
+            ))
+        }
+    } else {
+        println!("exported {} doc(s) ({wrote} written)", docs.len());
+        Ok(())
+    }
 }
 
 fn cmd_daemon(args: &[String]) -> Result<(), String> {

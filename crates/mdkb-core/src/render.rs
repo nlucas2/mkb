@@ -156,6 +156,78 @@ fn escape_link_text(s: &str) -> String {
         .replace(']', r"\]")
 }
 
+/// Render a block to **flat, self-contained Markdown** for export (e.g. generating a repo doc
+/// from a vault block). Unlike [`render_block`], which produces `mdkb:`-linked embed *cards*,
+/// this **dissolves** every `![[embed]]` inline — the child's content (recursively) flows as
+/// part of the document — and renders each `[[reference]]` as its plain display title (a flat
+/// `.md` file has nowhere to link a `mdkb:` scheme). Total: cycles and dangling targets become
+/// invisible HTML-comment markers instead of breaking the document. Returns `None` if unknown.
+pub fn render_flat(vault: &Vault, id: &BlockId) -> Option<String> {
+    let block = vault.block(id)?;
+    let mut visited = HashSet::new();
+    visited.insert(id.clone());
+    Some(render_flat_body(vault, block, &mut visited))
+}
+
+fn render_flat_body(vault: &Vault, block: &Block, visited: &mut HashSet<BlockId>) -> String {
+    let refs = extract_references(&block.body);
+    if refs.is_empty() {
+        return block.body.clone();
+    }
+    let mut out = String::new();
+    let mut cursor = 0usize;
+    for r in refs {
+        out.push_str(&block.body[cursor..r.span.start]);
+        if r.embed {
+            out.push_str(&dissolve_embed(vault, &r.target, r.label(), visited));
+        } else {
+            out.push_str(&flat_reference(vault, &r.target, r.label()));
+        }
+        cursor = r.span.end;
+    }
+    out.push_str(&block.body[cursor..]);
+    out
+}
+
+/// A `[[reference]]` in flat output → the target's display title (or the author's alias) as
+/// plain text. No link: a standalone `.md` doc can't resolve the `mdkb:` scheme.
+fn flat_reference(vault: &Vault, target: &str, label: &str) -> String {
+    match vault.resolve(target) {
+        Some(id) if label == target => vault
+            .block(&id)
+            .map(|b| b.display_title())
+            .unwrap_or_else(|| label.to_string()),
+        _ => label.to_string(),
+    }
+}
+
+/// A `![[embed]]` in flat output → the target's resolved body, dissolved inline (recursively).
+/// Cycles and dangling targets degrade to an invisible HTML comment so the doc stays intact.
+fn dissolve_embed(
+    vault: &Vault,
+    target: &str,
+    label: &str,
+    visited: &mut HashSet<BlockId>,
+) -> String {
+    let id = match vault.resolve(target) {
+        Some(id) => id,
+        None => return format!("<!-- mdkb: unresolved embed: {target} -->"),
+    };
+    if visited.contains(&id) {
+        return format!("<!-- mdkb: transclusion cycle at {label} -->");
+    }
+    let block = match vault.block(&id) {
+        Some(b) => b,
+        None => return format!("<!-- mdkb: unresolved embed: {target} -->"),
+    };
+    visited.insert(id.clone());
+    let body = render_flat_body(vault, block, visited);
+    visited.remove(&id);
+    // Trim surrounding blank lines so a dissolved child doesn't accumulate extra spacing; the
+    // parent's own newlines around the directive provide separation.
+    body.trim_matches('\n').to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +334,72 @@ mod tests {
         assert!(rb.raw.contains("![["));
         assert!(rb.rendered.contains("> ⧉ ["));
         assert!(!rb.rendered.contains("![["));
+    }
+
+    #[test]
+    fn flat_dissolves_embeds_inline_no_card() {
+        let (v, parent, _child) = vault();
+        let out = render_flat(&v, &parent).unwrap();
+        // Child content is inlined, with no embed-card blockquote and no mdkb: links.
+        assert!(out.contains("child content"), "got: {out}");
+        assert!(!out.contains("> ⧉"), "should not be a card: {out}");
+        assert!(
+            !out.contains("mdkb:"),
+            "no mdkb links in flat output: {out}"
+        );
+        assert!(
+            !out.contains("![["),
+            "embed directive should be gone: {out}"
+        );
+    }
+
+    #[test]
+    fn flat_reference_becomes_plain_title() {
+        let mut v = Vault::new();
+        let target = BlockId::generate();
+        let src = BlockId::generate();
+        v.insert_source(target.clone(), "---\ntitle: Deployment Guide\n---\nbody\n");
+        v.insert_source(src.clone(), &format!("see [[{target}]] now\n"));
+        let out = render_flat(&v, &src).unwrap();
+        assert_eq!(out, "see Deployment Guide now\n");
+    }
+
+    #[test]
+    fn flat_nested_embeds_dissolve_recursively() {
+        let mut v = Vault::new();
+        let leaf = BlockId::generate();
+        let mid = BlockId::generate();
+        let root = BlockId::generate();
+        v.insert_source(leaf.clone(), "leaf text\n");
+        v.insert_source(
+            mid.clone(),
+            &format!("mid before\n\n![[{leaf}]]\n\nmid after\n"),
+        );
+        v.insert_source(root.clone(), &format!("# Doc\n\n![[{mid}]]\n"));
+        let out = render_flat(&v, &root).unwrap();
+        assert!(out.contains("# Doc"));
+        assert!(out.contains("mid before"));
+        assert!(out.contains("leaf text"));
+        assert!(out.contains("mid after"));
+        assert!(!out.contains("![["));
+    }
+
+    #[test]
+    fn flat_cycle_and_dangling_become_comments() {
+        let mut v = Vault::new();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        v.insert_source(a.clone(), &format!("A\n\n![[{b}]]\n"));
+        v.insert_source(b.clone(), &format!("B\n\n![[{a}]]\n"));
+        let out = render_flat(&v, &a).unwrap();
+        assert!(out.contains("A"));
+        assert!(out.contains("B"));
+        assert!(out.contains("<!-- mdkb: transclusion cycle"), "got: {out}");
+
+        let mut v2 = Vault::new();
+        let c = BlockId::generate();
+        v2.insert_source(c.clone(), "x\n\n![[01JJJJJJJJJJJJJJJJJJJJJJJJ]]\n\ny\n");
+        let out2 = render_flat(&v2, &c).unwrap();
+        assert!(out2.contains("<!-- mdkb: unresolved embed"), "got: {out2}");
     }
 }

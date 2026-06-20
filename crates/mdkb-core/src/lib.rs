@@ -11,6 +11,7 @@ pub mod block;
 pub mod blockfile;
 pub mod conflict;
 pub mod embed;
+pub mod export;
 pub mod id;
 pub mod index;
 pub mod link;
@@ -25,6 +26,7 @@ pub use conflict::{is_conflict_path, CONFLICT_MARKERS};
 pub use embed::{
     bytes_to_vector, cosine_similarity, vector_to_bytes, EmbedError, Embedder, HashEmbedder,
 };
+pub use export::{plan_doc, plan_exports, ExportEntry, Manifest, PlannedDoc, GENERATED_MARKER};
 pub use id::{BlockId, IdCodec, IdError, MarkerMatch, NativeIdCodec};
 pub use index::{
     block_links, link_graph, reciprocal_rank_fusion, transclusion_reaches, BlockRecord, GraphData,
@@ -32,7 +34,7 @@ pub use index::{
     SearchQuery, TagCount,
 };
 pub use link::{extract_references, Reference};
-pub use render::{render_block, rendered_block, RenderedBlock};
+pub use render::{render_block, render_flat, rendered_block, RenderedBlock};
 pub use service::{Caller, Capability, RequestContext, Service};
 pub use sync::{SyncEngine, SyncReport};
 pub use vault::{block_rel_path, read_block_files, safe_relative_path, Vault, BLOCKS_DIR};
