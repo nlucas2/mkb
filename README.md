@@ -136,6 +136,19 @@ cargo run -p mdkb-cli -- export vault            # regenerate the mapped docs
 cargo run -p mdkb-cli -- export vault --check    # verify they're current
 ```
 
+There are three ways to select what to export:
+
+- **A manifest** (`vault/export.manifest`, or `--manifest=<path>`) — exact `PATH  BLOCK` mappings,
+  for docs that need a specific location (e.g. the skills under `docs/skills/…`).
+- **`--tag=<name>`** — export the **root** blocks carrying that tag to `<slug>.md` (under `--root`,
+  default `docs-export/`). A page is just a root, so `--tag=doc` exports the pages tagged `doc`
+  without also emitting their transcluded section blocks. Add `--include-non-root` to export
+  *every* block with the tag.
+- **No selector** — dump every root block to `<slug>.md` (the whole-KB case).
+
+`--raw` omits the `@generated` banner (for portable, off-repo output); `--check` writes nothing and
+exits non-zero on drift (the CI/pre-commit gate).
+
 The CLI/MCP skills were the first docs generated this way: the `mdkb-cli` and `mdkb-knowledge`
 skills share the same knowledge blocks and differ only in their per-transport surface, so editing
 a shared block once updates both. **[`docs/SPEC.md`](./docs/SPEC.md)** is also generated — from a

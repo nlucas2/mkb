@@ -195,36 +195,33 @@ pub fn slug(title: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-/// Build a manifest that exports **every root block** (the natural "pages" — blocks nothing
-/// embeds) to `<slug>.md`, when no manifest file is provided. Filenames come from each root's
+/// Build a manifest that exports each of `ids` to `<slug>.md`. Filenames come from each block's
 /// title slug (falling back to the id); on a slug collision a short id suffix disambiguates.
-/// `raw` sets the banner policy for all generated entries. Entries are sorted by path for a
-/// stable, deterministic result.
-pub fn manifest_for_all_roots(vault: &Vault, raw: bool) -> Manifest {
+/// `raw` sets the banner policy for every entry. Entries are sorted by path for a stable,
+/// deterministic result. Shared by [`manifest_for_all_roots`] and [`manifest_for_tag`] so the
+/// slug/disambiguation rules can never diverge between the two selectors.
+fn manifest_from_ids(vault: &Vault, ids: &[BlockId], raw: bool) -> Manifest {
     use std::collections::HashMap;
-    // First pass: how many roots share each slug (to know when to disambiguate).
-    let roots: Vec<_> = vault.roots();
-    let mut slug_counts: HashMap<String, usize> = HashMap::new();
-    for id in &roots {
+    let slug_for = |id: &BlockId| -> String {
         let s = vault
             .block(id)
             .map(|b| slug(&b.display_title()))
             .unwrap_or_default();
-        let s = if s.is_empty() { id.to_string() } else { s };
-        *slug_counts.entry(s).or_insert(0) += 1;
+        if s.is_empty() {
+            id.to_string()
+        } else {
+            s
+        }
+    };
+    // First pass: how many ids share each slug (to know when to disambiguate).
+    let mut slug_counts: HashMap<String, usize> = HashMap::new();
+    for id in ids {
+        *slug_counts.entry(slug_for(id)).or_insert(0) += 1;
     }
-    let mut entries: Vec<ExportEntry> = roots
+    let mut entries: Vec<ExportEntry> = ids
         .iter()
         .map(|id| {
-            let base = vault
-                .block(id)
-                .map(|b| slug(&b.display_title()))
-                .unwrap_or_default();
-            let base = if base.is_empty() {
-                id.to_string()
-            } else {
-                base
-            };
+            let base = slug_for(id);
             // Disambiguate colliding slugs with a short id suffix.
             let name = if slug_counts.get(&base).copied().unwrap_or(0) > 1 {
                 let short = &id.to_string()[..id.to_string().len().min(8)];
@@ -241,6 +238,42 @@ pub fn manifest_for_all_roots(vault: &Vault, raw: bool) -> Manifest {
         .collect();
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     Manifest { entries }
+}
+
+/// Build a manifest that exports **every root block** (the natural "pages" — blocks nothing
+/// embeds) to `<slug>.md`, when no manifest file is provided. `raw` sets the banner policy.
+pub fn manifest_for_all_roots(vault: &Vault, raw: bool) -> Manifest {
+    manifest_from_ids(vault, &vault.roots(), raw)
+}
+
+/// Build a manifest exporting the blocks carrying `tag` (case-insensitive) to `<slug>.md`.
+///
+/// By default only **roots** carrying the tag are exported — "export the pages tagged X", the
+/// intuitive reading, since a page is just a block nothing transcludes. This keeps a tag like
+/// `doc` from emitting both a page *and* its already-transcluded section blocks. Set
+/// `include_non_root` to export *every* block with the tag (for vaults that tag components and
+/// want each as its own file). `raw` sets the banner policy.
+pub fn manifest_for_tag(vault: &Vault, tag: &str, include_non_root: bool, raw: bool) -> Manifest {
+    let tag = tag.trim();
+    let has_tag = |id: &BlockId| -> bool {
+        vault
+            .block(id)
+            .map(|b| b.tag_names().iter().any(|t| t.eq_ignore_ascii_case(tag)))
+            .unwrap_or(false)
+    };
+    let ids: Vec<BlockId> = if include_non_root {
+        let mut v: Vec<BlockId> = vault
+            .blocks()
+            .iter()
+            .map(|b| b.id.clone())
+            .filter(|id| has_tag(id))
+            .collect();
+        v.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        v
+    } else {
+        vault.roots().into_iter().filter(|id| has_tag(id)).collect()
+    };
+    manifest_from_ids(vault, &ids, raw)
 }
 
 #[cfg(test)]
@@ -431,6 +464,62 @@ mod tests {
         // raw plan → no banner
         let docs = plan_exports(&v, &m).unwrap();
         assert!(docs.iter().all(|d| !d.content.contains(GENERATED_MARKER)));
+    }
+
+    #[test]
+    fn tag_export_defaults_to_roots_only() {
+        let mut v = Vault::new();
+        // A page tagged `doc` that transcludes a section also tagged `doc`.
+        let section = BlockId::generate();
+        let page = BlockId::generate();
+        v.insert_source(
+            section.clone(),
+            "---\ntitle: Section\ntags: [doc]\n---\n## Section\nbody\n",
+        );
+        v.insert_source(
+            page.clone(),
+            &format!("---\ntitle: Guide\ntags: [doc]\n---\n# Guide\n\n![[{section}]]\n"),
+        );
+        // An untagged root must not appear.
+        v.insert_source(BlockId::generate(), "---\ntitle: Other\n---\nx\n");
+
+        let m = manifest_for_tag(&v, "doc", false, false);
+        // Only the page (a root carrying `doc`) — the transcluded section is excluded.
+        assert_eq!(m.entries.len(), 1, "{:?}", m.entries);
+        assert_eq!(m.entries[0].path, "guide.md");
+        assert_eq!(m.entries[0].block, page.to_string());
+    }
+
+    #[test]
+    fn tag_export_include_non_root_emits_every_tagged_block() {
+        let mut v = Vault::new();
+        let section = BlockId::generate();
+        let page = BlockId::generate();
+        v.insert_source(
+            section.clone(),
+            "---\ntitle: Section\ntags: [doc]\n---\n## Section\nbody\n",
+        );
+        v.insert_source(
+            page.clone(),
+            &format!("---\ntitle: Guide\ntags: [doc]\n---\n# Guide\n\n![[{section}]]\n"),
+        );
+
+        let m = manifest_for_tag(&v, "doc", true, false);
+        // Both the page and the (non-root) section are emitted.
+        assert_eq!(m.entries.len(), 2, "{:?}", m.entries);
+        let blocks: Vec<&str> = m.entries.iter().map(|e| e.block.as_str()).collect();
+        assert!(blocks.contains(&page.to_string().as_str()));
+        assert!(blocks.contains(&section.to_string().as_str()));
+    }
+
+    #[test]
+    fn tag_export_is_case_insensitive() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        v.insert_source(id.clone(), "---\ntitle: Doc\ntags: [Doc]\n---\nbody\n");
+        let m = manifest_for_tag(&v, "doc", false, false);
+        assert_eq!(m.entries.len(), 1, "{:?}", m.entries);
+        assert_eq!(m.entries[0].block, id.to_string());
     }
 
     #[test]

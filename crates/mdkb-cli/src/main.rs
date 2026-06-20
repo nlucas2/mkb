@@ -92,10 +92,12 @@ writes (body is read from stdin where noted):
 maintenance:
   rebuild <vault>                   rebuild the index from blocks/
   export <vault> [flags]            generate flat docs from blocks (docs-as-data)
-       With no manifest: dumps every root block to <slug>.md under --root (default docs-export/).
+       With no selector: dumps every root block to <slug>.md under --root (default docs-export/).
        With a manifest (<vault>/export.manifest or --manifest=<path>): writes each mapped doc.
-       flags: --manifest=<path>  --root=<dir>  --raw (omit the @generated banner)
-              --check (verify only; non-zero exit on drift)
+       With --tag=NAME: dumps roots carrying that tag to <slug>.md (add --include-non-root for
+       every tagged block, transcluded ones included).
+       flags: --manifest=<path>  --tag=<name>  --include-non-root  --root=<dir>
+              --raw (omit the @generated banner)  --check (verify only; non-zero exit on drift)
 
   --version                         print version";
 
@@ -408,6 +410,8 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
     let dir = req(args, 0, "<vault-dir>")?;
     let mut manifest_path: Option<String> = None;
     let mut root: Option<String> = None;
+    let mut tag: Option<String> = None;
+    let mut include_non_root = false;
     let mut check = false;
     let mut raw = false;
     for flag in &args[1..] {
@@ -415,6 +419,10 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
             manifest_path = Some(p.to_string());
         } else if let Some(r) = flag.strip_prefix("--root=") {
             root = Some(r.to_string());
+        } else if let Some(t) = flag.strip_prefix("--tag=") {
+            tag = Some(t.to_string());
+        } else if flag == "--include-non-root" {
+            include_non_root = true;
         } else if flag == "--check" {
             check = true;
         } else if flag == "--raw" {
@@ -423,26 +431,42 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
             return Err(format!("unknown flag: {flag}"));
         }
     }
+    if tag.is_some() && manifest_path.is_some() {
+        return Err("--tag and --manifest are mutually exclusive selectors".into());
+    }
+    if include_non_root && tag.is_none() {
+        return Err("--include-non-root only applies with --tag".into());
+    }
 
-    // Manifest resolution: an explicit --manifest is required if given; otherwise use the vault's
-    // default export.manifest IF it exists; otherwise fall back to the whole-KB dump (no manifest
-    // → every root block to <slug>.md). This makes the simple case `mdkb export <vault>` just work.
+    // Selector resolution (matching the daemon's precedence):
+    //   --manifest=PATH        → that manifest
+    //   --tag=NAME             → roots carrying NAME (or every tagged block with
+    //                            --include-non-root); the default export.manifest is NOT consulted
+    //   (neither, default exists) → the vault's export.manifest
+    //   (neither, no default)  → whole-KB dump (every root → <slug>.md)
+    // This makes the simple case `mdkb export <vault>` just work.
     let default_manifest = format!("{dir}/export.manifest");
-    let manifest_text: Option<String> = match &manifest_path {
-        Some(p) => {
-            Some(std::fs::read_to_string(p).map_err(|e| format!("reading manifest {p}: {e}"))?)
+    let manifest_text: Option<String> = if tag.is_some() {
+        None
+    } else {
+        match &manifest_path {
+            Some(p) => {
+                Some(std::fs::read_to_string(p).map_err(|e| format!("reading manifest {p}: {e}"))?)
+            }
+            None if Path::new(&default_manifest).exists() => Some(
+                std::fs::read_to_string(&default_manifest)
+                    .map_err(|e| format!("reading manifest {default_manifest}: {e}"))?,
+            ),
+            None => None, // whole-KB dump
         }
-        None if Path::new(&default_manifest).exists() => Some(
-            std::fs::read_to_string(&default_manifest)
-                .map_err(|e| format!("reading manifest {default_manifest}: {e}"))?,
-        ),
-        None => None, // whole-KB dump
     };
-    let whole_kb = manifest_text.is_none();
+    // A manifest names exact paths (so it writes relative to cwd); a tag/whole-KB selection emits
+    // `<slug>.md` and defaults into `docs-export/` to avoid scattering files in cwd.
+    let slug_dump = manifest_text.is_none();
     // Whole-KB exports default into a `docs-export/` dir to avoid scattering files in cwd; a
     // manifest names exact paths so it defaults to cwd.
     let root = root.unwrap_or_else(|| {
-        if whole_kb {
+        if slug_dump {
             "docs-export".into()
         } else {
             ".".into()
@@ -451,7 +475,7 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
 
     // The daemon plans the docs against its warm vault (rendering + banner live in core).
     let docs = client(dir)?
-        .plan_exports(manifest_text, raw)
+        .plan_exports(manifest_text, tag, include_non_root, raw)
         .map_err(|e| e.to_string())?;
 
     let root = Path::new(&root);
