@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>mdkb</title>
     <script src="vendor/force-graph.min.js"></script>
+    <script src="vendor/highlight.min.js"></script>
+    <!-- Extra language grammars not in the highlight.js "common" bundle. Each
+         registers itself against the global hljs. kql = community Kusto grammar. -->
+    <script src="vendor/hljs-dockerfile.min.js"></script>
+    <script src="vendor/hljs-powershell.min.js"></script>
+    <script src="vendor/hljs-nginx.min.js"></script>
+    <script src="vendor/hljs-properties.min.js"></script>
+    <script src="vendor/hljs-kql.min.js"></script>
+    <script>
+      // Kusto fences are commonly tagged `kusto`; the grammar registers as `kql`.
+      try { window.hljs && window.hljs.registerAliases(["kusto", "azuremonitor", "loganalytics"], { languageName: "kql" }); } catch {}
+    </script>
+    <link rel="stylesheet" href="vendor/highlight-theme.css" />
     <style>
       :root {
         --bg:#1e1e2e; --fg:#cdd6f4; --muted:#9399b2; --accent:#89b4fa;
@@ -87,6 +100,9 @@
       .picker .mk { padding:.3rem .6rem; font-size:.75em; color:var(--muted); border-top:1px solid var(--border); }
 
       #graphview { position:absolute; inset:0; }
+      .glegend { position:absolute; left:1rem; bottom:1rem; z-index:6; background:rgba(24,24,37,.9); border:1px solid var(--border); border-radius:8px; padding:.5rem .7rem; font-size:.82em; display:flex; flex-direction:column; gap:.25rem; }
+      .glegend .lg { display:flex; align-items:center; gap:.45rem; }
+      .glegend .sw { width:11px; height:11px; border-radius:50%; flex:0 0 auto; }
       .form { max-width:34rem; } .form label { display:block; margin:.8rem 0 .2rem; font-weight:600; }
       .form input[type=text] { width:100%; padding:.5rem .6rem; background:var(--panel); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
       .form .row { display:flex; gap:.5rem; align-items:center; }
@@ -194,9 +210,10 @@
         </div>`;
       }
 
-      async function openBlock(id, keepMode) {
+      // The current view (read / blocks / edit) is **sticky**: navigating to another block
+      // keeps the mode you're in. Mode only changes via the view tabs or creating a block.
+      async function openBlock(id, _keepMode) {
         active = id;
-        if (!keepMode) mode = "read";
         renderNav();
         mainEl.scrollTop = 0;
         let view;
@@ -226,6 +243,7 @@
           card.remove();
         }
         body.innerHTML = `<div class="content reading">${tmp.innerHTML}</div>`;
+        highlightIn(body);
         // References stay navigable (the global mdkb: handler covers them); no edit affordances.
       }
 
@@ -234,6 +252,7 @@
         body.innerHTML =
           `<div class="content" id="content">${html}</div>` +
           `<div class="addrow"><button id="add">＋ Add block here</button></div>`;
+        highlightIn(body);
         const content = body.querySelector("#content");
         // Deliberate click (not hover) to edit. Clicking inside an embed card edits that child;
         // clicking the parent's own prose edits the parent. Links navigate (handled separately).
@@ -309,7 +328,7 @@
         body.querySelector("#save").onclick = async () => {
           try {
             await invoke("save_block", { id, title: body.querySelector("#t").value.trim() || null, body: ta.value });
-            invalidate(); await loadBlocks(id); mode = "read"; openBlock(id, true);
+            invalidate(); await loadBlocks(id); openBlock(id);
           } catch (e) { body.querySelector("#msg").textContent = String(e); }
         };
         body.querySelector("#carve").onclick = async () => {
@@ -319,7 +338,7 @@
             // Persist current body first so offsets match the stored block, then carve.
             await invoke("save_block", { id, title: body.querySelector("#t").value.trim() || null, body: ta.value });
             await invoke("carve_selection", { parentId: id, start, end });
-            invalidate(); await loadBlocks(id); mode = "read"; openBlock(id, true);
+            invalidate(); await loadBlocks(id); openBlock(id);
           } catch (e) { body.querySelector("#msg").textContent = String(e); }
         };
       }
@@ -441,6 +460,17 @@
 
       function autosize(ta) { ta.style.height = "auto"; ta.style.height = Math.max(ta.scrollHeight + 2, 60) + "px"; }
 
+      // Syntax-highlight every fenced code block under `root` (offline highlight.js). Markdown
+      // emits `<pre><code class="language-xxx">`; the common bundle plus vendored grammars cover
+      // C#/Python/Rust/Go/shell/SQL/YAML/Docker/PowerShell/nginx/Kusto(KQL)/etc. Unknown
+      // languages degrade to plain text.
+      function highlightIn(root) {
+        if (!window.hljs) return;
+        root.querySelectorAll("pre code").forEach((el) => {
+          try { window.hljs.highlightElement(el); } catch {}
+        });
+      }
+
       // ---------- block ops ----------
       async function newBlock() {
         // No prompt() — Tauri's webview returns null from prompt(). Create an untitled block
@@ -474,7 +504,12 @@
       // ---------- graph ----------
       async function showGraph() {
         active = null; renderNav();
-        mainEl.innerHTML = `<div id="graphview"></div>`;
+        mainEl.innerHTML = `<div id="graphview"></div>
+          <div class="glegend">
+            <div class="lg"><span class="sw" style="background:#89b4fa"></span> Root block (nothing embeds it)</div>
+            <div class="lg"><span class="sw" style="background:#cba6f7"></span> Embedded / linked block</div>
+            <div class="lg muted">Size = number of connections · arrows point source → target · click a node to open</div>
+          </div>`;
         let g;
         try { g = graphCache || (graphCache = await invoke("graph")); }
         catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
