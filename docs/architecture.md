@@ -184,7 +184,12 @@ source of truth; on any doubt, rebuild from files.
   are read/write only as authorized; default fail‑closed).
 - Clients **auto‑start a detached daemon** for a local vault (it outlives the app) or connect
   to a remote one. Connection config is shared (`ConnectionConfig` / `connect` /
-  `ensure_daemon` in `mdkb-protocol`).
+  `ensure_daemon` in `mdkb-protocol`). A client reuses a live daemon by pinging its socket and
+  only spawns one when none answers.
+- **One daemon per vault.** The daemon holds an exclusive advisory lock on `.mdkb/mdkbd.lock`
+  for its lifetime (released by the OS on exit, so it can't go stale). A second daemon for the
+  same vault refuses to start. This holds even if the socket file is deleted out from under a
+  running daemon, so a vault can never have two concurrent writers/watchers.
 - **Presentation is shared** via `mdkb-view` (Markdown→HTML, wikilink/embed decoration, XSS
   neutralization). The web UI and desktop UI render through the exact same path.
 

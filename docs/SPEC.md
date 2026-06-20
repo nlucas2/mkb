@@ -16,10 +16,22 @@
     index.db              # SQLite index (FTS5 + vectors); rebuilt from blocks/
     config.json           # embedder configuration (optional)
     mdkbd.sock            # daemon socket (local mode)
+    mdkbd.lock            # exclusive lock: at most one daemon per vault
+    mdkbd.log             # daemon log (local mode)
   SPEC.md                 # this file
 ```
 
 Anything under `.mdkb/` can be deleted; the daemon rebuilds it from `blocks/` on next start.
+
+## Single daemon per vault
+
+A vault is owned by **at most one daemon at a time**. On startup the daemon takes an
+**exclusive advisory lock** on `.mdkb/mdkbd.lock` (held for its whole lifetime, released by the
+OS on exit — even on crash/kill, so it never goes stale). A second daemon launched for the same
+vault fails to take the lock and exits immediately. This guarantees there is never more than one
+writer/watcher for a vault, even if the socket file is removed out from under a running daemon.
+Clients (UI, MCP, CLI) reuse a live daemon by pinging its socket and only spawn one when none
+answers.
 
 ## A block file
 

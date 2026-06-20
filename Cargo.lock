@@ -864,6 +864,7 @@ dependencies = [
 name = "mdkbd"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "mdkb-core",
  "mdkb-embed",
  "mdkb-index",

@@ -34,9 +34,10 @@ the difference is *where the daemon runs* and *how clients reach it*.
 Everything runs on your machine. `mdkbd` owns the vault and a local socket (a **Unix-domain
 socket** on Linux/macOS, a **named pipe** on Windows); the index lives in `<vault>/.mdkb/`
 (local-only, rebuildable). The CLI, MCP server, web UI, and desktop app all connect to that
-socket. To use multiple machines, **sync only the Markdown** (OneDrive, etc.) — each machine
-runs its own daemon and keeps its own local index. This is the default and needs no
-configuration.
+socket. **At most one daemon owns a vault** — it holds an exclusive lock on `.mdkb/mdkbd.lock`,
+so a stray second launch refuses to start and you never get two writers. To use multiple
+machines, **sync only the Markdown** (OneDrive, etc.) — each machine runs its own daemon and
+keeps its own local index. This is the default and needs no configuration.
 
 ```sh
 mdkbd --vault ~/mdkb-vault          # serves ~/mdkb-vault/.mdkb/mdkbd.sock

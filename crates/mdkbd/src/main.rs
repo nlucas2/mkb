@@ -7,6 +7,7 @@
 //! — so it is fail-closed by default (plan Decision #9).
 
 mod config;
+mod lock;
 mod server;
 mod watcher;
 
@@ -40,6 +41,25 @@ fn run() -> Result<(), String> {
 
     cfg.ensure_dirs().map_err(|e| e.to_string())?;
 
+    // Acquire the per-vault exclusive lock FIRST. At most one daemon may own a vault; this is
+    // held for the whole process lifetime and released by the OS on exit (even crash/kill), so
+    // it can't go stale. It also makes the socket checks below authoritative: while we hold the
+    // lock, no other live daemon can exist for this vault, so any socket file present is stale.
+    let lock_path = cfg.paths.mdkb_dir().join("mdkbd.lock");
+    let _vault_lock = match lock::VaultLock::acquire(&lock_path) {
+        Ok(Some(guard)) => guard,
+        Ok(None) => {
+            return Err(format!(
+                "a daemon already owns vault {} (lock held on {})",
+                cfg.vault().display(),
+                lock_path.display()
+            ));
+        }
+        Err(e) => {
+            return Err(format!("acquiring vault lock {}: {e}", lock_path.display()));
+        }
+    };
+
     // Refuse to start a second daemon on the same socket.
     if cfg.socket().exists() {
         let probe = mdkb_protocol::Client::new(cfg.socket());
@@ -49,7 +69,7 @@ fn run() -> Result<(), String> {
                 cfg.socket().display()
             ));
         }
-        // Stale socket from a previous run; remove it.
+        // Stale socket from a previous run (we hold the vault lock, so no live peer exists).
         let _ = std::fs::remove_file(cfg.socket());
     }
 
