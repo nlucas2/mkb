@@ -275,6 +275,49 @@ impl<I: Index> Service<I> {
         Ok(child)
     }
 
+    /// Carve a **selected range** of a parent block's body into a new child block: the text in
+    /// `start..end` (byte offsets into the parent's raw body) becomes a new block, and that
+    /// exact range is replaced in place by `![[<newid>]]`. This is the "extract a reusable
+    /// chunk where it sits" gesture — non-destructive (rendered output is unchanged) and the
+    /// content moves into its own addressable block. Returns the new child id.
+    pub fn carve_selection(
+        &mut self,
+        ctx: &RequestContext,
+        parent_id: &BlockId,
+        start: usize,
+        end: usize,
+    ) -> Result<BlockId, IndexError> {
+        ctx.authorize(Capability::Write)?;
+        let parent = self
+            .engine
+            .vault()
+            .block(parent_id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {parent_id}")))?;
+        let body = parent.body.clone();
+        let title = parent.title.clone();
+        if start >= end
+            || end > body.len()
+            || !body.is_char_boundary(start)
+            || !body.is_char_boundary(end)
+        {
+            return Err(IndexError::new("invalid carve selection range"));
+        }
+        let selected = body[start..end].trim().to_string();
+        if selected.is_empty() {
+            return Err(IndexError::new("carve selection is empty"));
+        }
+        // Create the child first, then splice the parent (so a failed child create leaves the
+        // parent untouched).
+        let child = self.engine.create_block(None, &selected)?;
+        let mut new_body = String::with_capacity(body.len());
+        new_body.push_str(&body[..start]);
+        new_body.push_str(&format!("![[{child}]]"));
+        new_body.push_str(&body[end..]);
+        self.engine
+            .update_block(parent_id, title.as_deref(), &new_body)?;
+        Ok(child)
+    }
+
     /// Link or embed `source_id` to `target_id`. `embed = true` appends `![[target]]`,
     /// `false` appends `[[target]]`.
     ///
@@ -386,6 +429,41 @@ mod tests {
         let rendered = svc.render_block(&ctx, &parent).unwrap().unwrap();
         assert!(rendered.contains("do the thing"), "got: {rendered}");
         assert!(svc.engine().vault().children(&parent).contains(&child));
+    }
+
+    #[test]
+    fn carve_selection_extracts_range_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let body = "before SHARED after";
+        let parent = svc.create_block(&ctx, Some("Guide"), body).unwrap();
+        let start = body.find("SHARED").unwrap();
+        let end = start + "SHARED".len();
+        let child = svc.carve_selection(&ctx, &parent, start, end).unwrap();
+
+        // The carved text became its own block...
+        assert_eq!(
+            svc.get_block(&ctx, &child).unwrap().unwrap().content,
+            "SHARED"
+        );
+        // ...replaced in place by an embed, so the parent body reads "before ![[id]] after".
+        let psrc = svc.get_block_source(&ctx, &parent).unwrap().unwrap();
+        assert_eq!(psrc, format!("before ![[{child}]] after"));
+        // Rendered output is unchanged (the child is inlined where it was).
+        let rendered = svc.render_block(&ctx, &parent).unwrap().unwrap();
+        assert!(rendered.contains("SHARED"));
+        assert!(svc.engine().vault().children(&parent).contains(&child));
+    }
+
+    #[test]
+    fn carve_selection_rejects_bad_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let parent = svc.create_block(&ctx, None, "short").unwrap();
+        assert!(svc.carve_selection(&ctx, &parent, 3, 3).is_err()); // empty
+        assert!(svc.carve_selection(&ctx, &parent, 0, 999).is_err()); // out of range
     }
 
     #[test]

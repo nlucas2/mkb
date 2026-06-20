@@ -230,6 +230,10 @@ client at it; it auto-starts the daemon for the given vault.
 }
 ```
 
+For guidance on using mdkb *well* as an AI client — the DRY/transclusion principle, the process
+for adding knowledge, and effective search patterns — see the example skill at
+[`docs/skills/mdkb-knowledge/SKILL.md`](./docs/skills/mdkb-knowledge/SKILL.md).
+
 ### Browsing in a UI
 
 Two front-ends share the same `mdkb-view` rendering layer (so they can't drift apart), and
@@ -249,14 +253,17 @@ both connect using the two paradigms above — a **local** socket or a **remote*
 - **Desktop shell** (`app/mdkb-tauri`) — a Tauri app over the same crates. It is a full
   **editor and graph browser**, not just a viewer:
   - **Read / Edit** per block — read with children (transclusions) resolved into embed cards
-    and references shown as chips, or edit the block's title + Markdown body in place.
-  - **New block / Carve / Delete** — create a block, **carve** a reusable child out of a block
-    in place (non-destructive: the chunk becomes its own block, embedded where it was), or
-    delete a block.
+    and references shown as chips, or edit the block's title + Markdown body.
+  - **Inline editing** — click a block's rendered content (or an embed card's content) to edit
+    that block in place; type `[[` for a **link/embed picker** that searches blocks by title
+    (Enter inserts a `[[ref]]`, Tab toggles to a `![[embed]]`; no match offers to create one).
+  - **New block / Add block / Carve / Delete** — create a top-level block, **add** a child to
+    the current block, **carve** a text selection out of a block into its own reusable block
+    (replaced in place by an embed, non-destructive), or delete a block.
   - **Knowledge graph** — a force-directed block graph (nodes = blocks sized by link degree,
     roots highlighted; edges = `[[refs]]` / `![[transclusions]]`); click a node to open it,
-    hover to highlight neighbours. The graph is computed in `mdkb-core` (`link_graph`) and only
-    rendered by the UI (vendored `force-graph`, offline).
+    hover to highlight neighbours. Computed in `mdkb-core` (`link_graph`), rendered with a
+    vendored offline `force-graph`.
   - **Linked references** — every block lists the blocks that link to or embed it.
   - **Settings** (no env vars) — choose a **Local vault** (the app auto-starts a background
     `mdkbd` for that folder and reuses it; the daemon keeps running after you quit) or a

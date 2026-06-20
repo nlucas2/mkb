@@ -8,7 +8,7 @@
     <style>
       :root {
         --bg:#1e1e2e; --fg:#cdd6f4; --muted:#9399b2; --accent:#89b4fa;
-        --panel:#181825; --border:#313244; --hover:#272840; --ok:#a6e3a1; --bad:#f38ba8;
+        --panel:#181825; --border:#313244; --hover:#272840; --ok:#a6e3a1; --bad:#f38ba8; --mauve:#cba6f7;
       }
       * { box-sizing: border-box; }
       html, body { height:100%; }
@@ -49,21 +49,35 @@
       .seg button.on { background:var(--accent); color:var(--panel); font-weight:600; }
 
       .content > :first-child { margin-top:.2rem; }
-      .editor { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--accent); border-radius:6px; padding:.5rem .6rem; font:14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; resize:none; min-height:50vh; }
+      .content { cursor:text; }
+      .editarea { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--accent); border-radius:6px; padding:.5rem .6rem; font:14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; resize:vertical; }
       .titleedit { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.45rem .6rem; margin-bottom:.5rem; font:inherit; }
+      .editbar { display:flex; gap:.5rem; align-items:center; margin:.4rem 0 0; }
+      .editbar .muted { margin-left:auto; }
+      .addrow { margin-top:1rem; }
+      .addrow button { width:100%; border-style:dashed; color:var(--muted); }
+      .addrow button:hover { color:var(--fg); border-color:var(--accent); }
 
       /* Wiki references: a chip-style inline link. */
       .wikilink { background:var(--panel); border:1px solid var(--border); border-radius:5px; padding:.02rem .35rem; text-decoration:none; white-space:nowrap; }
       .wikilink:hover { border-color:var(--accent); background:var(--hover); }
       .wikilink.unresolved { color:var(--bad); border-style:dashed; }
-      /* Transclusions: a framed "live mirror" card with a clickable source header. */
-      blockquote.mdkb-embed { border-left:3px solid var(--accent); background:var(--panel); border-radius:0 6px 6px 0; margin:.5rem 0; padding:.4rem .8rem; }
+      /* Transclusions: a framed "live mirror" card. Click body to edit the child in place. */
+      blockquote.mdkb-embed { border-left:3px solid var(--mauve); background:var(--panel); border-radius:0 6px 6px 0; margin:.5rem 0; padding:.4rem .8rem; }
       blockquote.mdkb-embed > p:first-child { margin:0 0 .3rem; font-size:.85em; color:var(--muted); }
-      blockquote.mdkb-embed .wikilink { background:transparent; border:none; padding:0; color:var(--accent); }
+      blockquote.mdkb-embed .wikilink { background:transparent; border:none; padding:0; color:var(--mauve); }
 
       .refs { margin-top:2rem; border-top:1px solid var(--border); padding-top:1rem; }
       .refs h3 { font-size:.95rem; color:var(--muted); margin:.2rem 0 .6rem; }
       .refs ul { list-style:none; padding:0; margin:0; } .refs li { padding:.2rem 0; }
+
+      /* Link picker popup */
+      .picker { position:fixed; z-index:50; background:var(--panel); border:1px solid var(--accent); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.4); width:340px; max-height:260px; overflow-y:auto; }
+      .picker .hd { padding:.3rem .6rem; font-size:.75em; color:var(--muted); border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--panel); }
+      .picker .opt { padding:.35rem .6rem; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .picker .opt.sel, .picker .opt:hover { background:var(--hover); }
+      .picker .opt small { color:var(--muted); }
+      .picker .mk { padding:.3rem .6rem; font-size:.75em; color:var(--muted); border-top:1px solid var(--border); }
 
       #graphview { position:absolute; inset:0; }
       .form { max-width:34rem; } .form label { display:block; margin:.8rem 0 .2rem; font-weight:600; }
@@ -98,9 +112,10 @@
       const dotEl = document.getElementById("dot");
       const statusTextEl = document.getElementById("statustext");
 
-      let roots = [];      // [{id,title}]
-      let active = null;   // current block id
-      let mode = "read";   // read | edit
+      let roots = [];          // [{id,title}]
+      let indexCache = null;   // [{id,title}] of ALL blocks (picker)
+      let active = null;       // current block id
+      let mode = "read";       // read | edit
       let graphCache = null;
       let fg = null;
 
@@ -111,25 +126,26 @@
           const s = await invoke("connection_status");
           dotEl.classList.toggle("ok", s.connected);
           statusTextEl.textContent = s.connected ? s.endpoint : "offline · " + s.endpoint;
-        } catch (e) {
-          dotEl.classList.remove("ok");
-          statusTextEl.textContent = "no connection";
-        }
+        } catch { dotEl.classList.remove("ok"); statusTextEl.textContent = "no connection"; }
+      }
+
+      function invalidate() { graphCache = null; indexCache = null; }
+
+      async function getIndex(force) {
+        if (indexCache && !force) return indexCache;
+        indexCache = await invoke("block_index");
+        return indexCache;
       }
 
       async function loadBlocks(select) {
-        try {
-          roots = await invoke("list_blocks");
-        } catch (e) {
+        try { roots = await invoke("list_blocks"); }
+        catch (e) {
           mainEl.innerHTML =
-            `<div class="pad"><h1>Can’t reach the daemon</h1>` +
-            `<p class="muted">${esc(e)}</p>` +
+            `<div class="pad"><h1>Can’t reach the daemon</h1><p class="muted">${esc(e)}</p>` +
             `<p><button class="primary" onclick="window.__mdkb.settings()">Open settings</button></p></div>`;
-          refreshStatus();
-          return;
+          refreshStatus(); return;
         }
         renderNav();
-        graphCache = null;
         if (select && roots.some((b) => b.id === select)) openBlock(select);
         else if (active && roots.some((b) => b.id === active)) openBlock(active);
         else if (roots.length) openBlock(roots[0].id);
@@ -143,18 +159,10 @@
           const li = document.createElement("li");
           if (b.id === active) li.className = "active";
           const a = document.createElement("a");
-          a.textContent = b.title || b.id;
-          a.title = b.id;
+          a.textContent = b.title || b.id; a.title = b.id;
           a.onclick = () => openBlock(b.id);
-          li.appendChild(a);
-          blocksEl.appendChild(li);
+          li.appendChild(a); blocksEl.appendChild(li);
         }
-      }
-
-      async function getGraph(force) {
-        if (graphCache && !force) return graphCache;
-        graphCache = await invoke("graph");
-        return graphCache;
       }
 
       function topbar(title) {
@@ -162,7 +170,6 @@
         return `<div class="topbar">
           <h1>${esc(title)}</h1>
           <div class="seg">${m("read","Read")}${m("edit","Edit")}</div>
-          <button id="carve" title="Carve a child block">⑂ Carve</button>
           <button id="del" class="danger" title="Delete block">🗑</button>
         </div>`;
       }
@@ -178,32 +185,103 @@
         mainEl.innerHTML = topbar(view.title) + `<div class="pad" id="body"></div>`;
         mainEl.querySelectorAll(".seg button").forEach((b) =>
           (b.onclick = () => { mode = b.dataset.m; openBlock(id, true); }));
-        mainEl.querySelector("#carve").onclick = () => carve(id);
         mainEl.querySelector("#del").onclick = () => del(id);
         const body = mainEl.querySelector("#body");
         if (mode === "edit") await renderEdit(body, id);
-        else { body.innerHTML = `<div class="content">${view.html}</div>`; await renderRefs(body, id); }
+        else await renderRead(body, id, view.html);
       }
 
+      // ---------- READ: rendered content with click-to-edit + add affordance ----------
+      async function renderRead(body, id, html) {
+        body.innerHTML =
+          `<div class="content" id="content">${html}</div>` +
+          `<div class="addrow"><button id="add">＋ Add block here</button></div>`;
+        const content = body.querySelector("#content");
+        // Deliberate click (not hover) to edit. Clicking inside an embed card edits that child;
+        // clicking the parent's own prose edits the parent. Links navigate (handled separately).
+        content.onclick = (e) => {
+          if (e.target.closest('a[href^="mdkb:"]')) return; // navigation wins
+          const card = e.target.closest("blockquote.mdkb-embed");
+          if (card) {
+            const a = card.querySelector('a[href^="mdkb:"]');
+            const childId = a ? a.getAttribute("href").slice("mdkb:".length).split("#")[0] : null;
+            if (childId) inlineEdit(card, childId, () => openBlock(id, true));
+          } else {
+            inlineEdit(content, id, () => openBlock(id, true));
+          }
+        };
+        body.querySelector("#add").onclick = () => addChild(id);
+        await renderRefs(body, id);
+      }
+
+      // Replace `regionEl` with an inline editor for block `blockId`.
+      async function inlineEdit(regionEl, blockId, done) {
+        if (regionEl.dataset.editing) return;
+        regionEl.dataset.editing = "1";
+        let src = "";
+        try { src = await invoke("block_source", { id: blockId }); } catch (e) { alert(String(e)); return; }
+        const wrap = document.createElement("div");
+        const ta = document.createElement("textarea");
+        ta.className = "editarea"; ta.value = src; ta.spellcheck = false;
+        wrap.appendChild(ta);
+        const bar = document.createElement("div");
+        bar.className = "editbar";
+        bar.innerHTML = `<button class="primary" data-a="save">Save</button><button data-a="cancel">Cancel</button>`+
+          `<span class="muted">⌘↵ save · Esc cancel · type <code>[[</code> to link</span>`;
+        wrap.appendChild(bar);
+        regionEl.replaceWith(wrap);
+        autosize(ta); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+        attachPicker(ta);
+        let finished = false;
+        const save = async () => {
+          if (finished) return; finished = true;
+          if (ta.value !== src) {
+            try { await invoke("save_block", { id: blockId, title: null, body: ta.value }); invalidate(); }
+            catch (e) { alert(String(e)); }
+          }
+          done();
+        };
+        const cancel = () => { if (finished) return; finished = true; done(); };
+        bar.querySelector('[data-a="save"]').onclick = save;
+        bar.querySelector('[data-a="cancel"]').onclick = cancel;
+        ta.addEventListener("input", () => autosize(ta));
+        ta.addEventListener("keydown", (e) => {
+          if (pickerOpen()) return;
+          if (e.key === "Escape") { e.preventDefault(); cancel(); }
+          else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save(); }
+        });
+      }
+
+      // ---------- EDIT tab: title + raw body + carve-by-selection ----------
       async function renderEdit(body, id) {
         const [src, title] = await Promise.all([
           invoke("block_source", { id }),
           invoke("block_title_of", { id }),
         ]);
         body.innerHTML = `<input class="titleedit" id="t" placeholder="Title (optional)" />
-          <textarea class="editor" id="b" spellcheck="false"></textarea>
-          <div class="savebar"><button class="primary" id="save">Save</button>
-          <span class="muted" id="msg">Use <code>![[id]]</code> to embed a child, <code>[[id]]</code> to reference.</span></div>`;
+          <textarea class="editarea" id="b" spellcheck="false" style="min-height:50vh"></textarea>
+          <div class="editbar">
+            <button class="primary" id="save">Save</button>
+            <button id="carve" title="Extract the selected text into its own reusable block">⑂ Carve selection</button>
+            <span class="muted" id="msg">Type <code>[[</code> to link/embed a block.</span>
+          </div>`;
         body.querySelector("#t").value = title || "";
-        body.querySelector("#b").value = src;
+        const ta = body.querySelector("#b");
+        ta.value = src; attachPicker(ta);
         body.querySelector("#save").onclick = async () => {
-          const t = body.querySelector("#t").value.trim();
           try {
-            await invoke("save_block", { id, title: t || null, body: body.querySelector("#b").value });
-            graphCache = null;
-            await loadBlocks(id);
-            mode = "read";
-            openBlock(id, true);
+            await invoke("save_block", { id, title: body.querySelector("#t").value.trim() || null, body: ta.value });
+            invalidate(); await loadBlocks(id); mode = "read"; openBlock(id, true);
+          } catch (e) { body.querySelector("#msg").textContent = String(e); }
+        };
+        body.querySelector("#carve").onclick = async () => {
+          const start = ta.selectionStart, end = ta.selectionEnd;
+          if (start === end) { body.querySelector("#msg").textContent = "Select some text to carve."; return; }
+          try {
+            // Persist current body first so offsets match the stored block, then carve.
+            await invoke("save_block", { id, title: body.querySelector("#t").value.trim() || null, body: ta.value });
+            await invoke("carve_selection", { parentId: id, start, end });
+            invalidate(); await loadBlocks(id); mode = "read"; openBlock(id, true);
           } catch (e) { body.querySelector("#msg").textContent = String(e); }
         };
       }
@@ -221,43 +299,146 @@
         refs.querySelectorAll("a[data-go]").forEach((a) => (a.onclick = () => openBlock(a.dataset.go)));
       }
 
+      // ---------- link picker ('[[' autocomplete) ----------
+      let picker = null;       // {el, ta, anchorPos, query, embed, items, sel}
+      function pickerOpen() { return !!picker; }
+
+      function attachPicker(ta) {
+        ta.addEventListener("keydown", (e) => {
+          if (!picker || picker.ta !== ta) return;
+          if (e.key === "ArrowDown") { e.preventDefault(); movePicker(1); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); movePicker(-1); }
+          else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); choosePicker(e.key === "Tab"); }
+          else if (e.key === "Escape") { e.preventDefault(); closePicker(); }
+        });
+        ta.addEventListener("input", () => maybePicker(ta));
+        ta.addEventListener("blur", () => setTimeout(closePicker, 120));
+      }
+
+      async function maybePicker(ta) {
+        const upto = ta.value.slice(0, ta.selectionStart);
+        // Match an open '[[' or '![[' with no closing ']]' yet, capturing the typed query.
+        const m = upto.match(/(!?)\[\[([^\]\n]*)$/);
+        if (!m) { closePicker(); return; }
+        const embed = m[1] === "!";
+        const query = m[2];
+        const anchorPos = ta.selectionStart - query.length - (embed ? 3 : 2);
+        const idx = await getIndex();
+        const ql = query.toLowerCase();
+        const items = idx
+          .filter((b) => !ql || (b.title || "").toLowerCase().includes(ql) || b.id.toLowerCase().includes(ql))
+          .slice(0, 50);
+        if (!picker) {
+          const el = document.createElement("div");
+          el.className = "picker";
+          document.body.appendChild(el);
+          picker = { el, ta, anchorPos, query, embed, items, sel: 0 };
+        } else {
+          Object.assign(picker, { ta, anchorPos, query, embed, items, sel: 0 });
+        }
+        drawPicker();
+      }
+
+      function drawPicker() {
+        const { el, ta, items, sel, embed } = picker;
+        const coords = caretXY(ta);
+        el.style.left = coords.x + "px";
+        el.style.top = coords.y + "px";
+        const kind = embed ? "embed ![[…]]" : "link [[…]]";
+        el.innerHTML = `<div class="hd">${kind} — ↑↓ select · Enter insert · Tab ${embed?"link":"embed"}</div>` +
+          (items.length ? items.map((b, i) =>
+            `<div class="opt ${i===sel?"sel":""}" data-i="${i}">${esc(b.title || "(untitled)")} <small>${b.id.slice(0,8)}</small></div>`
+          ).join("") : `<div class="opt muted">No match — Enter to create “${esc(picker.query)}”</div>`) +
+          `<div class="mk">Enter inserts; an empty match creates a new block with this title.</div>`;
+        el.querySelectorAll(".opt[data-i]").forEach((o) =>
+          (o.onmousedown = (ev) => { ev.preventDefault(); picker.sel = +o.dataset.i; choosePicker(false); }));
+      }
+
+      function movePicker(d) {
+        if (!picker || !picker.items.length) return;
+        picker.sel = (picker.sel + d + picker.items.length) % picker.items.length;
+        drawPicker();
+      }
+
+      async function choosePicker(toggleKind) {
+        if (!picker) return;
+        const { ta, anchorPos, query, items, sel } = picker;
+        const embed = toggleKind ? !picker.embed : picker.embed;
+        let targetId;
+        if (items.length) targetId = items[sel].id;
+        else {
+          // No match: create a new block titled with the typed query.
+          const title = query.trim();
+          if (!title) { closePicker(); return; }
+          try { targetId = await invoke("create_block", { title, body: `# ${title}\n\n` }); invalidate(); }
+          catch (e) { alert(String(e)); closePicker(); return; }
+        }
+        const directive = (embed ? "![[" : "[[") + targetId + "]]";
+        const after = ta.value.slice(ta.selectionStart);
+        ta.value = ta.value.slice(0, anchorPos) + directive + after;
+        const caret = anchorPos + directive.length;
+        closePicker();
+        ta.focus(); ta.setSelectionRange(caret, caret);
+        autosize(ta);
+      }
+
+      function closePicker() { if (picker) { picker.el.remove(); picker = null; } }
+
+      // Approximate caret screen position using a mirror div.
+      function caretXY(ta) {
+        const div = document.createElement("div");
+        const st = getComputedStyle(ta);
+        for (const p of ["fontFamily","fontSize","fontWeight","lineHeight","padding","border","whiteSpace","wordWrap","width"]) div.style[p] = st[p];
+        div.style.position = "absolute"; div.style.visibility = "hidden"; div.style.whiteSpace = "pre-wrap"; div.style.wordWrap = "break-word";
+        const before = ta.value.slice(0, ta.selectionStart);
+        div.textContent = before;
+        const span = document.createElement("span"); span.textContent = "​"; div.appendChild(span);
+        document.body.appendChild(div);
+        const r = ta.getBoundingClientRect();
+        const x = r.left + (span.offsetLeft % r.width);
+        const y = r.top + span.offsetTop - ta.scrollTop + 20;
+        div.remove();
+        return { x: Math.min(x, window.innerWidth - 360), y: Math.min(y, window.innerHeight - 280) };
+      }
+
+      function autosize(ta) { ta.style.height = "auto"; ta.style.height = Math.max(ta.scrollHeight + 2, 60) + "px"; }
+
+      // ---------- block ops ----------
       async function newBlock() {
         const title = prompt("Title for the new block (optional):", "");
         if (title === null) return;
         try {
           const id = await invoke("create_block", { title: title.trim() || null, body: title.trim() ? `# ${title.trim()}\n\n` : "" });
-          graphCache = null;
-          await loadBlocks(id);
-          mode = "edit";
-          openBlock(id, true);
+          invalidate(); await loadBlocks(id); mode = "edit"; openBlock(id, true);
         } catch (e) { alert(String(e)); }
       }
 
-      async function carve(parentId) {
-        const title = prompt("Title for the carved child block (optional):", "");
-        if (title === null) return;
-        const bodyText = prompt("Content for the new child block:", "");
-        if (bodyText === null) return;
+      // Add a new child block to the current block: create it, embed it, edit it inline.
+      async function addChild(parentId) {
         try {
-          await invoke("carve_block", { parentId, title: title.trim() || null, body: bodyText });
-          graphCache = null;
-          await loadBlocks();
-          openBlock(parentId, true);
+          const child = await invoke("create_block", { title: null, body: "" });
+          await invoke("link_blocks", { sourceId: parentId, targetId: child, embed: true });
+          invalidate(); await loadBlocks(parentId);
+          // Re-open and inline-edit the new child's card.
+          await openBlock(parentId, true);
+          const card = [...mainEl.querySelectorAll("blockquote.mdkb-embed a[href^='mdkb:']")]
+            .find((a) => a.getAttribute("href").includes(child));
+          if (card) inlineEdit(card.closest("blockquote.mdkb-embed"), child, () => openBlock(parentId, true));
         } catch (e) { alert(String(e)); }
       }
 
       async function del(id) {
         if (!confirm("Delete this block? Its file will be removed.")) return;
-        try { await invoke("delete_block", { id }); active = null; graphCache = null; await loadBlocks(); }
+        try { await invoke("delete_block", { id }); active = null; invalidate(); await loadBlocks(); }
         catch (e) { alert(String(e)); }
       }
 
-      // ---------- graph view ----------
+      // ---------- graph ----------
       async function showGraph() {
         active = null; renderNav();
         mainEl.innerHTML = `<div id="graphview"></div>`;
         let g;
-        try { g = await getGraph(true); }
+        try { g = graphCache || (graphCache = await invoke("graph")); }
         catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
         const deg = {};
         g.edges.forEach((e) => { deg[e.source]=(deg[e.source]||0)+1; deg[e.target]=(deg[e.target]||0)+1; });
@@ -280,8 +461,7 @@
             const dim = hover && hover !== n.id && !(neighbors[hover] && neighbors[hover].has(n.id));
             ctx.globalAlpha = dim ? 0.18 : 1;
             ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2*Math.PI);
-            ctx.fillStyle = n.root ? "#89b4fa" : "#cba6f7";
-            ctx.fill();
+            ctx.fillStyle = n.root ? "#89b4fa" : "#cba6f7"; ctx.fill();
             if (scale > 1.1 || (hover && (hover===n.id || (neighbors[hover]&&neighbors[hover].has(n.id))))) {
               ctx.globalAlpha = dim ? 0.25 : 1;
               ctx.font = `${11/scale}px -apple-system, sans-serif`;
@@ -316,39 +496,29 @@
               <p class="hint">The app starts a background <code>mdkbd</code> for this folder and reuses it — the daemon keeps running after you quit. Blocks are stored as <code>blocks/&lt;id&gt;.md</code>.</p>
             </div>
             <div id="remote" style="${isLocal?"display:none":""}">
-              <label>Host</label>
-              <input type="text" id="host" value="${esc(!isLocal?(cfg.host||""):"")}" placeholder="host:7820"/>
-              <label>Token</label>
-              <input type="text" id="token" value="${esc(!isLocal?(cfg.token||""):"")}" placeholder="shared token"/>
+              <label>Host</label><input type="text" id="host" value="${esc(!isLocal?(cfg.host||""):"")}" placeholder="host:7820"/>
+              <label>Token</label><input type="text" id="token" value="${esc(!isLocal?(cfg.token||""):"")}" placeholder="shared token"/>
             </div>
-            <div class="savebar"><button class="primary" id="savecfg">Save & connect</button>
-            <span class="muted" id="cfgmsg"></span></div>
+            <div class="savebar"><button class="primary" id="savecfg">Save & connect</button><span class="muted" id="cfgmsg"></span></div>
           </div>`;
-        const radios = mainEl.querySelectorAll("input[name=mode]");
-        const localBox = mainEl.querySelector("#local");
-        const remoteBox = mainEl.querySelector("#remote");
-        radios.forEach((r) => (r.onchange = () => {
+        mainEl.querySelectorAll("input[name=mode]").forEach((r) => (r.onchange = () => {
           const local = mainEl.querySelector("input[name=mode]:checked").value === "local";
-          localBox.style.display = local ? "" : "none";
-          remoteBox.style.display = local ? "none" : "";
+          mainEl.querySelector("#local").style.display = local ? "" : "none";
+          mainEl.querySelector("#remote").style.display = local ? "none" : "";
         }));
         mainEl.querySelector("#browse").onclick = async () => {
-          const dir = await invoke("pick_vault");
-          if (dir) mainEl.querySelector("#vault").value = dir;
+          const dir = await invoke("pick_vault"); if (dir) mainEl.querySelector("#vault").value = dir;
         };
         mainEl.querySelector("#savecfg").onclick = async () => {
           const local = mainEl.querySelector("input[name=mode]:checked").value === "local";
           const config = local
             ? { mode: "local", vault: mainEl.querySelector("#vault").value.trim() }
             : { mode: "remote", host: mainEl.querySelector("#host").value.trim(), token: mainEl.querySelector("#token").value };
-          const msg = mainEl.querySelector("#cfgmsg");
-          msg.textContent = "Connecting…";
+          const msg = mainEl.querySelector("#cfgmsg"); msg.textContent = "Connecting…";
           try {
             await invoke("save_settings", { config });
-            msg.textContent = "Connected.";
-            graphCache = null; active = null;
-            await refreshStatus();
-            await loadBlocks();
+            msg.textContent = "Connected."; invalidate(); active = null;
+            await refreshStatus(); await loadBlocks();
           } catch (e) { msg.textContent = String(e); await refreshStatus(); }
         };
       }
@@ -374,12 +544,11 @@
       document.getElementById("status").onclick = showSettings;
       window.__mdkb = { settings: showSettings };
 
-      // Intercept clicks on shared `mdkb:` reference links (wiki chips + embed-card headers).
+      // Intercept clicks on shared `mdkb:` reference links (chips + embed-card headers) to navigate.
       mainEl.addEventListener("click", (e) => {
         const a = e.target.closest && e.target.closest('a[href^="mdkb:"]');
         if (!a) return;
-        e.preventDefault();
-        e.stopPropagation();
+        e.preventDefault(); e.stopPropagation();
         const rest = a.getAttribute("href").slice("mdkb:".length);
         if (rest.startsWith("?")) return;
         const id = decodeURIComponent(rest.split("#")[0]);

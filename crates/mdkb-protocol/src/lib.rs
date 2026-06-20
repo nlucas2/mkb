@@ -102,6 +102,16 @@ pub enum Request {
         /// Markdown body for the new child.
         body: String,
     },
+    /// Carve a byte range of a parent block's body into a new child, replacing it in place
+    /// with an embed. Returns the new child id.
+    CarveSelection {
+        /// Parent block id.
+        parent_id: BlockId,
+        /// Start byte offset into the parent's raw body.
+        start: usize,
+        /// End byte offset (exclusive).
+        end: usize,
+    },
     /// Link or embed one block to another (embed may downgrade to a reference to avoid a cycle).
     LinkBlocks {
         /// Source block id.
@@ -231,6 +241,15 @@ fn handle<I: Index>(
         } => Response::BlockId(
             service
                 .carve_block(ctx, &parent_id, title.as_deref(), &body)
+                .map_err(to_str)?,
+        ),
+        Request::CarveSelection {
+            parent_id,
+            start,
+            end,
+        } => Response::BlockId(
+            service
+                .carve_selection(ctx, &parent_id, start, end)
                 .map_err(to_str)?,
         ),
         Request::LinkBlocks {
@@ -546,6 +565,23 @@ impl Client {
             parent_id,
             title: title.map(str::to_string),
             body: body.to_string(),
+        })? {
+            Response::BlockId(id) => Ok(id),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: carve a byte range of a parent's body into a new child (replace in place).
+    pub fn carve_selection(
+        &self,
+        parent_id: BlockId,
+        start: usize,
+        end: usize,
+    ) -> io::Result<BlockId> {
+        match self.call(&Request::CarveSelection {
+            parent_id,
+            start,
+            end,
         })? {
             Response::BlockId(id) => Ok(id),
             other => Err(unexpected(other)),

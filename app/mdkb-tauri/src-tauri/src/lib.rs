@@ -93,6 +93,26 @@ fn list_blocks(state: tauri::State<'_, AppState>) -> Result<Vec<NavBlock>, Strin
     Ok(out)
 }
 
+/// Every block as `{id, title}` — powers the `[[` link/embed picker. Reuses the search path
+/// (an empty query returns all block records), so there is no second listing path.
+#[tauri::command]
+fn block_index(state: tauri::State<'_, AppState>) -> Result<Vec<NavBlock>, String> {
+    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let all = client
+        .search(SearchQuery {
+            limit: 10_000,
+            ..Default::default()
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(all
+        .into_iter()
+        .map(|h| NavBlock {
+            id: h.block.id.to_string(),
+            title: block_title(h.block.title.as_deref(), &h.block.content),
+        })
+        .collect())
+}
+
 /// Render a block to HTML (children resolved by the daemon, Markdown→HTML by mdkb-view).
 #[tauri::command]
 fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockView, String> {
@@ -216,18 +236,19 @@ fn create_block(
         .map_err(|e| e.to_string())
 }
 
-/// Carve a child block out of a parent (non-destructive). Returns the new child id.
+/// Carve the selected byte range of a parent's body into a new child (replace in place).
+/// Returns the new child id.
 #[tauri::command]
-fn carve_block(
+fn carve_selection(
     state: tauri::State<'_, AppState>,
     parent_id: String,
-    title: Option<String>,
-    body: String,
+    start: usize,
+    end: usize,
 ) -> Result<String, String> {
     let client = state.client.lock().map_err(|_| "state poisoned")?;
     let pid = BlockId::parse(&parent_id).map_err(|e| e.to_string())?;
     client
-        .carve_block(pid, title.as_deref(), &body)
+        .carve_selection(pid, start, end)
         .map(|id| id.to_string())
         .map_err(|e| e.to_string())
 }
@@ -329,6 +350,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_blocks,
+            block_index,
             render_block,
             block_source,
             block_title_of,
@@ -337,7 +359,7 @@ pub fn run() {
             search,
             save_block,
             create_block,
-            carve_block,
+            carve_selection,
             delete_block,
             link_blocks,
             get_settings,
