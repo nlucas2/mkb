@@ -37,11 +37,20 @@ fn ref_re() -> &'static Regex {
 }
 
 /// Extract every directive from block content, in source order.
+///
+/// Directives inside **code** — inline code spans (`` `...` ``) and fenced code blocks
+/// (```` ``` ````/`~~~`) — are ignored, so literal `![[id]]` / `[[id]]` shown as code examples
+/// are not parsed as real links. This mirrors how inline `#tags` already skip code.
 pub fn extract_references(content: &str) -> Vec<Reference> {
+    let mask = code_mask(content);
     ref_re()
         .captures_iter(content)
         .filter_map(|caps| {
             let whole = caps.get(0)?;
+            // Skip directives that begin inside a code span/fence.
+            if mask.get(whole.start()).copied().unwrap_or(false) {
+                return None;
+            }
             let embed = !caps.get(1)?.as_str().is_empty();
             let inner = caps.get(2)?.as_str();
             let (target, display) = match inner.split_once('|') {
@@ -59,6 +68,77 @@ pub fn extract_references(content: &str) -> Vec<Reference> {
             })
         })
         .collect()
+}
+
+/// A byte-indexed mask where `true` marks content that lives inside code (a fenced block or an
+/// inline code span) and must not be scanned for directives.
+fn code_mask(content: &str) -> Vec<bool> {
+    let mut mask = vec![false; content.len()];
+    let mut in_fence = false;
+    let mut offset = 0usize;
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+        if is_fence {
+            mark(&mut mask, offset, offset + line.len());
+            in_fence = !in_fence;
+        } else if in_fence {
+            mark(&mut mask, offset, offset + line.len());
+        } else {
+            mark_inline_code(line, offset, &mut mask);
+        }
+        offset += line.len();
+    }
+    mask
+}
+
+/// Mark `[start, end)` as code in the mask.
+fn mark(mask: &mut [bool], start: usize, end: usize) {
+    for b in mask.iter_mut().take(end).skip(start) {
+        *b = true;
+    }
+}
+
+/// Mark inline code spans (matched runs of backticks) within a single line as code, including
+/// the backtick delimiters. An unterminated run leaves the rest of the line untouched.
+fn mark_inline_code(line: &str, base: usize, mask: &mut [bool]) {
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'`' {
+            let start = i;
+            while i < b.len() && b[i] == b'`' {
+                i += 1;
+            }
+            let run = i - start;
+            // Find a closing run of the same length.
+            let mut j = i;
+            let mut closed = None;
+            while j < b.len() {
+                if b[j] == b'`' {
+                    let rs = j;
+                    while j < b.len() && b[j] == b'`' {
+                        j += 1;
+                    }
+                    if j - rs == run {
+                        closed = Some(j);
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            match closed {
+                Some(end) => {
+                    mark(mask, base + start, base + end);
+                    i = end;
+                }
+                None => break,
+            }
+        } else {
+            i += 1;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -95,5 +175,29 @@ mod tests {
         assert!(extract_references("a [normal](link) and [single] brackets").is_empty());
         assert!(extract_references("[[]]").is_empty());
         assert!(extract_references("[[  ]]").is_empty());
+    }
+
+    #[test]
+    fn ignores_directives_inside_inline_code() {
+        // Literal syntax shown as inline code must not be parsed as a real directive.
+        let refs = extract_references("Embed with `![[id]]` and reference with `[[id]]`.");
+        assert!(refs.is_empty(), "got: {refs:?}");
+    }
+
+    #[test]
+    fn ignores_directives_inside_fenced_code() {
+        let content = "Example:\n\n```\n![[01ARZ3NDEKTSV4RRFFQ69G5FAV]]\n[[some-title]]\n```\n";
+        assert!(extract_references(content).is_empty());
+    }
+
+    #[test]
+    fn finds_real_directives_alongside_code_examples() {
+        // A live reference plus a code example of the syntax: only the live one is extracted.
+        let content =
+            "See [[alpha]].\n\n```md\n![[not-a-real-embed]]\n```\n\nAlso `[[inline-example]]`.";
+        let refs = extract_references(content);
+        assert_eq!(refs.len(), 1, "got: {refs:?}");
+        assert_eq!(refs[0].target, "alpha");
+        assert!(!refs[0].embed);
     }
 }
