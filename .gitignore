@@ -20,3 +20,4 @@ Thumbs.db
 .fastembed_cache/
 app/mdkb-tauri/src-tauri/target/
 app/mdkb-tauri/src-tauri/gen/
+examples/demo-vault/.mdkb/

@@ -101,6 +101,17 @@ cargo test --workspace
 cargo run -p mdkb-cli -- --help
 ```
 
+## Try the demo vault
+
+A small, **self-documenting** vault lives at [`examples/demo-vault/`](./examples/demo-vault) —
+it explains how to use and run mdkb *using* mdkb. Opening it *is* the tutorial: the run-guides
+all embed one shared note, so editing that block once updates every guide (live transclusion).
+
+```sh
+# point the daemon at it (or set the desktop app's Settings → Local vault to this folder)
+cargo run -p mdkbd -- --vault examples/demo-vault
+```
+
 ## Components
 
 - `mdkb-core`:

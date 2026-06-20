@@ -80,11 +80,24 @@ fn render_body(vault: &Vault, block: &Block, visited: &mut HashSet<BlockId>) -> 
 }
 
 /// A plain `[[target]]` reference → a Markdown link in the shared `mdkb:` scheme.
+///
+/// When the author wrote a bare `[[<ulid>]]` (no `|alias`), the link text would otherwise be
+/// the opaque id; instead we substitute the resolved block's display title so references read
+/// naturally. An explicit alias (`[[id|label]]`) or a title target keeps the author's text.
 fn render_reference(vault: &Vault, target: &str, label: &str) -> String {
-    let label = escape_link_text(label);
     match vault.resolve(target) {
-        Some(id) => format!("[{label}](mdkb:{id})"),
-        None => format!("[{label}](mdkb:?unresolved)"),
+        Some(id) => {
+            let text = if label == target {
+                vault
+                    .block(&id)
+                    .map(|b| b.display_title())
+                    .unwrap_or_else(|| label.to_string())
+            } else {
+                label.to_string()
+            };
+            format!("[{}](mdkb:{id})", escape_link_text(&text))
+        }
+        None => format!("[{}](mdkb:?unresolved)", escape_link_text(label)),
     }
 }
 
@@ -165,6 +178,32 @@ mod tests {
         let (v, parent, child) = vault();
         let out = render_block(&v, &parent).unwrap();
         assert!(out.contains(&format!("(mdkb:{child})")), "got: {out}");
+    }
+
+    #[test]
+    fn bare_id_reference_uses_block_title_as_label() {
+        // A `[[<ulid>]]` with no alias renders the target's title, not the opaque id.
+        let mut v = Vault::new();
+        let target = BlockId::generate();
+        let src = BlockId::generate();
+        v.insert_source(target.clone(), "---\ntitle: Deployment Guide\n---\nbody\n");
+        v.insert_source(src.clone(), &format!("see [[{target}]] now\n"));
+        let out = render_block(&v, &src).unwrap();
+        assert_eq!(out, format!("see [Deployment Guide](mdkb:{target}) now\n"));
+    }
+
+    #[test]
+    fn explicit_alias_is_preserved() {
+        let mut v = Vault::new();
+        let target = BlockId::generate();
+        let src = BlockId::generate();
+        v.insert_source(target.clone(), "---\ntitle: Long Title\n---\nbody\n");
+        v.insert_source(src.clone(), &format!("see [[{target}|the docs]]\n"));
+        let out = render_block(&v, &src).unwrap();
+        assert!(
+            out.contains(&format!("[the docs](mdkb:{target})")),
+            "got: {out}"
+        );
     }
 
     #[test]

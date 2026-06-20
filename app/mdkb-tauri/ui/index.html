@@ -18,6 +18,8 @@
       nav input { width:100%; padding:.5rem .6rem; margin-bottom:.6rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
       .navbtns { display:flex; gap:.4rem; margin-bottom:.6rem; }
       .navbtns button { flex:1; }
+      .navhd { display:flex; align-items:center; justify-content:space-between; margin:.2rem 0 .4rem; font-size:.75em; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+      .seg.small button { padding:.1rem .4rem; font-size:.9em; }
       button { background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.35rem .6rem; cursor:pointer; font:inherit; }
       button:hover { background:var(--hover); }
       button.primary { background:var(--accent); color:var(--panel); border-color:var(--accent); font-weight:600; }
@@ -50,6 +52,11 @@
 
       .content > :first-child { margin-top:.2rem; }
       .content { cursor:text; }
+      /* Clean reading view: embeds dissolved inline, references as subtle links, no chrome. */
+      .reading { cursor:default; line-height:1.75; font-size:15.5px; }
+      .reading .wikilink { background:none; border:none; padding:0; color:var(--fg); text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:2px; white-space:normal; }
+      .reading .wikilink:hover { color:var(--accent); }
+      .reading .wikilink.unresolved { color:var(--bad); text-decoration-style:dashed; }
       .editarea { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--accent); border-radius:6px; padding:.5rem .6rem; font:14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; resize:vertical; }
       .titleedit { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.45rem .6rem; margin-bottom:.5rem; font:inherit; }
       .editbar { display:flex; gap:.5rem; align-items:center; margin:.4rem 0 0; }
@@ -96,6 +103,9 @@
           <button id="newblock">＋ Block</button>
           <button id="graphbtn">◎ Graph</button>
         </div>
+        <div class="navhd"><span>Blocks</span>
+          <div class="seg small"><button id="tabRoots" class="on">Roots</button><button id="tabAll">All</button></div>
+        </div>
         <ul id="blocks"></ul>
         <div class="status" id="status" title="Connection settings">
           <span class="dot" id="dot"></span><span id="statustext">…</span>
@@ -112,10 +122,11 @@
       const dotEl = document.getElementById("dot");
       const statusTextEl = document.getElementById("statustext");
 
-      let roots = [];          // [{id,title}]
+      let roots = [];          // current sidebar list [{id,title}]
+      let navScope = "roots";  // roots | all
       let indexCache = null;   // [{id,title}] of ALL blocks (picker)
       let active = null;       // current block id
-      let mode = "read";       // read | edit
+      let mode = "read";       // read (clean) | blocks (interactive) | edit (raw)
       let graphCache = null;
       let fg = null;
 
@@ -138,7 +149,9 @@
       }
 
       async function loadBlocks(select) {
-        try { roots = await invoke("list_blocks"); }
+        try {
+          roots = navScope === "all" ? await invoke("block_index") : await invoke("list_blocks");
+        }
         catch (e) {
           mainEl.innerHTML =
             `<div class="pad"><h1>Can’t reach the daemon</h1><p class="muted">${esc(e)}</p>` +
@@ -154,7 +167,14 @@
       }
 
       function renderNav() {
+        // Reflect the active scope on the toggle.
+        const tr = document.getElementById("tabRoots"), ta = document.getElementById("tabAll");
+        if (tr && ta) { tr.classList.toggle("on", navScope === "roots"); ta.classList.toggle("on", navScope === "all"); }
         blocksEl.innerHTML = "";
+        if (!roots.length) {
+          blocksEl.innerHTML = `<li class="muted" style="padding:.3rem .5rem">No ${navScope === "all" ? "blocks" : "root blocks"}.</li>`;
+          return;
+        }
         for (const b of roots) {
           const li = document.createElement("li");
           if (b.id === active) li.className = "active";
@@ -169,7 +189,7 @@
         const m = (id, label) => `<button data-m="${id}" class="${mode===id?"on":""}">${label}</button>`;
         return `<div class="topbar">
           <h1>${esc(title)}</h1>
-          <div class="seg">${m("read","Read")}${m("edit","Edit")}</div>
+          <div class="seg">${m("read","Read")}${m("blocks","Blocks")}${m("edit","Edit")}</div>
           <button id="del" class="danger" title="Delete block">🗑</button>
         </div>`;
       }
@@ -188,11 +208,29 @@
         mainEl.querySelector("#del").onclick = () => del(id);
         const body = mainEl.querySelector("#body");
         if (mode === "edit") await renderEdit(body, id);
-        else await renderRead(body, id, view.html);
+        else if (mode === "blocks") await renderBlocksView(body, id, view.html);
+        else await renderReading(body, id, view.html);
       }
 
-      // ---------- READ: rendered content with click-to-edit + add affordance ----------
-      async function renderRead(body, id, html) {
+      // ---------- READ: clean "as-intended" document (embeds dissolved inline) ----------
+      async function renderReading(body, id, html) {
+        // Flatten every embed card into seamless inline content: drop the "⧉ source" header
+        // and unwrap the blockquote so the transcluded content flows as one document.
+        const tmp = document.createElement("div");
+        tmp.innerHTML = html;
+        let card;
+        while ((card = tmp.querySelector("blockquote.mdkb-embed"))) {
+          const header = card.querySelector(":scope > p:first-child");
+          if (header) header.remove();
+          while (card.firstChild) card.parentNode.insertBefore(card.firstChild, card);
+          card.remove();
+        }
+        body.innerHTML = `<div class="content reading">${tmp.innerHTML}</div>`;
+        // References stay navigable (the global mdkb: handler covers them); no edit affordances.
+      }
+
+      // ---------- BLOCKS: interactive view (click-to-edit, embed cards, +add) ----------
+      async function renderBlocksView(body, id, html) {
         body.innerHTML =
           `<div class="content" id="content">${html}</div>` +
           `<div class="addrow"><button id="add">＋ Add block here</button></div>`;
@@ -405,10 +443,10 @@
 
       // ---------- block ops ----------
       async function newBlock() {
-        const title = prompt("Title for the new block (optional):", "");
-        if (title === null) return;
+        // No prompt() — Tauri's webview returns null from prompt(). Create an untitled block
+        // and drop into Edit mode (title + body) immediately.
         try {
-          const id = await invoke("create_block", { title: title.trim() || null, body: title.trim() ? `# ${title.trim()}\n\n` : "" });
+          const id = await invoke("create_block", { title: null, body: "" });
           invalidate(); await loadBlocks(id); mode = "edit"; openBlock(id, true);
         } catch (e) { alert(String(e)); }
       }
@@ -542,6 +580,8 @@
       document.getElementById("newblock").onclick = newBlock;
       document.getElementById("graphbtn").onclick = showGraph;
       document.getElementById("status").onclick = showSettings;
+      document.getElementById("tabRoots").onclick = () => { if (navScope !== "roots") { navScope = "roots"; loadBlocks(active); } };
+      document.getElementById("tabAll").onclick = () => { if (navScope !== "all") { navScope = "all"; loadBlocks(active); } };
       window.__mdkb = { settings: showSettings };
 
       // Intercept clicks on shared `mdkb:` reference links (chips + embed-card headers) to navigate.
