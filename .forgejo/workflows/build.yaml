@@ -181,28 +181,36 @@ jobs:
   # ── Windows x64 — cross-compiled from the Linux runner via cargo-xwin ──────────
   # Separate job so a Windows hiccup never blocks the Linux image/tarball pipeline.
   # Targets x86_64-pc-windows-msvc; cargo-xwin supplies the MSVC CRT/SDK and lld-link.
-  # Built WITHOUT the onnx embedder for now: the ort/onnxruntime cross-link + the
-  # onnxruntime.dll packaging need validation on a real Windows runner. The Windows daemon
-  # therefore uses keyword (FTS) + the offline hash embedder; neural embeddings on Windows
-  # are a tracked follow-up. Everything else (daemon, watcher, MCP, web, CLI) is identical.
+  # Builds the full set: the daemon WITH the onnx embedder (ort downloads the prebuilt
+  # Windows onnxruntime and links it statically — no DLL to ship), the thin clients, and the
+  # Tauri desktop app (raw .exe + an NSIS installer, bundled via makensis on the Linux
+  # runner). The embedding model is vendored alongside the headless binaries, so semantic
+  # search works out of the box — at parity with the Linux tarball.
   windows:
     runs-on: docker
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: write
+    env:
+      # Base URL of the embedding-model mirror (same int8 BGE-small export the Docker image
+      # bakes in; the SHA-256 pins below make the source interchangeable). Falls back to the
+      # upstream repo when the MODEL_REPO Actions variable is unset.
+      MODEL_REPO: ${{ vars.MODEL_REPO || 'https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install toolchain (rust + llvm + cargo-xwin)
+      - name: Install toolchain (rust + llvm + cargo-xwin + tauri + nsis)
         run: |
           apt-get update -qq
-          apt-get install -y -qq curl ca-certificates clang llvm lld zip jq
+          # nsis provides makensis for the Tauri Windows installer (built on Linux).
+          apt-get install -y -qq curl ca-certificates clang llvm lld zip jq nsis
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --default-toolchain stable --profile minimal
           . "$HOME/.cargo/env"
           rustup target add x86_64-pc-windows-msvc
           cargo install --locked cargo-xwin
+          cargo install --locked tauri-cli --version '^2'
 
       - name: Resolve version
         id: ver
@@ -215,21 +223,76 @@ jobs:
             echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Cross-compile for Windows (x86_64-msvc)
-        run: |
-          . "$HOME/.cargo/env"
-          cargo xwin build --release --target x86_64-pc-windows-msvc \
-            -p mdkbd -p mdkb-cli -p mdkb-mcp -p mdkb-web
-
-      - name: Package zip
+      - name: Fetch + verify embedding model
         run: |
           set -eux
-          D=target/x86_64-pc-windows-msvc/release
+          mkdir -p model
+          curl -fsSL "$MODEL_REPO/onnx/model_quantized.onnx" -o model/model_quantized.onnx
+          curl -fsSL "$MODEL_REPO/tokenizer.json"            -o model/tokenizer.json
+          curl -fsSL "$MODEL_REPO/config.json"               -o model/config.json
+          curl -fsSL "$MODEL_REPO/tokenizer_config.json"     -o model/tokenizer_config.json
+          curl -fsSL "$MODEL_REPO/special_tokens_map.json"   -o model/special_tokens_map.json
+          verify() { echo "$1  $2" | sha256sum -c -; }
+          cd model
+          verify 6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4 model_quantized.onnx
+          verify d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66 tokenizer.json
+          verify fa73f90bf92c8cace1fbcb709626306f2bdbc9ea3e5b5f94b440df9b6aa56350 config.json
+          verify 9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3 tokenizer_config.json
+          verify b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3 special_tokens_map.json
+
+      - name: Cross-compile daemon (onnx) + clients for Windows
+        run: |
+          set -eux
+          . "$HOME/.cargo/env"
+          mkdir -p "$HOME/winlibs"
+          export RUSTFLAGS="-Lnative=$HOME/winlibs"
+          # cargo-xwin's SDK splat only emits lower- and UPPER-case import libs, but ort's
+          # onnxruntime asks lld-link for the mixed-case DirectML.lib / PathCch.lib. The first
+          # pass populates the xwin SDK cache (and is expected to fail only at the final link);
+          # we then drop correctly-cased copies on an extra search path and relink — the
+          # compiled objects are reused, so the second pass only re-runs the link.
+          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkbd --features onnx || true
+          SDK=$(find "$HOME/.cache/cargo-xwin" -type d -path '*sdk/lib/um/x86_64' | head -1)
+          cp "$SDK/directml.lib" "$HOME/winlibs/DirectML.lib"
+          cp "$SDK/pathcch.lib"  "$HOME/winlibs/PathCch.lib"
+          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkbd --features onnx
+          # The thin clients never need the embedder.
+          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkb-cli -p mdkb-mcp -p mdkb-web
+
+      - name: Cross-compile desktop app (Tauri — raw .exe + NSIS installer)
+        run: |
+          set -eux
+          . "$HOME/.cargo/env"
+          # The app bundles the daemon as a resource for local-vault auto-start.
+          mkdir -p app/mdkb-tauri/src-tauri/bin
+          cp target/x86_64-pc-windows-msvc/release/mdkbd.exe app/mdkb-tauri/src-tauri/bin/mdkbd.exe
+          ( cd app/mdkb-tauri/src-tauri && \
+            cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis )
+
+      - name: Package (headless zip + app zip + installer)
+        run: |
+          set -eux
+          V="${{ steps.ver.outputs.version }}"
+          REL=target/x86_64-pc-windows-msvc/release
+          APPREL=app/mdkb-tauri/src-tauri/target/x86_64-pc-windows-msvc/release
+
+          # 1) Headless payload: daemon (onnx) + clients + vendored model (parity with Linux).
+          #    The model/ dir sits beside the binaries so mdkbd finds it via <exe_dir>/model.
           rm -rf dist && mkdir -p dist
-          cp "$D/mdkbd.exe" "$D/mdkb.exe" "$D/mdkb-mcp.exe" "$D/mdkb-web.exe" dist/
-          ( cd dist && zip -qr "../mdkb-${{ steps.ver.outputs.version }}-windows-x64.zip" \
-              mdkbd.exe mdkb.exe mdkb-mcp.exe mdkb-web.exe )
-          sha256sum mdkb-*-windows-x64.zip > SHA256SUMS-windows.txt
+          cp "$REL/mdkbd.exe" "$REL/mdkb.exe" "$REL/mdkb-mcp.exe" "$REL/mdkb-web.exe" dist/
+          cp -r model dist/model
+          ( cd dist && zip -qr "../mdkb-$V-windows-x64.zip" . )
+
+          # 2) Desktop app — portable layout (the .exe + its bundled daemon under bin/).
+          rm -rf appdist && mkdir -p appdist/bin
+          cp "$APPREL/mdkb-tauri.exe" appdist/
+          cp "$REL/mdkbd.exe" appdist/bin/mdkbd.exe
+          ( cd appdist && zip -qr "../mdkb-$V-windows-x64-app.zip" . )
+
+          # 3) NSIS installer.
+          cp "$APPREL/bundle/nsis/"*-setup.exe "mdkb-$V-windows-x64-setup.exe"
+
+          sha256sum mdkb-*-windows-x64*.zip mdkb-*-windows-x64-setup.exe > SHA256SUMS-windows.txt
 
       - name: Upload Windows payload (workflow artifact)
         uses: actions/upload-artifact@v3
@@ -237,6 +300,8 @@ jobs:
           name: mdkb-${{ steps.ver.outputs.version }}-windows
           path: |
             mdkb-*-windows-x64.zip
+            mdkb-*-windows-x64-app.zip
+            mdkb-*-windows-x64-setup.exe
             SHA256SUMS-windows.txt
           if-no-files-found: error
 
@@ -258,7 +323,7 @@ jobs:
             REL_ID=$(curl -sf "$API/releases/tags/$TAG" -H "Authorization: token $TOKEN" | jq -r '.id')
           fi
           echo "release id: $REL_ID"
-          for f in mdkb-*-windows-x64.zip SHA256SUMS-windows.txt; do
+          for f in mdkb-*-windows-x64.zip mdkb-*-windows-x64-app.zip mdkb-*-windows-x64-setup.exe SHA256SUMS-windows.txt; do
             curl -sf -X POST "$API/releases/$REL_ID/assets?name=$f" \
               -H "Authorization: token $TOKEN" \
               -F "attachment=@$f" >/dev/null
