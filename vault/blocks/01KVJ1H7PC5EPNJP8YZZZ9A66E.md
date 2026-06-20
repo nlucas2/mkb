@@ -8,7 +8,7 @@ name: mdkb-cli
 description: >-
     How to use mdkb (a personal Markdown knowledge base) well from the CLI: the DRY
     search-before-write process, embed-vs-reference, search operators, safe writes, and
-    the CLI command surface. Read before storing or retrieving knowledge via the mdkb CLI.
+    the CLI command surface. Read before storing or retrieving knowledge in an mdkb vault.
 user-invocable: false
 ---
 

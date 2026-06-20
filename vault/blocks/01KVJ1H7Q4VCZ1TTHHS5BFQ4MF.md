@@ -6,9 +6,8 @@ tags: [skill, skill-page, mcp]
 ---
 name: mdkb-knowledge
 description: >-
-    How to use mdkb (a personal Markdown knowledge base) well as an AI client via its MCP
-    server: the DRY search-before-write process, embed-vs-reference, search operators, safe
-    writes, and the MCP tool surface. Read before storing or retrieving knowledge in a vault.
+    How to use mdkb (a personal Markdown knowledge base) well via the MCP server: the DRY search-before-write process, embed-vs-reference, search operators, safe
+    writes, and the MCP tool surface. Read before storing or retrieving knowledge in an mdkb vault.
 user-invocable: false
 ---
 

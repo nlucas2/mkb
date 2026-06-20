@@ -179,13 +179,57 @@ fn render_flat_body(vault: &Vault, block: &Block, visited: &mut HashSet<BlockId>
     for r in refs {
         out.push_str(&block.body[cursor..r.span.start]);
         if r.embed {
-            out.push_str(&dissolve_embed(vault, &r.target, r.label(), visited));
+            // Indentation is a property of the *call site*: dissolve the child, then re-indent
+            // its continuation lines to the column where `![[` starts, so a multi-line block
+            // dropped into an indented context (a YAML scalar, a list item) stays well-formed.
+            // At column 0 (a block on its own line — the common case) this is a no-op.
+            let col = current_line_width(&out);
+            let dissolved = dissolve_embed(vault, &r.target, r.label(), visited);
+            out.push_str(&reindent_continuation(&dissolved, col));
         } else {
             out.push_str(&flat_reference(vault, &r.target, r.label()));
         }
         cursor = r.span.end;
     }
     out.push_str(&block.body[cursor..]);
+    out
+}
+
+/// Width (in chars) of the current, in-progress last line of `s` — i.e. how far indented the
+/// next text appended to `s` will start. Used as the re-indent column for a transcluded block.
+fn current_line_width(s: &str) -> usize {
+    match s.rfind('\n') {
+        Some(i) => s[i + 1..].chars().count(),
+        None => s.chars().count(),
+    }
+}
+
+/// Prefix every line **after the first** with `col` spaces (the first line is already positioned
+/// by the text preceding the directive). Blank lines are left empty (no trailing whitespace).
+/// `col == 0` returns the text unchanged.
+///
+/// Indentation is always derived from the call site (the directive's column); there is
+/// **deliberately no per-directive override** (e.g. a "flush-left" / "verbatim" flag). This is a
+/// YAGNI decision, not a structural limitation: an override is perfectly buildable, but it would
+/// add syntax/surface to maintain and a second way to think about `![[]]`. The call-site default
+/// is correct for every case we actually have (YAML scalars, list items, prose), so we keep the
+/// model simple — "everything is a block, reuse is `![[]]`" — and would only add an override if a
+/// concrete need appears.
+fn reindent_continuation(text: &str, col: usize) -> String {
+    if col == 0 {
+        return text.to_string();
+    }
+    let pad = " ".repeat(col);
+    let mut out = String::new();
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+            if !line.is_empty() {
+                out.push_str(&pad);
+            }
+        }
+        out.push_str(line);
+    }
     out
 }
 
@@ -401,5 +445,93 @@ mod tests {
         v2.insert_source(c.clone(), "x\n\n![[01JJJJJJJJJJJJJJJJJJJJJJJJ]]\n\ny\n");
         let out2 = render_flat(&v2, &c).unwrap();
         assert!(out2.contains("<!-- mdkb: unresolved embed"), "got: {out2}");
+    }
+
+    #[test]
+    fn flat_embed_at_column_zero_is_unchanged() {
+        // The common case: a directive on its own line. Continuation lines must NOT gain indent.
+        let mut v = Vault::new();
+        let child = BlockId::generate();
+        let host = BlockId::generate();
+        v.insert_source(child.clone(), "line one\nline two\nline three\n");
+        v.insert_source(host.clone(), &format!("# Doc\n\n![[{child}]]\n"));
+        let out = render_flat(&v, &host).unwrap();
+        assert!(out.contains("# Doc"));
+        assert!(
+            out.contains("\nline one\nline two\nline three"),
+            "no indent at col 0:\n{out}"
+        );
+    }
+
+    #[test]
+    fn flat_embed_reindents_continuation_lines_in_indented_context() {
+        // The real skill case: the block's OWN title frontmatter is consumed, leaving a second
+        // (skill) frontmatter block in the body whose `desc:` scalar embeds a multi-line block at
+        // a 4-space indent. Every continuation line must gain that indent so the YAML stays valid.
+        let mut v = Vault::new();
+        let child = BlockId::generate();
+        let host = BlockId::generate();
+        v.insert_source(child.clone(), "line one\nline two\nline three\n");
+        v.insert_source(
+            host.clone(),
+            &format!("---\ntitle: Page\n---\n\n---\ndesc: >-\n    ![[{child}]]\n---\nbody\n"),
+        );
+        let out = render_flat(&v, &host).unwrap();
+        assert!(
+            out.contains("    line one\n    line two\n    line three"),
+            "got:\n{out}"
+        );
+        assert!(
+            !out.contains("\nline two"),
+            "continuation not re-indented:\n{out}"
+        );
+    }
+
+    #[test]
+    fn flat_embed_reindents_under_list_item() {
+        let mut v = Vault::new();
+        let child = BlockId::generate();
+        let host = BlockId::generate();
+        v.insert_source(child.clone(), "first\nsecond\n");
+        v.insert_source(host.clone(), &format!("- ![[{child}]]\n"));
+        let out = render_flat(&v, &host).unwrap();
+        // "- " is 2 columns, so the continuation aligns under the item content.
+        assert!(out.contains("- first\n  second"), "got:\n{out}");
+    }
+
+    #[test]
+    fn flat_inline_single_line_embed_splices_mid_sentence() {
+        let mut v = Vault::new();
+        let tag = BlockId::generate();
+        let host = BlockId::generate();
+        v.insert_source(tag.clone(), "the fast knowledge base");
+        v.insert_source(
+            host.clone(),
+            &format!("mdkb is ![[{tag}]] for developers.\n"),
+        );
+        let out = render_flat(&v, &host).unwrap();
+        assert_eq!(out, "mdkb is the fast knowledge base for developers.\n");
+    }
+
+    #[test]
+    fn flat_list_embedded_in_list_item_nests() {
+        // `- ![[sublist]]` must keep the embedded list's items nested under the outer item, not
+        // let them escape to the outer level. The re-indent (call-site column 2) achieves this;
+        // a real CommonMark renderer reads it as an outer item containing a nested <ul>.
+        let mut v = Vault::new();
+        let sub = BlockId::generate();
+        let host = BlockId::generate();
+        v.insert_source(sub.clone(), "- item a\n- item b\n- item c\n");
+        v.insert_source(host.clone(), &format!("- before\n- ![[{sub}]]\n- after\n"));
+        let out = render_flat(&v, &host).unwrap();
+        assert!(
+            out.contains("- - item a\n  - item b\n  - item c"),
+            "got:\n{out}"
+        );
+        // continuation items must NOT be flush-left (which would un-nest them)
+        assert!(
+            !out.contains("\n- item b"),
+            "sub-item escaped the nesting:\n{out}"
+        );
     }
 }
