@@ -89,6 +89,13 @@ RUN cargo fetch
 COPY . .
 RUN cargo test --workspace
 
+# Docs-as-data drift gate: build the daemon + CLI and verify every generated doc still matches
+# its source block in vault/. `mdkb export --check` writes nothing and exits non-zero on drift,
+# so a commit that edits a block (or hand-edits a generated file) without re-running export fails
+# the build. The CLI is a thin client, so it auto-starts the co-located mdkbd against vault/.
+RUN cargo build -p mdkbd -p mdkb-cli \
+    && ./target/debug/mdkb export vault --check
+
 
 # -- amd64 builder (native on the runner) -------------------------------------
 FROM --platform=$BUILDPLATFORM rust:slim-trixie AS builder-amd64
