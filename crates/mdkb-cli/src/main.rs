@@ -10,6 +10,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
+use mdkb_core::export::{ExportRequest, SlugSelection};
 use mdkb_core::{BlockId, SearchQuery};
 use mdkb_protocol::{ensure_daemon, Client, DaemonPaths};
 
@@ -96,7 +97,9 @@ maintenance:
        With a manifest (<vault>/export.manifest or --manifest=<path>): writes each mapped doc.
        With --tag=NAME: dumps roots carrying that tag to <slug>.md (add --include-non-root for
        every tagged block, transcluded ones included).
-       flags: --manifest=<path>  --tag=<name>  --include-non-root  --root=<dir>
+       Co-exported docs cross-link; a [[link]] to a block outside the export warns (and stays
+       plain text) unless --follow-links pulls the linked block into the export.
+       flags: --manifest=<path>  --tag=<name>  --include-non-root  --follow-links  --root=<dir>
               --raw (omit the @generated banner)  --check (verify only; non-zero exit on drift)
 
   --version                         print version";
@@ -412,6 +415,7 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
     let mut root: Option<String> = None;
     let mut tag: Option<String> = None;
     let mut include_non_root = false;
+    let mut follow_links = false;
     let mut check = false;
     let mut raw = false;
     for flag in &args[1..] {
@@ -423,6 +427,8 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
             tag = Some(t.to_string());
         } else if flag == "--include-non-root" {
             include_non_root = true;
+        } else if flag == "--follow-links" {
+            follow_links = true;
         } else if flag == "--check" {
             check = true;
         } else if flag == "--raw" {
@@ -437,34 +443,52 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
     if include_non_root && tag.is_none() {
         return Err("--include-non-root only applies with --tag".into());
     }
+    if manifest_path.is_some() && (follow_links || raw) {
+        return Err(
+            "--follow-links and --raw don't apply to --manifest (its paths and per-entry \
+                    banner policy are explicit); use them with --tag or the whole-KB export"
+                .into(),
+        );
+    }
 
-    // Selector resolution (matching the daemon's precedence):
-    //   --manifest=PATH        → that manifest
-    //   --tag=NAME             → roots carrying NAME (or every tagged block with
-    //                            --include-non-root); the default export.manifest is NOT consulted
-    //   (neither, default exists) → the vault's export.manifest
-    //   (neither, no default)  → whole-KB dump (every root → <slug>.md)
-    // This makes the simple case `mdkb export <vault>` just work.
+    // Build the export request. Its type makes illegal combinations unrepresentable, so the only
+    // job here is to map the parsed flags onto the right variant:
+    //   --manifest=PATH          → Manifest(text)
+    //   --tag=NAME               → Slugs{ Tag } (the default export.manifest is NOT consulted)
+    //   --follow-links / --raw   → Slugs{ AllRoots } (slug-mode signals; bypass the default
+    //                              manifest, whose paths/banners are explicit)
+    //   (none, default exists)   → Manifest(default text)
+    //   (none, no default)       → Slugs{ AllRoots } (the whole-KB dump)
     let default_manifest = format!("{dir}/export.manifest");
-    let manifest_text: Option<String> = if tag.is_some() {
-        None
+    let read_manifest = |p: &str| -> Result<ExportRequest, String> {
+        std::fs::read_to_string(p)
+            .map(ExportRequest::Manifest)
+            .map_err(|e| format!("reading manifest {p}: {e}"))
+    };
+    let request: ExportRequest = if let Some(name) = tag {
+        ExportRequest::Slugs {
+            selection: SlugSelection::Tag {
+                name,
+                include_non_root,
+            },
+            follow_links,
+            raw,
+        }
+    } else if let Some(p) = &manifest_path {
+        read_manifest(p)?
+    } else if !follow_links && !raw && Path::new(&default_manifest).exists() {
+        read_manifest(&default_manifest)?
     } else {
-        match &manifest_path {
-            Some(p) => {
-                Some(std::fs::read_to_string(p).map_err(|e| format!("reading manifest {p}: {e}"))?)
-            }
-            None if Path::new(&default_manifest).exists() => Some(
-                std::fs::read_to_string(&default_manifest)
-                    .map_err(|e| format!("reading manifest {default_manifest}: {e}"))?,
-            ),
-            None => None, // whole-KB dump
+        ExportRequest::Slugs {
+            selection: SlugSelection::AllRoots,
+            follow_links,
+            raw,
         }
     };
-    // A manifest names exact paths (so it writes relative to cwd); a tag/whole-KB selection emits
-    // `<slug>.md` and defaults into `docs-export/` to avoid scattering files in cwd.
-    let slug_dump = manifest_text.is_none();
-    // Whole-KB exports default into a `docs-export/` dir to avoid scattering files in cwd; a
-    // manifest names exact paths so it defaults to cwd.
+
+    // A manifest names exact paths (so it writes relative to cwd); a slug dump emits `<slug>.md`
+    // and defaults into `docs-export/` to avoid scattering files in cwd.
+    let slug_dump = matches!(request, ExportRequest::Slugs { .. });
     let root = root.unwrap_or_else(|| {
         if slug_dump {
             "docs-export".into()
@@ -475,13 +499,15 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
 
     // The daemon plans the docs against its warm vault (rendering + banner live in core).
     let docs = client(dir)?
-        .plan_exports(manifest_text, tag, include_non_root, raw)
+        .plan_exports(request)
         .map_err(|e| e.to_string())?;
 
     let root = Path::new(&root);
     let mut drifted = Vec::new();
+    let mut warnings: Vec<&String> = Vec::new();
     let mut wrote = 0usize;
     for doc in &docs {
+        warnings.extend(doc.warnings.iter());
         let out = root.join(&doc.path);
         let current = std::fs::read_to_string(&out).ok();
         let up_to_date = current.as_deref() == Some(doc.content.as_str());
@@ -511,6 +537,12 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
             doc.path
         );
         wrote += 1;
+    }
+
+    // Dropped-link warnings are informational (they don't affect drift/exit status): an exported
+    // doc linked a real block that isn't in this export, so the link became plain text.
+    for w in &warnings {
+        eprintln!("warning: {w}");
     }
 
     if check {

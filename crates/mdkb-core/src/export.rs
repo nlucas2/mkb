@@ -8,8 +8,10 @@
 //! *what-goes-in-each-file* logic lives here in core; a client (the CLI) only does the file IO
 //! (write, or `--check` drift comparison), so the app and CLI can never diverge.
 
+use std::collections::HashMap;
+
 use crate::id::BlockId;
-use crate::render::render_flat;
+use crate::render::{flat_reference_targets, render_flat, render_flat_in_set, FlatSet};
 use crate::vault::Vault;
 
 /// Marker that opens every generated file's banner. A client can use this to recognise a file as
@@ -34,6 +36,42 @@ pub struct ExportEntry {
 pub struct Manifest {
     /// Entries in file order.
     pub entries: Vec<ExportEntry>,
+}
+
+/// What to export, and how — the single request that flows CLI → protocol → daemon → core.
+///
+/// The shape makes illegal combinations **unrepresentable**: a manifest carries its own per-entry
+/// banner policy, so the request-level `raw`/`follow_links`/tag options simply don't exist on that
+/// arm; and a tag selection can't coexist with a manifest because they're different variants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ExportRequest {
+    /// Explicit `path → block` mappings (manifest **text**, parsed daemon-side so a remote daemon
+    /// needn't read the client's filesystem). Banner policy is per-entry (`--raw` in the line).
+    Manifest(String),
+    /// Dump selected blocks to `<slug>.md`. `follow_links` closes the export set over explicit
+    /// `[[links]]`; `raw` omits the `@generated` banner for every emitted file.
+    Slugs {
+        /// Which blocks become files.
+        selection: SlugSelection,
+        /// Pull explicitly-linked-but-unselected blocks into the export (transitively).
+        follow_links: bool,
+        /// Omit the `@generated` banner.
+        raw: bool,
+    },
+}
+
+/// The block selection for an [`ExportRequest::Slugs`] export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SlugSelection {
+    /// Blocks carrying `name` (case-insensitive): roots only, unless `include_non_root`.
+    Tag {
+        name: String,
+        include_non_root: bool,
+    },
+    /// Every root block (the whole-KB dump).
+    AllRoots,
 }
 
 impl Manifest {
@@ -95,6 +133,12 @@ pub struct PlannedDoc {
     pub block_id: BlockId,
     /// Full file content (generated banner + flat-rendered block).
     pub content: String,
+    /// Non-fatal diagnostics for this doc — currently, explicit `[[links]]` whose target is a real
+    /// block that is **not** in the export set, so the link was flattened to plain text. Empty
+    /// unless the doc was planned as part of an export set. The CLI surfaces these so a dropped
+    /// link is visible (and `--follow-links` can be suggested).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub warnings: Vec<String>,
 }
 
 /// The generated banner for a doc, naming its source block so editors know where to make changes.
@@ -138,8 +182,21 @@ fn splice_banner(banner: &str, body: &str) -> String {
     }
 }
 
-/// Compute the full content for a single manifest entry against `vault`.
+/// Compute the full content for a single manifest entry against `vault`, **without** export-set
+/// awareness (references render as plain text, no link-drop warnings). For set-aware planning use
+/// [`plan_exports`], which cross-links co-exported docs and reports dropped links.
 pub fn plan_doc(vault: &Vault, entry: &ExportEntry) -> Result<PlannedDoc, String> {
+    plan_doc_inner(vault, entry, None)
+}
+
+/// Shared planner for one entry. When `paths` is `Some`, render is **set-aware**: `[[links]]` to
+/// blocks in the set become relative links, and `[[links]]` to resolvable blocks *outside* the set
+/// are collected as warnings.
+fn plan_doc_inner(
+    vault: &Vault,
+    entry: &ExportEntry,
+    paths: Option<&HashMap<BlockId, String>>,
+) -> Result<PlannedDoc, String> {
     let block_id = vault.resolve(&entry.block).ok_or_else(|| {
         format!(
             "export target not found: {} (for {})",
@@ -150,8 +207,17 @@ pub fn plan_doc(vault: &Vault, entry: &ExportEntry) -> Result<PlannedDoc, String
         .block(&block_id)
         .map(|b| b.display_title())
         .unwrap_or_else(|| block_id.to_string());
-    let body = render_flat(vault, &block_id)
-        .ok_or_else(|| format!("could not render block {block_id}"))?;
+    let body = match paths {
+        Some(paths) => {
+            let set = FlatSet {
+                paths,
+                self_path: &entry.path,
+            };
+            render_flat_in_set(vault, &block_id, &set)
+        }
+        None => render_flat(vault, &block_id),
+    }
+    .ok_or_else(|| format!("could not render block {block_id}"))?;
     let body = body.trim_end_matches('\n');
     let mut content = if entry.raw {
         body.to_string()
@@ -162,19 +228,50 @@ pub fn plan_doc(vault: &Vault, entry: &ExportEntry) -> Result<PlannedDoc, String
     if !content.ends_with('\n') {
         content.push('\n');
     }
+    // Warn about explicit links that leave the export set (resolvable, but not exported), so a
+    // silently-flattened link is visible. Links to blocks in the set became real links; dangling
+    // links aren't flagged here (they're already an authoring concern surfaced elsewhere).
+    let warnings = match paths {
+        Some(paths) => flat_reference_targets(vault, &block_id)
+            .into_iter()
+            .filter(|t| !paths.contains_key(t))
+            .map(|t| {
+                let target_title = vault
+                    .block(&t)
+                    .map(|b| b.display_title())
+                    .unwrap_or_else(|| t.to_string());
+                format!(
+                    "{}: link to \"{target_title}\" ({t}) is not in the export — \
+                     rendered as plain text (use --follow-links to include it)",
+                    entry.path
+                )
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     Ok(PlannedDoc {
         path: entry.path.clone(),
         block_id,
         content,
+        warnings,
     })
 }
 
-/// Compute the full content for every entry in `manifest` against `vault`, in order.
+/// Compute the full content for every entry in `manifest` against `vault`, in order. Planning is
+/// **set-aware**: the manifest's own entries form the export set, so a `[[reference]]` from one
+/// exported doc to another renders as a relative link between their files, and links that leave
+/// the set are reported as per-doc [`PlannedDoc::warnings`].
 pub fn plan_exports(vault: &Vault, manifest: &Manifest) -> Result<Vec<PlannedDoc>, String> {
+    let mut paths: HashMap<BlockId, String> = HashMap::new();
+    for e in &manifest.entries {
+        if let Some(id) = vault.resolve(&e.block) {
+            paths.insert(id, e.path.clone());
+        }
+    }
     manifest
         .entries
         .iter()
-        .map(|e| plan_doc(vault, e))
+        .map(|e| plan_doc_inner(vault, e, Some(&paths)))
         .collect()
 }
 
@@ -246,14 +343,10 @@ pub fn manifest_for_all_roots(vault: &Vault, raw: bool) -> Manifest {
     manifest_from_ids(vault, &vault.roots(), raw)
 }
 
-/// Build a manifest exporting the blocks carrying `tag` (case-insensitive) to `<slug>.md`.
-///
-/// By default only **roots** carrying the tag are exported — "export the pages tagged X", the
-/// intuitive reading, since a page is just a block nothing transcludes. This keeps a tag like
-/// `doc` from emitting both a page *and* its already-transcluded section blocks. Set
-/// `include_non_root` to export *every* block with the tag (for vaults that tag components and
-/// want each as its own file). `raw` sets the banner policy.
-pub fn manifest_for_tag(vault: &Vault, tag: &str, include_non_root: bool, raw: bool) -> Manifest {
+/// The block ids selected by a `--tag` export. By default only **roots** carrying the tag (the
+/// intuitive "pages tagged X"); with `include_non_root`, every block carrying the tag. Matching is
+/// case-insensitive. Shared by [`manifest_for_tag`] and [`manifest_for_request`].
+pub fn select_tag_ids(vault: &Vault, tag: &str, include_non_root: bool) -> Vec<BlockId> {
     let tag = tag.trim();
     let has_tag = |id: &BlockId| -> bool {
         vault
@@ -261,7 +354,7 @@ pub fn manifest_for_tag(vault: &Vault, tag: &str, include_non_root: bool, raw: b
             .map(|b| b.tag_names().iter().any(|t| t.eq_ignore_ascii_case(tag)))
             .unwrap_or(false)
     };
-    let ids: Vec<BlockId> = if include_non_root {
+    if include_non_root {
         let mut v: Vec<BlockId> = vault
             .blocks()
             .iter()
@@ -272,8 +365,65 @@ pub fn manifest_for_tag(vault: &Vault, tag: &str, include_non_root: bool, raw: b
         v
     } else {
         vault.roots().into_iter().filter(|id| has_tag(id)).collect()
-    };
-    manifest_from_ids(vault, &ids, raw)
+    }
+}
+
+/// Build a manifest exporting the blocks carrying `tag` (case-insensitive) to `<slug>.md`.
+///
+/// By default only **roots** carrying the tag are exported — "export the pages tagged X", the
+/// intuitive reading, since a page is just a block nothing transcludes. This keeps a tag like
+/// `doc` from emitting both a page *and* its already-transcluded section blocks. Set
+/// `include_non_root` to export *every* block with the tag (for vaults that tag components and
+/// want each as its own file). `raw` sets the banner policy.
+pub fn manifest_for_tag(vault: &Vault, tag: &str, include_non_root: bool, raw: bool) -> Manifest {
+    manifest_from_ids(vault, &select_tag_ids(vault, tag, include_non_root), raw)
+}
+
+/// Grow `ids` to its closure over **explicit** `[[references]]`: any resolvable block linked from
+/// an already-selected block (transitively, including links surfaced through dissolved embeds) is
+/// pulled into the set. This is what `--follow-links` does — so a doc that links a sibling doc
+/// drags that sibling into the export instead of leaving a dead link. Newly added ids are appended
+/// (existing order/selection is preserved); the closure is bounded by the vault and de-duplicated.
+pub fn expand_follow_links(vault: &Vault, ids: &mut Vec<BlockId>) {
+    use std::collections::HashSet;
+    let mut in_set: HashSet<BlockId> = ids.iter().cloned().collect();
+    let mut queue: Vec<BlockId> = ids.clone();
+    while let Some(id) = queue.pop() {
+        for target in flat_reference_targets(vault, &id) {
+            if in_set.insert(target.clone()) {
+                ids.push(target.clone());
+                queue.push(target);
+            }
+        }
+    }
+}
+
+/// Build the [`Manifest`] for an [`ExportRequest`] against `vault`. This is the single entry point
+/// the daemon uses, so the selector precedence and `--follow-links` expansion live in one place
+/// (core), not duplicated across clients. A [`ExportRequest::Manifest`] is parsed; a
+/// [`ExportRequest::Slugs`] selects ids (by tag or all-roots), optionally closes over explicit
+/// links, then names them `<slug>.md`.
+pub fn manifest_for_request(vault: &Vault, request: &ExportRequest) -> Result<Manifest, String> {
+    match request {
+        ExportRequest::Manifest(text) => Manifest::parse(text),
+        ExportRequest::Slugs {
+            selection,
+            follow_links,
+            raw,
+        } => {
+            let mut ids = match selection {
+                SlugSelection::Tag {
+                    name,
+                    include_non_root,
+                } => select_tag_ids(vault, name, *include_non_root),
+                SlugSelection::AllRoots => vault.roots(),
+            };
+            if *follow_links {
+                expand_follow_links(vault, &mut ids);
+            }
+            Ok(manifest_from_ids(vault, &ids, *raw))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -535,5 +685,126 @@ mod tests {
         let content = plan_doc(&v, &entry).unwrap().content;
         assert!(!content.contains(GENERATED_MARKER));
         assert!(content.starts_with("# Pure"));
+    }
+
+    #[test]
+    fn plan_exports_cross_links_co_exported_docs() {
+        let mut v = Vault::new();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        v.insert_source(a.clone(), &format!("---\ntitle: A\n---\nsee [[{b}]]\n"));
+        v.insert_source(b.clone(), "---\ntitle: B\n---\nbody\n");
+        let manifest = Manifest {
+            entries: vec![
+                ExportEntry {
+                    path: "a.md".into(),
+                    block: a.to_string(),
+                    raw: true,
+                },
+                ExportEntry {
+                    path: "b.md".into(),
+                    block: b.to_string(),
+                    raw: true,
+                },
+            ],
+        };
+        let docs = plan_exports(&v, &manifest).unwrap();
+        let a_doc = docs.iter().find(|d| d.path == "a.md").unwrap();
+        // B is in the set → A's reference becomes a relative link, with no dropped-link warning.
+        assert!(a_doc.content.contains("see [B](b.md)"), "{}", a_doc.content);
+        assert!(a_doc.warnings.is_empty(), "{:?}", a_doc.warnings);
+    }
+
+    #[test]
+    fn plan_exports_warns_on_link_leaving_the_set() {
+        let mut v = Vault::new();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        v.insert_source(a.clone(), &format!("---\ntitle: A\n---\nsee [[{b}]]\n"));
+        v.insert_source(b.clone(), "---\ntitle: Private\n---\nbody\n");
+        // Only A is exported; the link to B leaves the set.
+        let manifest = Manifest {
+            entries: vec![ExportEntry {
+                path: "a.md".into(),
+                block: a.to_string(),
+                raw: true,
+            }],
+        };
+        let docs = plan_exports(&v, &manifest).unwrap();
+        let a_doc = &docs[0];
+        // Rendered as plain text (the title), and a warning names the dropped target.
+        assert!(a_doc.content.contains("see Private"), "{}", a_doc.content);
+        assert!(
+            !a_doc.content.contains("]("),
+            "should be plain: {}",
+            a_doc.content
+        );
+        assert_eq!(a_doc.warnings.len(), 1, "{:?}", a_doc.warnings);
+        assert!(a_doc.warnings[0].contains("Private"));
+    }
+
+    #[test]
+    fn expand_follow_links_closes_over_explicit_links() {
+        let mut v = Vault::new();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        let c = BlockId::generate();
+        v.insert_source(a.clone(), &format!("---\ntitle: A\n---\n[[{b}]]\n"));
+        v.insert_source(b.clone(), &format!("---\ntitle: B\n---\n[[{c}]]\n"));
+        v.insert_source(c.clone(), "---\ntitle: C\n---\nleaf\n");
+        let mut ids = vec![a.clone()];
+        expand_follow_links(&v, &mut ids);
+        // Transitive closure A → B → C.
+        assert!(
+            ids.contains(&a) && ids.contains(&b) && ids.contains(&c),
+            "{ids:?}"
+        );
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn manifest_for_request_follow_links_pulls_in_linked_block() {
+        let mut v = Vault::new();
+        let page = BlockId::generate();
+        let linked = BlockId::generate();
+        // `page` is the only root; it links `linked`, which is not otherwise selected.
+        v.insert_source(
+            page.clone(),
+            &format!("---\ntitle: Page\ntags: [doc]\n---\n[[{linked}]]\n"),
+        );
+        v.insert_source(linked.clone(), "---\ntitle: Linked\n---\nbody\n");
+
+        let without = manifest_for_request(
+            &v,
+            &ExportRequest::Slugs {
+                selection: SlugSelection::Tag {
+                    name: "doc".into(),
+                    include_non_root: false,
+                },
+                follow_links: false,
+                raw: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(without.entries.len(), 1, "{:?}", without.entries);
+
+        let with = manifest_for_request(
+            &v,
+            &ExportRequest::Slugs {
+                selection: SlugSelection::Tag {
+                    name: "doc".into(),
+                    include_non_root: false,
+                },
+                follow_links: true,
+                raw: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            with.entries.len(),
+            2,
+            "follow-links should add Linked: {:?}",
+            with.entries
+        );
     }
 }

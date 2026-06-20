@@ -234,21 +234,11 @@ impl<I: Index> Service<I> {
     pub fn plan_exports(
         &self,
         ctx: &RequestContext,
-        manifest_text: Option<&str>,
-        tag: Option<&str>,
-        include_non_root: bool,
-        raw: bool,
+        request: &crate::export::ExportRequest,
     ) -> Result<Vec<crate::export::PlannedDoc>, IndexError> {
         ctx.authorize(Capability::Read)?;
-        // Selector precedence: an explicit manifest wins; else a tag filter; else the whole-KB
-        // (every-root) dump. The banner policy (`raw`) applies to the generated cases.
-        let manifest = match (manifest_text, tag) {
-            (Some(text), _) => crate::export::Manifest::parse(text).map_err(IndexError::new)?,
-            (None, Some(tag)) => {
-                crate::export::manifest_for_tag(self.engine.vault(), tag, include_non_root, raw)
-            }
-            (None, None) => crate::export::manifest_for_all_roots(self.engine.vault(), raw),
-        };
+        let manifest = crate::export::manifest_for_request(self.engine.vault(), request)
+            .map_err(IndexError::new)?;
         crate::export::plan_exports(self.engine.vault(), &manifest).map_err(IndexError::new)
     }
 

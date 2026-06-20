@@ -15,12 +15,46 @@
 //! and emits a navigable link + note; a missing/dangling target renders an inline note. One
 //! bad edge degrades locally; the rest of the block renders fine.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::block::Block;
 use crate::id::BlockId;
 use crate::link::extract_references;
 use crate::vault::Vault;
+
+/// The set of blocks being exported together, for set-aware flat rendering. When a `[[reference]]`
+/// targets a block that is **in the set**, flat export renders a real relative Markdown link to
+/// that block's output file instead of inert plain text — so a multi-doc export is navigable.
+/// References to blocks outside the set stay plain text (and the caller can warn about them).
+pub struct FlatSet<'a> {
+    /// Resolved block id → its output path (relative to the export root).
+    pub paths: &'a HashMap<BlockId, String>,
+    /// Output path of the doc currently being rendered, so links are made relative to it.
+    pub self_path: &'a str,
+}
+
+/// Build a relative link from the directory of `from` to the file `to` (both export-root-relative,
+/// `/`-separated). Used to cross-link co-exported docs that may live in different directories.
+pub fn relative_link(from: &str, to: &str) -> String {
+    let from_dirs: Vec<&str> = from.split('/').collect();
+    let to_parts: Vec<&str> = to.split('/').collect();
+    // Directory components of `from` (drop its filename).
+    let from_dirs = &from_dirs[..from_dirs.len().saturating_sub(1)];
+    let mut common = 0;
+    while common < from_dirs.len()
+        && common + 1 < to_parts.len()
+        && from_dirs[common] == to_parts[common]
+    {
+        common += 1;
+    }
+    let ups = from_dirs.len() - common;
+    let mut out = String::new();
+    for _ in 0..ups {
+        out.push_str("../");
+    }
+    out.push_str(&to_parts[common..].join("/"));
+    out
+}
 
 /// A block rendered for display: id + raw body (for editing) + resolved Markdown (for view).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,10 +200,62 @@ pub fn render_flat(vault: &Vault, id: &BlockId) -> Option<String> {
     let block = vault.block(id)?;
     let mut visited = HashSet::new();
     visited.insert(id.clone());
-    Some(render_flat_body(vault, block, &mut visited))
+    Some(render_flat_body(vault, block, &mut visited, None))
 }
 
-fn render_flat_body(vault: &Vault, block: &Block, visited: &mut HashSet<BlockId>) -> String {
+/// Like [`render_flat`], but **set-aware**: `[[reference]]`s whose target is in `set` render as
+/// relative Markdown links to the target's output file (see [`FlatSet`]). Used by the docs-as-data
+/// export so co-exported docs cross-link instead of degrading to plain text.
+pub fn render_flat_in_set(vault: &Vault, id: &BlockId, set: &FlatSet) -> Option<String> {
+    let block = vault.block(id)?;
+    let mut visited = HashSet::new();
+    visited.insert(id.clone());
+    Some(render_flat_body(vault, block, &mut visited, Some(set)))
+}
+
+/// The resolved targets of every `[[reference]]` that appears in the flat output of `id` — i.e.
+/// references in `id`'s own body **plus** references surfaced through the blocks it transitively
+/// embeds (since `![[embeds]]` are dissolved inline). Unresolvable references are skipped; embed
+/// recursion is cycle-safe. Order-preserving and de-duplicated. Used by the export layer to (a)
+/// warn about links that leave the export set and (b) expand the set with `--follow-links`.
+pub fn flat_reference_targets(vault: &Vault, id: &BlockId) -> Vec<BlockId> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    collect_flat_ref_targets(vault, id, &mut seen, &mut out);
+    out
+}
+
+fn collect_flat_ref_targets(
+    vault: &Vault,
+    id: &BlockId,
+    seen: &mut HashSet<BlockId>,
+    out: &mut Vec<BlockId>,
+) {
+    if !seen.insert(id.clone()) {
+        return;
+    }
+    let Some(block) = vault.block(id) else {
+        return;
+    };
+    for r in extract_references(&block.body) {
+        let Some(target) = vault.resolve(&r.target) else {
+            continue;
+        };
+        if r.embed {
+            // Walk the embedded subtree for the references it contributes to the flat output.
+            collect_flat_ref_targets(vault, &target, seen, out);
+        } else if !out.contains(&target) {
+            out.push(target);
+        }
+    }
+}
+
+fn render_flat_body(
+    vault: &Vault,
+    block: &Block,
+    visited: &mut HashSet<BlockId>,
+    set: Option<&FlatSet>,
+) -> String {
     let refs = extract_references(&block.body);
     if refs.is_empty() {
         return block.body.clone();
@@ -184,10 +270,10 @@ fn render_flat_body(vault: &Vault, block: &Block, visited: &mut HashSet<BlockId>
             // dropped into an indented context (a YAML scalar, a list item) stays well-formed.
             // At column 0 (a block on its own line — the common case) this is a no-op.
             let col = current_line_width(&out);
-            let dissolved = dissolve_embed(vault, &r.target, r.label(), visited);
+            let dissolved = dissolve_embed(vault, &r.target, r.label(), visited, set);
             out.push_str(&reindent_continuation(&dissolved, col));
         } else {
-            out.push_str(&flat_reference(vault, &r.target, r.label()));
+            out.push_str(&flat_reference(vault, &r.target, r.label(), set));
         }
         cursor = r.span.end;
     }
@@ -233,16 +319,29 @@ fn reindent_continuation(text: &str, col: usize) -> String {
     out
 }
 
-/// A `[[reference]]` in flat output → the target's display title (or the author's alias) as
-/// plain text. No link: a standalone `.md` doc can't resolve the `mdkb:` scheme.
-fn flat_reference(vault: &Vault, target: &str, label: &str) -> String {
-    match vault.resolve(target) {
-        Some(id) if label == target => vault
+/// A `[[reference]]` in flat output. By default the target's display title (or the author's
+/// alias) as **plain text** — a standalone `.md` doc can't resolve the `mdkb:` scheme. When a
+/// `set` is provided and the target is **in it**, render a real relative Markdown link to the
+/// target's output file instead, so co-exported docs cross-link.
+fn flat_reference(vault: &Vault, target: &str, label: &str, set: Option<&FlatSet>) -> String {
+    let Some(id) = vault.resolve(target) else {
+        // Dangling target: nothing to resolve — show the label as written.
+        return label.to_string();
+    };
+    let text = if label == target {
+        vault
             .block(&id)
             .map(|b| b.display_title())
-            .unwrap_or_else(|| label.to_string()),
-        _ => label.to_string(),
+            .unwrap_or_else(|| label.to_string())
+    } else {
+        label.to_string()
+    };
+    if let Some(set) = set {
+        if let Some(path) = set.paths.get(&id) {
+            return format!("[{text}]({})", relative_link(set.self_path, path));
+        }
     }
+    text
 }
 
 /// A `![[embed]]` in flat output → the target's resolved body, dissolved inline (recursively).
@@ -252,6 +351,7 @@ fn dissolve_embed(
     target: &str,
     label: &str,
     visited: &mut HashSet<BlockId>,
+    set: Option<&FlatSet>,
 ) -> String {
     let id = match vault.resolve(target) {
         Some(id) => id,
@@ -265,7 +365,7 @@ fn dissolve_embed(
         None => return format!("<!-- mdkb: unresolved embed: {target} -->"),
     };
     visited.insert(id.clone());
-    let body = render_flat_body(vault, block, visited);
+    let body = render_flat_body(vault, block, visited, set);
     visited.remove(&id);
     // Trim surrounding blank lines so a dissolved child doesn't accumulate extra spacing; the
     // parent's own newlines around the directive provide separation.
@@ -406,6 +506,73 @@ mod tests {
         v.insert_source(src.clone(), &format!("see [[{target}]] now\n"));
         let out = render_flat(&v, &src).unwrap();
         assert_eq!(out, "see Deployment Guide now\n");
+    }
+
+    #[test]
+    fn relative_link_same_dir_is_bare_filename() {
+        assert_eq!(relative_link("a.md", "b.md"), "b.md");
+        assert_eq!(relative_link("docs/a.md", "docs/b.md"), "b.md");
+    }
+
+    #[test]
+    fn relative_link_walks_up_and_down() {
+        assert_eq!(
+            relative_link("docs/skills/cli/SKILL.md", "docs/SPEC.md"),
+            "../../SPEC.md"
+        );
+        assert_eq!(relative_link("a.md", "sub/b.md"), "sub/b.md");
+        assert_eq!(relative_link("x/a.md", "y/b.md"), "../y/b.md");
+    }
+
+    #[test]
+    fn flat_reference_in_set_becomes_relative_link() {
+        let mut v = Vault::new();
+        let target = BlockId::generate();
+        let src = BlockId::generate();
+        v.insert_source(target.clone(), "---\ntitle: Spec\n---\nbody\n");
+        v.insert_source(src.clone(), &format!("see [[{target}]] now\n"));
+
+        let mut paths = HashMap::new();
+        paths.insert(target.clone(), "spec.md".to_string());
+        let set = FlatSet {
+            paths: &paths,
+            self_path: "guide.md",
+        };
+        let out = render_flat_in_set(&v, &src, &set).unwrap();
+        assert_eq!(out, "see [Spec](spec.md) now\n");
+    }
+
+    #[test]
+    fn flat_reference_out_of_set_stays_plain_text() {
+        let mut v = Vault::new();
+        let target = BlockId::generate();
+        let src = BlockId::generate();
+        v.insert_source(target.clone(), "---\ntitle: Spec\n---\nbody\n");
+        v.insert_source(src.clone(), &format!("see [[{target}]] now\n"));
+
+        // Empty set → the target isn't being exported → plain text, as without a set.
+        let paths = HashMap::new();
+        let set = FlatSet {
+            paths: &paths,
+            self_path: "guide.md",
+        };
+        let out = render_flat_in_set(&v, &src, &set).unwrap();
+        assert_eq!(out, "see Spec now\n");
+    }
+
+    #[test]
+    fn flat_reference_targets_includes_links_through_embeds() {
+        let mut v = Vault::new();
+        let linked = BlockId::generate();
+        let child = BlockId::generate();
+        let page = BlockId::generate();
+        v.insert_source(linked.clone(), "---\ntitle: Linked\n---\nbody\n");
+        // The child (embedded into the page) carries the only reference.
+        v.insert_source(child.clone(), &format!("child links [[{linked}]]\n"));
+        v.insert_source(page.clone(), &format!("# Page\n\n![[{child}]]\n"));
+
+        let targets = flat_reference_targets(&v, &page);
+        assert_eq!(targets, vec![linked], "should surface refs through embeds");
     }
 
     #[test]

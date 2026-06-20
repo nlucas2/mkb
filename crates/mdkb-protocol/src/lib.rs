@@ -15,7 +15,7 @@ pub mod transport;
 pub use connect::{connect, ensure_daemon, ConnectionConfig};
 pub use paths::DaemonPaths;
 
-use mdkb_core::export::PlannedDoc;
+use mdkb_core::export::{ExportRequest, PlannedDoc};
 use mdkb_core::{
     BlockId, BlockRecord, GraphData, Index, IndexStats, LinkOutcome, LinkRow, RenderedBlock,
     RequestContext, SearchHit, SearchQuery, Service, TagCount,
@@ -38,23 +38,10 @@ pub enum Request {
     Graph,
     /// All tags with per-tag block counts (tag discovery).
     ListTags,
-    /// Plan the docs-as-data export against the live vault. Selector precedence: `manifest`
-    /// (explicit mapping) > `tag` (every root carrying the tag, or every tagged block with
-    /// `include_non_root`) > whole-KB (every root). `raw` sets the banner policy.
-    PlanExports {
-        /// The manifest text (`PATH  BLOCK` per line), or `None` to use `tag`/whole-KB.
-        manifest: Option<String>,
-        /// Export blocks carrying this tag (case-insensitive) to `<slug>.md`. Roots only by
-        /// default; see `include_non_root`. Ignored when `manifest` is `Some`.
-        #[serde(default)]
-        tag: Option<String>,
-        /// With `tag`, also export non-root (transcluded) blocks carrying the tag.
-        #[serde(default)]
-        include_non_root: bool,
-        /// Omit the `@generated` banner (tag/whole-KB cases).
-        #[serde(default)]
-        raw: bool,
-    },
+    /// Plan the docs-as-data export against the live vault. The [`ExportRequest`] encodes the
+    /// selector (manifest / tag / whole-KB) and options (`follow_links`, `raw`) such that illegal
+    /// combinations are unrepresentable.
+    PlanExports { request: ExportRequest },
     /// Search (keyword + semantic).
     Search {
         /// The query.
@@ -242,22 +229,9 @@ fn handle<I: Index>(
         Request::ListRoots => Response::Ids(service.list_roots(ctx).map_err(to_str)?),
         Request::Graph => Response::Graph(service.graph(ctx).map_err(to_str)?),
         Request::ListTags => Response::Tags(service.list_tags(ctx).map_err(to_str)?),
-        Request::PlanExports {
-            manifest,
-            tag,
-            include_non_root,
-            raw,
-        } => Response::Exports(
-            service
-                .plan_exports(
-                    ctx,
-                    manifest.as_deref(),
-                    tag.as_deref(),
-                    include_non_root,
-                    raw,
-                )
-                .map_err(to_str)?,
-        ),
+        Request::PlanExports { request } => {
+            Response::Exports(service.plan_exports(ctx, &request).map_err(to_str)?)
+        }
         Request::Search { query } => Response::Hits(service.search(ctx, query).map_err(to_str)?),
         Request::GetBlock { id } => Response::Block(service.get_block(ctx, &id).map_err(to_str)?),
         Request::GetBlockSource { id } => {
@@ -511,22 +485,11 @@ impl Client {
         }
     }
 
-    /// Convenience: plan the docs-as-data export. Selector precedence: `manifest` > `tag`
-    /// (roots carrying the tag, or every tagged block with `include_non_root`) > whole-KB
-    /// (every root). `raw` omits the banner in the tag/whole-KB cases.
-    pub fn plan_exports(
-        &self,
-        manifest: Option<String>,
-        tag: Option<String>,
-        include_non_root: bool,
-        raw: bool,
-    ) -> io::Result<Vec<PlannedDoc>> {
-        match self.call(&Request::PlanExports {
-            manifest,
-            tag,
-            include_non_root,
-            raw,
-        })? {
+    /// Convenience: plan the docs-as-data export for an [`ExportRequest`] (manifest / tag /
+    /// whole-KB, with `follow_links`/`raw`). Co-exported docs cross-link; links leaving the set
+    /// surface as per-doc [`PlannedDoc::warnings`].
+    pub fn plan_exports(&self, request: ExportRequest) -> io::Result<Vec<PlannedDoc>> {
+        match self.call(&Request::PlanExports { request })? {
             Response::Exports(d) => Ok(d),
             other => Err(unexpected(other)),
         }

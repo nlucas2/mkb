@@ -149,6 +149,13 @@ There are three ways to select what to export:
 `--raw` omits the `@generated` banner (for portable, off-repo output); `--check` writes nothing and
 exits non-zero on drift (the CI/pre-commit gate).
 
+Within a single export, the chosen docs **cross-link**: a `[[reference]]` from one exported doc to
+another renders as a real relative Markdown link between their files (instead of inert plain text).
+A `[[reference]]` to a block that is **not** in the export degrades to plain text and prints a
+`warning:` naming the dropped link — unless **`--follow-links`** is given, which pulls every
+explicitly-linked block into the export (transitively) so nothing is left dangling. (`--follow-links`
+applies to the `--tag`/whole-KB modes; a manifest's paths are explicit, so it warns instead.)
+
 The CLI/MCP skills were the first docs generated this way: the `mdkb-cli` and `mdkb-knowledge`
 skills share the same knowledge blocks and differ only in their per-transport surface, so editing
 a shared block once updates both. **[`docs/SPEC.md`](./docs/SPEC.md)** is also generated — from a
