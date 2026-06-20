@@ -43,3 +43,8 @@ block = "Dedup skill page (CLI)"
 [[doc]]
 path  = "docs/skills/mdkb-dedup-mcp/SKILL.md"
 block = "Dedup skill page (MCP)"
+
+# Docs-as-data workflow skill — edit the source block, re-export.
+[[doc]]
+path  = "docs/skills/mdkb-docs-as-data/SKILL.md"
+block = "Docs-as-data skill page"
