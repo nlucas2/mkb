@@ -61,6 +61,7 @@ impl Manifest {
 
 /// A planned output file: its path and the exact content it should contain.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlannedDoc {
     /// Output path, relative to the export root (verbatim from the manifest entry).
     pub path: String,

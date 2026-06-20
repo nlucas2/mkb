@@ -288,6 +288,7 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
         Response::Stats(s) => to_json(s),
         Response::Graph(g) => to_json(g),
         Response::Tags(t) => to_json(t),
+        Response::Exports(d) => to_json(d),
     }
 }
 

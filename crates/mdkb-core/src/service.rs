@@ -215,6 +215,19 @@ impl<I: Index> Service<I> {
         self.engine.index().tag_counts()
     }
 
+    /// Plan the docs-as-data export for `manifest_text` against the live vault: returns, for each
+    /// manifest entry, the output path and the exact content it should contain. Rendering and
+    /// banner logic live in [`crate::export`] so every client produces identical files.
+    pub fn plan_exports(
+        &self,
+        ctx: &RequestContext,
+        manifest_text: &str,
+    ) -> Result<Vec<crate::export::PlannedDoc>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        let manifest = crate::export::Manifest::parse(manifest_text).map_err(IndexError::new)?;
+        crate::export::plan_exports(self.engine.vault(), &manifest).map_err(IndexError::new)
+    }
+
     /// All link rows in the vault that are dangling (unresolved target) — for the health view.
     pub fn dangling_links(&self, ctx: &RequestContext) -> Result<Vec<LinkRow>, IndexError> {
         ctx.authorize(Capability::Read)?;

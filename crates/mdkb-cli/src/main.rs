@@ -1,12 +1,17 @@
 //! `mdkb` — the mdkb CLI.
 //!
-//! A **thin client**: all behavior lives in `mdkb-core` / `mdkb-index`. This binary only
-//! parses arguments and prints results. The unit is the **block** (one file). See `AGENTS.md`.
+//! A **thin client**: every command connects to the vault's daemon (auto-starting a detached
+//! `mdkbd` if none is running) and dispatches over the socket — exactly like the MCP server and
+//! the desktop app. There is no separate in-process engine: the daemon owns the one persistent,
+//! warm index and is the single writer, so the CLI never re-parses or re-embeds the vault and
+//! never races the daemon. The unit is the **block** (one file). See `AGENTS.md`.
 
+use std::io::Read;
+use std::path::Path;
 use std::process::ExitCode;
 
-use mdkb_core::{export, render_block, BlockId, Index, SearchQuery, SyncEngine};
-use mdkb_index::SqliteIndex;
+use mdkb_core::{BlockId, SearchQuery};
+use mdkb_protocol::{ensure_daemon, Client, DaemonPaths};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -21,13 +26,27 @@ fn main() -> ExitCode {
 
 fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
-        Some("render") => cmd_render(&args[1..]),
+        // reads
+        Some("ping") => cmd_ping(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
+        Some("render") => cmd_render(&args[1..]),
+        Some("get") => cmd_get(&args[1..]),
         Some("search") => cmd_search(&args[1..]),
         Some("tags") => cmd_tags(&args[1..]),
-        Some("export") => cmd_export(&args[1..]),
+        Some("backlinks") => cmd_links(&args[1..], true),
+        Some("links") => cmd_links(&args[1..], false),
         Some("stats") => cmd_stats(&args[1..]),
-        Some("daemon") => cmd_daemon(&args[1..]),
+        Some("conflicts") => cmd_conflicts(&args[1..]),
+        // writes
+        Some("create") => cmd_create(&args[1..]),
+        Some("update") => cmd_update(&args[1..]),
+        Some("set-tags") => cmd_set_tags(&args[1..]),
+        Some("link") => cmd_link(&args[1..]),
+        Some("carve") => cmd_carve(&args[1..]),
+        Some("delete") => cmd_delete(&args[1..]),
+        // maintenance
+        Some("rebuild") => cmd_rebuild(&args[1..]),
+        Some("export") => cmd_export(&args[1..]),
         Some("--version") | Some("-V") => {
             println!("mdkb {}", mdkb_core::VERSION);
             Ok(())
@@ -41,21 +60,41 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 const USAGE: &str = "\
-usage:
-  mdkb render <vault-dir> <block-id>        render a block with its children resolved
-  mdkb list <vault-dir>                     list root blocks (id  title)
-  mdkb search <vault-dir> <query> [flags]   search across the vault (keyword + semantic)
-       flags: --lang=<lang> --tag=<tag> (repeatable) --limit=<n>
-       query also accepts inline operators: tag:<t>  #<t>  lang:<l>  code:<l>
-  mdkb tags <vault-dir>                     list all tags with block counts
-  mdkb export <vault-dir> [flags]           generate docs from blocks (docs-as-data)
+usage: mdkb <command> <vault-dir> [args]   (connects to the vault's daemon, auto-starting it)
+
+connection: defaults to a local Unix socket under <vault>/.mdkb/, auto-starting mdkbd.
+  Set MDKB_REMOTE=host:port (+ MDKB_TOKEN) to use a TCP daemon (e.g. a loopback high port
+  where Unix sockets aren't usable), or MDKB_SOCKET=<path> for an explicit socket.
+
+reads:
+  list <vault>                      root blocks (id  title)
+  render <vault> <id>               render a block with its children resolved
+  get <vault> <id>                  raw Markdown body of a block
+  search <vault> <query> [flags]    search (keyword + semantic)
+       flags: --lang=<l> --tag=<t> (repeatable) --limit=<n>
+       query also accepts operators: tag:<t>  #<t>  lang:<l>  code:<l>
+  tags <vault>                      all tags with block counts
+  backlinks <vault> <id>            blocks that reference/embed <id>
+  links <vault> <id>                outgoing links/embeds from <id>
+  stats <vault>                     index statistics
+  conflicts <vault>                 cloud-sync conflict files
+  ping <vault>                      check the daemon is reachable
+
+writes (body is read from stdin where noted):
+  create <vault> [--title=T] < body          create a block; prints the new id
+  update <vault> <id> [--title=T] < body     overwrite a block's title + body
+  set-tags <vault> <id> [tag ...]            set managed (frontmatter) tags ([] clears)
+  link <vault> <src> <dst> [--embed]         reference (or --embed: transclude) dst from src
+  carve <vault> <parent> [--title=T] < body  carve a new child block; prints the child id
+  delete <vault> <id>                        delete a block
+
+maintenance:
+  rebuild <vault>                   rebuild the index from blocks/
+  export <vault> [flags]            generate docs from blocks (docs-as-data)
        flags: --manifest=<path> (default <vault>/export.manifest)
-              --root=<dir>      output root for relative paths (default: cwd)
-              --check           verify files are up to date; non-zero exit on drift
-  mdkb stats <vault-dir>                    index statistics
-  mdkb daemon <socket> <subcmd> [args]      talk to a running mdkbd over its socket
-       subcmds: ping | stats | list | search <query> | render <id> | rebuild | conflicts
-  mdkb --version                            print version";
+              --root=<dir> (output root, default cwd)  --check (verify; non-zero on drift)
+
+  --version                         print version";
 
 fn print_help() {
     println!(
@@ -64,37 +103,71 @@ fn print_help() {
     );
 }
 
-/// Build a read-only, in-memory engine over the vault: it reconciles and embeds blocks, so
-/// both keyword and semantic search work. Reuses the exact ingest/embed/search path the
-/// daemon uses — no duplicated logic.
-fn readonly_engine(dir: &str) -> Result<SyncEngine<SqliteIndex>, String> {
-    let index = SqliteIndex::open_in_memory().map_err(|e| e.to_string())?;
-    let mdkb_dir = mdkb_protocol::DaemonPaths::from_vault(dir)
-        .mdkb_dir()
-        .to_path_buf();
-    let source = mdkb_embed::FileConfig::load(&mdkb_dir).embedder;
-    let mut engine = SyncEngine::new(dir, index).with_embedder(mdkb_embed::from_source(&source));
-    engine.reconcile().map_err(|e| e.to_string())?;
-    Ok(engine)
+/// Connect to the daemon for a vault.
+///
+/// By default this auto-starts (if needed) a local daemon on a Unix socket under
+/// `<vault>/.mdkb/`. For environments where a Unix socket isn't usable (read-only FS, a
+/// too-long socket path, an odd network mount) — or to share one daemon — set `MDKB_REMOTE`
+/// (`host:port` + `MDKB_TOKEN`) to talk to a daemon over **loopback or remote TCP**, or
+/// `MDKB_SOCKET` to point at an explicit socket path. Run such a daemon with
+/// `mdkbd --vault <dir> --listen 127.0.0.1:<port> --token <tok>`.
+fn client(dir: &str) -> Result<Client, String> {
+    if std::env::var_os("MDKB_REMOTE").is_some() || std::env::var_os("MDKB_SOCKET").is_some() {
+        return Client::from_env();
+    }
+    let paths = DaemonPaths::from_vault(dir);
+    ensure_daemon(&paths, None)
 }
 
-fn cmd_render(args: &[String]) -> Result<(), String> {
-    let dir = args.first().ok_or("missing <vault-dir>")?;
-    let id = args.get(1).ok_or("missing <block-id>")?;
-    let bid = BlockId::parse(id).map_err(|e| e.to_string())?;
-    let engine = readonly_engine(dir)?;
-    let out = render_block(engine.vault(), &bid).ok_or_else(|| format!("block not found: {id}"))?;
-    println!("{out}");
-    Ok(())
+fn req<'a>(args: &'a [String], i: usize, what: &str) -> Result<&'a str, String> {
+    args.get(i)
+        .map(String::as_str)
+        .ok_or_else(|| format!("missing {what}"))
+}
+
+fn parse_id(s: &str) -> Result<BlockId, String> {
+    BlockId::parse(s).map_err(|_| format!("invalid block id: {s}"))
+}
+
+fn read_stdin() -> Result<String, String> {
+    let mut s = String::new();
+    std::io::stdin()
+        .read_to_string(&mut s)
+        .map_err(|e| format!("reading stdin: {e}"))?;
+    Ok(s)
+}
+
+/// Pull an optional `--title=...` out of the flags, returning it and the remaining flags.
+fn take_title(flags: &[String]) -> (Option<String>, Vec<String>) {
+    let mut title = None;
+    let mut rest = Vec::new();
+    for f in flags {
+        if let Some(t) = f.strip_prefix("--title=") {
+            title = Some(t.to_string());
+        } else {
+            rest.push(f.clone());
+        }
+    }
+    (title, rest)
+}
+
+// ---------- reads ----------
+
+fn cmd_ping(args: &[String]) -> Result<(), String> {
+    if client(req(args, 0, "<vault-dir>")?)?.ping() {
+        println!("ok");
+        Ok(())
+    } else {
+        Err("daemon did not respond".to_string())
+    }
 }
 
 fn cmd_list(args: &[String]) -> Result<(), String> {
-    let dir = args.first().ok_or("missing <vault-dir>")?;
-    let engine = readonly_engine(dir)?;
-    for id in engine.vault().roots() {
-        let title = engine
-            .vault()
-            .block(&id)
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    for id in c.list_roots().map_err(|e| e.to_string())? {
+        let title = c
+            .get_block(id.clone())
+            .map_err(|e| e.to_string())?
             .map(|b| b.display_title())
             .unwrap_or_default();
         println!("{id}  {title}");
@@ -102,9 +175,33 @@ fn cmd_list(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_render(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let id = parse_id(req(args, 1, "<block-id>")?)?;
+    match c.render_block(id).map_err(|e| e.to_string())? {
+        Some(md) => {
+            println!("{md}");
+            Ok(())
+        }
+        None => Err("block not found".to_string()),
+    }
+}
+
+fn cmd_get(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let id = parse_id(req(args, 1, "<block-id>")?)?;
+    match c.get_block_source(id).map_err(|e| e.to_string())? {
+        Some(src) => {
+            print!("{src}");
+            Ok(())
+        }
+        None => Err("block not found".to_string()),
+    }
+}
+
 fn cmd_search(args: &[String]) -> Result<(), String> {
-    let dir = args.first().ok_or("missing <vault-dir>")?;
-    let query_text = args.get(1).ok_or("missing <query>")?;
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let query_text = req(args, 1, "<query>")?;
     // The positional query understands the same inline operators as the app/MCP
     // (tag:, #tag, lang:/code:) via the shared parser; the --tag/--lang flags add to it.
     let mut q = SearchQuery::parse(query_text);
@@ -122,8 +219,7 @@ fn cmd_search(args: &[String]) -> Result<(), String> {
             return Err(format!("unknown flag: {flag}"));
         }
     }
-    let engine = readonly_engine(dir)?;
-    let hits = engine.search(q).map_err(|e| e.to_string())?;
+    let hits = c.search(q).map_err(|e| e.to_string())?;
     if hits.is_empty() {
         println!("(no matches)");
     }
@@ -135,20 +231,9 @@ fn cmd_search(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_stats(args: &[String]) -> Result<(), String> {
-    let dir = args.first().ok_or("missing <vault-dir>")?;
-    let engine = readonly_engine(dir)?;
-    let s = engine.index().stats().map_err(|e| e.to_string())?;
-    println!("blocks:   {}", s.blocks);
-    println!("roots:    {}", engine.vault().roots().len());
-    println!("embedded: {}", s.embedded);
-    Ok(())
-}
-
 fn cmd_tags(args: &[String]) -> Result<(), String> {
-    let dir = args.first().ok_or("missing <vault-dir>")?;
-    let engine = readonly_engine(dir)?;
-    let tags = engine.index().tag_counts().map_err(|e| e.to_string())?;
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let tags = c.list_tags().map_err(|e| e.to_string())?;
     if tags.is_empty() {
         println!("(no tags)");
     }
@@ -158,8 +243,151 @@ fn cmd_tags(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_links(args: &[String], incoming: bool) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let id = parse_id(req(args, 1, "<block-id>")?)?;
+    let rows = if incoming {
+        c.backlinks(id).map_err(|e| e.to_string())?
+    } else {
+        c.links_from(id).map_err(|e| e.to_string())?
+    };
+    if rows.is_empty() {
+        println!("(none)");
+    }
+    for r in rows {
+        let kind = match r.kind {
+            mdkb_core::LinkKind::Transcludes => "embed",
+            mdkb_core::LinkKind::References => "ref",
+        };
+        let other = if incoming {
+            r.source_id.to_string()
+        } else {
+            r.target.clone()
+        };
+        println!("{kind:>5}  {other}");
+    }
+    Ok(())
+}
+
+fn cmd_stats(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let s = c.stats().map_err(|e| e.to_string())?;
+    println!("blocks:   {}", s.blocks);
+    println!("roots:    {}", s.roots);
+    println!("embedded: {}", s.embedded);
+    Ok(())
+}
+
+fn cmd_conflicts(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let files = c.conflicts().map_err(|e| e.to_string())?;
+    if files.is_empty() {
+        println!("(no conflicts)");
+    }
+    for f in files {
+        println!("{f}");
+    }
+    Ok(())
+}
+
+// ---------- writes ----------
+
+fn cmd_create(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let (title, rest) = take_title(&args[1..]);
+    if let Some(f) = rest.first() {
+        return Err(format!("unknown flag: {f}"));
+    }
+    let body = read_stdin()?;
+    let id = c
+        .create_block(title.as_deref(), &body)
+        .map_err(|e| e.to_string())?;
+    println!("{id}");
+    Ok(())
+}
+
+fn cmd_update(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let id = parse_id(req(args, 1, "<block-id>")?)?;
+    let (title, rest) = take_title(&args[2..]);
+    if let Some(f) = rest.first() {
+        return Err(format!("unknown flag: {f}"));
+    }
+    let body = read_stdin()?;
+    c.update_block(id, title.as_deref(), &body)
+        .map_err(|e| e.to_string())?;
+    println!("ok");
+    Ok(())
+}
+
+fn cmd_set_tags(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let id = parse_id(req(args, 1, "<block-id>")?)?;
+    let tags: Vec<String> = args[2..].to_vec();
+    c.set_tags(id, tags).map_err(|e| e.to_string())?;
+    println!("ok");
+    Ok(())
+}
+
+fn cmd_link(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let src = parse_id(req(args, 1, "<source-id>")?)?;
+    let dst = parse_id(req(args, 2, "<target-id>")?)?;
+    let mut embed = false;
+    for f in &args[3..] {
+        if f == "--embed" {
+            embed = true;
+        } else {
+            return Err(format!("unknown flag: {f}"));
+        }
+    }
+    let outcome = c.link(src, dst, embed).map_err(|e| e.to_string())?;
+    println!(
+        "{}",
+        match outcome {
+            mdkb_core::LinkOutcome::Reference => "reference",
+            mdkb_core::LinkOutcome::Transclusion => "transclusion",
+            mdkb_core::LinkOutcome::DowngradedToReference =>
+                "downgraded to reference (would cycle)",
+        }
+    );
+    Ok(())
+}
+
+fn cmd_carve(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let parent = parse_id(req(args, 1, "<parent-id>")?)?;
+    let (title, rest) = take_title(&args[2..]);
+    if let Some(f) = rest.first() {
+        return Err(format!("unknown flag: {f}"));
+    }
+    let body = read_stdin()?;
+    let child = c
+        .carve_block(parent, title.as_deref(), &body)
+        .map_err(|e| e.to_string())?;
+    println!("{child}");
+    Ok(())
+}
+
+fn cmd_delete(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let id = parse_id(req(args, 1, "<block-id>")?)?;
+    c.delete_block(id).map_err(|e| e.to_string())?;
+    println!("ok");
+    Ok(())
+}
+
+// ---------- maintenance ----------
+
+fn cmd_rebuild(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    c.rebuild().map_err(|e| e.to_string())?;
+    println!("rebuilt");
+    Ok(())
+}
+
 fn cmd_export(args: &[String]) -> Result<(), String> {
-    let dir = args.first().ok_or("missing <vault-dir>")?;
+    let dir = req(args, 0, "<vault-dir>")?;
     let mut manifest_path = format!("{dir}/export.manifest");
     let mut root = ".".to_string();
     let mut check = false;
@@ -177,11 +405,12 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
 
     let manifest_text = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("reading manifest {manifest_path}: {e}"))?;
-    let manifest = export::Manifest::parse(&manifest_text)?;
-    let engine = readonly_engine(dir)?;
-    let docs = export::plan_exports(engine.vault(), &manifest)?;
+    // The daemon plans the docs against its warm vault (rendering + banner live in core).
+    let docs = client(dir)?
+        .plan_exports(manifest_text)
+        .map_err(|e| e.to_string())?;
 
-    let root = std::path::Path::new(&root);
+    let root = Path::new(&root);
     let mut drifted = Vec::new();
     let mut wrote = 0usize;
     for doc in &docs {
@@ -232,90 +461,5 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
     } else {
         println!("exported {} doc(s) ({wrote} written)", docs.len());
         Ok(())
-    }
-}
-
-fn cmd_daemon(args: &[String]) -> Result<(), String> {
-    let socket = args.first().ok_or("missing <socket>")?;
-    let sub = args.get(1).map(String::as_str).ok_or("missing <subcmd>")?;
-    let client = mdkb_protocol::Client::new(socket.as_str());
-    match sub {
-        "ping" => {
-            if client.ping() {
-                println!("ok");
-                Ok(())
-            } else {
-                Err("daemon did not respond".to_string())
-            }
-        }
-        "stats" => {
-            let s = client.stats().map_err(|e| e.to_string())?;
-            println!(
-                "blocks: {}  roots: {}  embedded: {}",
-                s.blocks, s.roots, s.embedded
-            );
-            Ok(())
-        }
-        "list" => {
-            for id in client.list_roots().map_err(|e| e.to_string())? {
-                let title = client
-                    .get_block(id.clone())
-                    .map_err(|e| e.to_string())?
-                    .map(|b| b.display_title())
-                    .unwrap_or_default();
-                println!("{id}  {title}");
-            }
-            Ok(())
-        }
-        "search" => {
-            let query = args.get(2).ok_or("missing <query>")?;
-            let hits = client
-                .search(SearchQuery::text(query))
-                .map_err(|e| e.to_string())?;
-            for h in hits {
-                let preview: String = h
-                    .block
-                    .content
-                    .replace('\n', " ")
-                    .chars()
-                    .take(100)
-                    .collect();
-                println!(
-                    "{}  {}\n    {}",
-                    h.block.id,
-                    h.block.display_title(),
-                    preview
-                );
-            }
-            Ok(())
-        }
-        "render" => {
-            let id = args.get(2).ok_or("missing <block-id>")?;
-            let bid = BlockId::parse(id).map_err(|e| e.to_string())?;
-            match client.render_block(bid).map_err(|e| e.to_string())? {
-                Some(md) => {
-                    println!("{md}");
-                    Ok(())
-                }
-                None => Err(format!("block not found: {id}")),
-            }
-        }
-        "rebuild" => {
-            client.rebuild().map_err(|e| e.to_string())?;
-            println!("rebuilt");
-            Ok(())
-        }
-        "conflicts" => {
-            let files = client.conflicts().map_err(|e| e.to_string())?;
-            if files.is_empty() {
-                println!("(no conflicts)");
-            } else {
-                for f in files {
-                    println!("{f}");
-                }
-            }
-            Ok(())
-        }
-        other => Err(format!("unknown daemon subcmd: {other}")),
     }
 }

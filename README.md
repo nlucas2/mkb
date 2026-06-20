@@ -150,33 +150,35 @@ cargo run -p mdkbd -- --vault examples/demo-vault
   watcher that auto-reconciles external edits, and a local-socket server (Unix socket / Windows
   named pipe). Can also serve a **token-gated TCP** listener (opt-in via `--listen`,
   fail-closed) for remote/cluster clients.
-- `mdkb` CLI commands: `render <id>`, `list`, `search` (keyword + semantic), `stats`, and
-  `daemon` (talk to a running `mdkbd`: `ping`/`stats`/`list`/`search`/`render`/`rebuild`/`conflicts`).
+- `mdkb` CLI — a **thin daemon client** (auto-starts `mdkbd` for the vault, then dispatches over
+  the socket; reads *and* writes, a full equivalent of the MCP surface). Reads: `list`, `render`,
+  `get`, `search`, `tags`, `backlinks`, `links`, `stats`, `conflicts`, `ping`. Writes: `create`,
+  `update`, `set-tags`, `link`, `carve`, `delete`. Maintenance: `rebuild`, `export`.
 - `mdkb-mcp` — an MCP server (JSON-RPC 2.0 over stdio) exposing the knowledge base as tools
-  (`search`, `get_block`, `render_block`, `list_blocks`, `list_roots`, `graph`, `backlinks`,
-  `links_from`, `create_block`, `update_block`, `delete_block`, `carve_block`, `link_blocks`,
-  `stats`, `rebuild`, `conflicts`). A thin client that forwards every call to the daemon and
-  auto-starts `mdkbd` if needed.
+  (`search`, `get_block`, `render_block`, `list_blocks`, `list_roots`, `graph`, `list_tags`,
+  `backlinks`, `links_from`, `create_block`, `update_block`, `set_tags`, `delete_block`,
+  `carve_block`, `link_blocks`, `stats`, `rebuild`, `conflicts`). A thin client that forwards
+  every call to the daemon and auto-starts `mdkbd` if needed.
 
 ## Usage (current)
 
 ```sh
-# start the daemon for a vault (creates blocks/ + .mdkb/ as needed)
-cargo run -p mdkbd -- --vault ./my-vault &
+# Every CLI command takes a vault dir and auto-starts (then reuses) that vault's daemon.
+# The daemon owns the one warm index and is the single writer.
 
-# the daemon owns writes; talk to it over its socket:
-SOCK=./my-vault/.mdkb/mdkbd.sock
-cargo run -p mdkb-cli -- daemon "$SOCK" list                 # root blocks: id  title
-cargo run -p mdkb-cli -- daemon "$SOCK" search "restart nginx"
-cargo run -p mdkb-cli -- daemon "$SOCK" render <block-id>    # children inlined
-
-# read-only CLI directly over a vault directory (no daemon):
-cargo run -p mdkb-cli -- list ./my-vault
+# reads
+cargo run -p mdkb-cli -- list ./my-vault                     # root blocks: id  title
 cargo run -p mdkb-cli -- search ./my-vault "how do I restart nginx"
 cargo run -p mdkb-cli -- search ./my-vault kusto --lang=kusto
-cargo run -p mdkb-cli -- search ./my-vault ops --tag=ops --limit=10
-cargo run -p mdkb-cli -- render ./my-vault <block-id>
+cargo run -p mdkb-cli -- search ./my-vault "ops" --tag=ops --limit=10
+cargo run -p mdkb-cli -- render ./my-vault <block-id>        # children inlined
+cargo run -p mdkb-cli -- tags ./my-vault
 cargo run -p mdkb-cli -- stats ./my-vault
+
+# writes (body via stdin where shown)
+echo "# Note" | cargo run -p mdkb-cli -- create ./my-vault --title="Note"   # prints new id
+cargo run -p mdkb-cli -- set-tags ./my-vault <id> ops kusto
+cargo run -p mdkb-cli -- link ./my-vault <src> <dst> --embed
 ```
 
 ### Running the daemon
@@ -189,17 +191,18 @@ cloud sync).
 # start the daemon (defaults: vault ~/mdkb-vault, socket <vault>/.mdkb/mdkbd.sock)
 cargo run -p mdkbd -- --vault ./my-vault
 
-# from another shell, talk to it
-cargo run -p mdkb-cli -- daemon ./my-vault/.mdkb/mdkbd.sock ping
-cargo run -p mdkb-cli -- daemon ./my-vault/.mdkb/mdkbd.sock stats
-cargo run -p mdkb-cli -- daemon ./my-vault/.mdkb/mdkbd.sock search "restart the web server"
+# from another shell, the CLI auto-connects to (and would auto-start) that vault's daemon
+cargo run -p mdkb-cli -- ping ./my-vault
+cargo run -p mdkb-cli -- stats ./my-vault
+cargo run -p mdkb-cli -- search ./my-vault "restart the web server"
 ```
 
 By default the offline hash embedder is used (deterministic, no downloads). For real
-semantic embeddings via a local ONNX model, build with the `onnx` feature:
+semantic embeddings via a local ONNX model, run the **daemon** with the `onnx` feature (the
+daemon owns embedding; the CLI is a thin client and needs no embedder):
 
 ```sh
-cargo run -p mdkb-cli --features onnx -- search ./my-vault "restart the web server"
+cargo run -p mdkbd --features onnx -- --vault ./my-vault
 ```
 
 #### Choosing an embedder (`config.json`)

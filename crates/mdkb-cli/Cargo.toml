@@ -11,14 +11,6 @@ rust-version.workspace = true
 name = "mdkb"
 path = "src/main.rs"
 
-[features]
-default = []
-onnx = ["mdkb-embed/onnx"]
-# Remote OpenAI-compatible embeddings backend (opt-in; pulls a TLS client).
-remote = ["mdkb-embed/remote"]
-
 [dependencies]
 mdkb-core.workspace = true
-mdkb-index.workspace = true
-mdkb-embed.workspace = true
 mdkb-protocol.workspace = true

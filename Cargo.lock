@@ -784,8 +784,6 @@ name = "mdkb-cli"
 version = "0.0.0"
 dependencies = [
  "mdkb-core",
- "mdkb-embed",
- "mdkb-index",
  "mdkb-protocol",
 ]
 

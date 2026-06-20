@@ -128,17 +128,35 @@ block that restates an existing one; edit the original so every embedder updates
 
 ## CLI quickstart
 
-The CLI is a thin client of the same core; useful for scripts and one-offs:
+The CLI is a **thin daemon client** — every command connects to (and auto-starts) the vault's
+daemon, exactly like the MCP server and the app, so reads and writes share one warm index and the
+daemon stays the single writer. It is a full equivalent of the MCP surface:
 
 ```sh
-mdkb search <vault-dir> "tag:k8s lang:kusto cluster health"   # operators or --tag= --lang= --limit=
-mdkb tags   <vault-dir>                                        # all tags with block counts
-mdkb list   <vault-dir>                                        # ids + titles
-mdkb render <vault-dir> <block-id>                             # assembled (embeds resolved)
-mdkb export <vault-dir> [--check]                              # generate repo docs from blocks (docs-as-data)
-mdkb stats  <vault-dir>
-mdkb daemon --vault <dir>                                      # run the daemon; subcmds: ping|stats|list|search|render|rebuild|conflicts
+# reads
+mdkb search <vault> "tag:k8s lang:kusto cluster health"  # operators or --tag= --lang= --limit=
+mdkb tags   <vault>                                       # all tags with block counts
+mdkb list   <vault>                                       # root blocks (id  title)
+mdkb render <vault> <id>                                  # assembled (embeds resolved)
+mdkb get    <vault> <id>                                  # raw body (for read-modify-write)
+mdkb backlinks <vault> <id>   /   mdkb links <vault> <id>
+mdkb stats  <vault>   /   mdkb conflicts <vault>   /   mdkb ping <vault>
+
+# writes (body via stdin where shown)
+echo "# Title" | mdkb create <vault> --title="Title"     # prints the new id
+echo "new body" | mdkb update <vault> <id>               # overwrite title+body
+mdkb set-tags <vault> <id> k8s ops                        # managed tags ([] clears)
+mdkb link <vault> <src> <dst> [--embed]                   # reference or transclude
+echo "carved" | mdkb carve <vault> <parent>               # prints the new child id
+mdkb delete <vault> <id>
+
+# maintenance
+mdkb rebuild <vault>
+mdkb export <vault> [--check]                             # generate repo docs from blocks (docs-as-data)
 ```
+
+Connection defaults to a local Unix socket; set `MDKB_REMOTE=host:port` (+ `MDKB_TOKEN`) to use a
+TCP daemon (e.g. a loopback port where Unix sockets aren't usable), or `MDKB_SOCKET=<path>`.
 
 ## Anti-patterns (don't)
 

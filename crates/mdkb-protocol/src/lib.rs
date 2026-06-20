@@ -15,6 +15,7 @@ pub mod transport;
 pub use connect::{connect, ensure_daemon, ConnectionConfig};
 pub use paths::DaemonPaths;
 
+use mdkb_core::export::PlannedDoc;
 use mdkb_core::{
     BlockId, BlockRecord, GraphData, Index, IndexStats, LinkOutcome, LinkRow, RenderedBlock,
     RequestContext, SearchHit, SearchQuery, Service, TagCount,
@@ -37,6 +38,11 @@ pub enum Request {
     Graph,
     /// All tags with per-tag block counts (tag discovery).
     ListTags,
+    /// Plan the docs-as-data export for a manifest against the live vault.
+    PlanExports {
+        /// The manifest text (`PATH  BLOCK` per line).
+        manifest: String,
+    },
     /// Search (keyword + semantic).
     Search {
         /// The query.
@@ -159,6 +165,8 @@ pub enum Response {
     Graph(GraphData),
     /// Tags with per-tag block counts.
     Tags(Vec<TagCount>),
+    /// Planned export docs (path + content per manifest entry).
+    Exports(Vec<PlannedDoc>),
     /// Search results.
     Hits(Vec<SearchHit>),
     /// A single (optional) block record.
@@ -217,6 +225,9 @@ fn handle<I: Index>(
         Request::ListRoots => Response::Ids(service.list_roots(ctx).map_err(to_str)?),
         Request::Graph => Response::Graph(service.graph(ctx).map_err(to_str)?),
         Request::ListTags => Response::Tags(service.list_tags(ctx).map_err(to_str)?),
+        Request::PlanExports { manifest } => {
+            Response::Exports(service.plan_exports(ctx, &manifest).map_err(to_str)?)
+        }
         Request::Search { query } => Response::Hits(service.search(ctx, query).map_err(to_str)?),
         Request::GetBlock { id } => Response::Block(service.get_block(ctx, &id).map_err(to_str)?),
         Request::GetBlockSource { id } => {
@@ -463,6 +474,14 @@ impl Client {
     pub fn list_tags(&self) -> io::Result<Vec<TagCount>> {
         match self.call(&Request::ListTags)? {
             Response::Tags(t) => Ok(t),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: plan the docs-as-data export for `manifest` against the live vault.
+    pub fn plan_exports(&self, manifest: String) -> io::Result<Vec<PlannedDoc>> {
+        match self.call(&Request::PlanExports { manifest })? {
+            Response::Exports(d) => Ok(d),
             other => Err(unexpected(other)),
         }
     }
