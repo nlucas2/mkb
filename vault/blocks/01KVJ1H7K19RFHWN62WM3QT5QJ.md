@@ -1,0 +1,16 @@
+---
+title: Skill: search operators
+tags: [skill, shared]
+---
+
+## Search - hybrid + operators
+
+Search fuses keyword (bm25) and vector ranking, so prefer a **natural phrase**
+("how do I restart the ingress controller") over a single word. Then narrow with filters:
+
+- `tag:NAME` or `#NAME` - require a tag (repeatable, AND).
+- `lang:NAME` or `code:NAME` - require a fenced code block in that language.
+- everything else is free text.
+
+Try 2-3 phrasings (the DRY safeguard), then **follow the graph** (backlinks / links)
+instead of re-searching.

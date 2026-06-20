@@ -132,7 +132,7 @@ fn splice_banner(banner: &str, body: &str) -> String {
     if let Some(end) = frontmatter_end(body) {
         let (fm, rest) = body.split_at(end);
         let rest = rest.trim_start_matches('\n');
-        format!("{}\n{banner}{rest}", fm.trim_end_matches('\n'))
+        format!("{}\n\n{banner}{rest}", fm.trim_end_matches('\n'))
     } else {
         format!("{banner}{body}")
     }

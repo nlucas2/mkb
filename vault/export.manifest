@@ -1,0 +1,4 @@
+# vault/export.manifest -- which block generates which repo doc.
+# Skills carry their own YAML frontmatter; the @generated banner is spliced after it.
+docs/skills/mdkb-cli/SKILL.md        CLI skill page
+docs/skills/mdkb-knowledge/SKILL.md  MCP skill page
