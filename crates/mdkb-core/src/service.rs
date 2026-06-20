@@ -15,7 +15,7 @@ use crate::index::{
     block_links, link_graph, transclusion_reaches, BlockRecord, GraphData, Index, IndexError,
     IndexStats, LinkOutcome, LinkRow, SearchHit, SearchQuery, TagCount,
 };
-use crate::render::{render_block, rendered_block, RenderedBlock};
+use crate::render::{render_block, render_flat, rendered_block, RenderedBlock};
 use crate::sync::{SyncEngine, SyncReport};
 
 /// Who is making a request.
@@ -163,6 +163,17 @@ impl<I: Index> Service<I> {
         Ok(rendered_block(self.engine.vault(), id))
     }
 
+    /// Render a block to **flat, self-contained Markdown** (embeds dissolved inline, references
+    /// as plain titles) — the published form used by export. Returns `None` if unknown.
+    pub fn render_flat(
+        &self,
+        ctx: &RequestContext,
+        id: &BlockId,
+    ) -> Result<Option<String>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(render_flat(self.engine.vault(), id))
+    }
+
     /// Outgoing links from a block.
     pub fn links_from(
         &self,
@@ -215,16 +226,22 @@ impl<I: Index> Service<I> {
         self.engine.index().tag_counts()
     }
 
-    /// Plan the docs-as-data export for `manifest_text` against the live vault: returns, for each
-    /// manifest entry, the output path and the exact content it should contain. Rendering and
-    /// banner logic live in [`crate::export`] so every client produces identical files.
+    /// Plan the docs-as-data export against the live vault: returns, for each output, the path and
+    /// the exact content it should contain. With `Some(manifest_text)`, exports the mapped blocks;
+    /// with `None`, exports **every root block** to `<slug>.md` (the no-manifest whole-KB dump).
+    /// `raw` sets the banner policy for the whole-KB case. Rendering and banner logic live in
+    /// [`crate::export`] so every client produces identical files.
     pub fn plan_exports(
         &self,
         ctx: &RequestContext,
-        manifest_text: &str,
+        manifest_text: Option<&str>,
+        raw: bool,
     ) -> Result<Vec<crate::export::PlannedDoc>, IndexError> {
         ctx.authorize(Capability::Read)?;
-        let manifest = crate::export::Manifest::parse(manifest_text).map_err(IndexError::new)?;
+        let manifest = match manifest_text {
+            Some(text) => crate::export::Manifest::parse(text).map_err(IndexError::new)?,
+            None => crate::export::manifest_for_all_roots(self.engine.vault(), raw),
+        };
         crate::export::plan_exports(self.engine.vault(), &manifest).map_err(IndexError::new)
     }
 

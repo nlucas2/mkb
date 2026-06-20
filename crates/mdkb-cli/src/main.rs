@@ -68,7 +68,8 @@ connection: defaults to a local Unix socket under <vault>/.mdkb/, auto-starting 
 
 reads:
   list <vault>                      root blocks (id  title)
-  render <vault> <id>               render a block with its children resolved
+  render <vault> <id> [--flat]      render a block, children resolved (--flat = published form:
+                                    embeds dissolved inline, refs as plain titles, to stdout)
   get <vault> <id>                  raw Markdown body of a block
   search <vault> <query> [flags]    search (keyword + semantic)
        flags: --lang=<l> --tag=<t> (repeatable) --limit=<n>
@@ -90,9 +91,11 @@ writes (body is read from stdin where noted):
 
 maintenance:
   rebuild <vault>                   rebuild the index from blocks/
-  export <vault> [flags]            generate docs from blocks (docs-as-data)
-       flags: --manifest=<path> (default <vault>/export.manifest)
-              --root=<dir> (output root, default cwd)  --check (verify; non-zero on drift)
+  export <vault> [flags]            generate flat docs from blocks (docs-as-data)
+       With no manifest: dumps every root block to <slug>.md under --root (default docs-export/).
+       With a manifest (<vault>/export.manifest or --manifest=<path>): writes each mapped doc.
+       flags: --manifest=<path>  --root=<dir>  --raw (omit the @generated banner)
+              --check (verify only; non-zero exit on drift)
 
   --version                         print version";
 
@@ -178,7 +181,22 @@ fn cmd_list(args: &[String]) -> Result<(), String> {
 fn cmd_render(args: &[String]) -> Result<(), String> {
     let c = client(req(args, 0, "<vault-dir>")?)?;
     let id = parse_id(req(args, 1, "<block-id>")?)?;
-    match c.render_block(id).map_err(|e| e.to_string())? {
+    let mut flat = false;
+    for f in &args[2..] {
+        if f == "--flat" {
+            flat = true;
+        } else {
+            return Err(format!("unknown flag: {f}"));
+        }
+    }
+    // --flat = the published form (embeds dissolved inline, refs as plain titles); the default
+    // is the interactive form (embed cards + mdkb: links).
+    let out = if flat {
+        c.render_flat(id).map_err(|e| e.to_string())?
+    } else {
+        c.render_block(id).map_err(|e| e.to_string())?
+    };
+    match out {
         Some(md) => {
             println!("{md}");
             Ok(())
@@ -388,26 +406,52 @@ fn cmd_rebuild(args: &[String]) -> Result<(), String> {
 
 fn cmd_export(args: &[String]) -> Result<(), String> {
     let dir = req(args, 0, "<vault-dir>")?;
-    let mut manifest_path = format!("{dir}/export.manifest");
-    let mut root = ".".to_string();
+    let mut manifest_path: Option<String> = None;
+    let mut root: Option<String> = None;
     let mut check = false;
+    let mut raw = false;
     for flag in &args[1..] {
         if let Some(p) = flag.strip_prefix("--manifest=") {
-            manifest_path = p.to_string();
+            manifest_path = Some(p.to_string());
         } else if let Some(r) = flag.strip_prefix("--root=") {
-            root = r.to_string();
+            root = Some(r.to_string());
         } else if flag == "--check" {
             check = true;
+        } else if flag == "--raw" {
+            raw = true;
         } else {
             return Err(format!("unknown flag: {flag}"));
         }
     }
 
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("reading manifest {manifest_path}: {e}"))?;
+    // Manifest resolution: an explicit --manifest is required if given; otherwise use the vault's
+    // default export.manifest IF it exists; otherwise fall back to the whole-KB dump (no manifest
+    // → every root block to <slug>.md). This makes the simple case `mdkb export <vault>` just work.
+    let default_manifest = format!("{dir}/export.manifest");
+    let manifest_text: Option<String> = match &manifest_path {
+        Some(p) => {
+            Some(std::fs::read_to_string(p).map_err(|e| format!("reading manifest {p}: {e}"))?)
+        }
+        None if Path::new(&default_manifest).exists() => Some(
+            std::fs::read_to_string(&default_manifest)
+                .map_err(|e| format!("reading manifest {default_manifest}: {e}"))?,
+        ),
+        None => None, // whole-KB dump
+    };
+    let whole_kb = manifest_text.is_none();
+    // Whole-KB exports default into a `docs-export/` dir to avoid scattering files in cwd; a
+    // manifest names exact paths so it defaults to cwd.
+    let root = root.unwrap_or_else(|| {
+        if whole_kb {
+            "docs-export".into()
+        } else {
+            ".".into()
+        }
+    });
+
     // The daemon plans the docs against its warm vault (rendering + banner live in core).
     let docs = client(dir)?
-        .plan_exports(manifest_text)
+        .plan_exports(manifest_text, raw)
         .map_err(|e| e.to_string())?;
 
     let root = Path::new(&root);

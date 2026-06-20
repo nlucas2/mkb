@@ -137,7 +137,8 @@ daemon stays the single writer. It is a full equivalent of the MCP surface:
 mdkb search <vault> "tag:k8s lang:kusto cluster health"  # operators or --tag= --lang= --limit=
 mdkb tags   <vault>                                       # all tags with block counts
 mdkb list   <vault>                                       # root blocks (id  title)
-mdkb render <vault> <id>                                  # assembled (embeds resolved)
+mdkb render <vault> <id>                                  # assembled (embed cards + links)
+mdkb render <vault> <id> --flat                           # published form (embeds dissolved, no links)
 mdkb get    <vault> <id>                                  # raw body (for read-modify-write)
 mdkb backlinks <vault> <id>   /   mdkb links <vault> <id>
 mdkb stats  <vault>   /   mdkb conflicts <vault>   /   mdkb ping <vault>
@@ -152,7 +153,8 @@ mdkb delete <vault> <id>
 
 # maintenance
 mdkb rebuild <vault>
-mdkb export <vault> [--check]                             # generate repo docs from blocks (docs-as-data)
+mdkb export <vault>                                       # no manifest: dump every root to docs-export/<slug>.md
+mdkb export <vault> --check                               # verify generated docs are current (non-zero on drift)
 ```
 
 Connection defaults to a local Unix socket; set `MDKB_REMOTE=host:port` (+ `MDKB_TOKEN`) to use a

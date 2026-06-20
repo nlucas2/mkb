@@ -38,10 +38,14 @@ pub enum Request {
     Graph,
     /// All tags with per-tag block counts (tag discovery).
     ListTags,
-    /// Plan the docs-as-data export for a manifest against the live vault.
+    /// Plan the docs-as-data export against the live vault. `manifest = None` exports every root
+    /// block to `<slug>.md` (whole-KB); `raw` sets the banner policy for that case.
     PlanExports {
-        /// The manifest text (`PATH  BLOCK` per line).
-        manifest: String,
+        /// The manifest text (`PATH  BLOCK` per line), or `None` for the whole-KB dump.
+        manifest: Option<String>,
+        /// Omit the `@generated` banner (whole-KB case).
+        #[serde(default)]
+        raw: bool,
     },
     /// Search (keyword + semantic).
     Search {
@@ -65,6 +69,11 @@ pub enum Request {
     },
     /// Render a block as raw + resolved Markdown.
     RenderedBlock {
+        /// Block id.
+        id: BlockId,
+    },
+    /// Render a block to flat, self-contained Markdown (embeds dissolved; the published form).
+    RenderFlat {
         /// Block id.
         id: BlockId,
     },
@@ -225,9 +234,11 @@ fn handle<I: Index>(
         Request::ListRoots => Response::Ids(service.list_roots(ctx).map_err(to_str)?),
         Request::Graph => Response::Graph(service.graph(ctx).map_err(to_str)?),
         Request::ListTags => Response::Tags(service.list_tags(ctx).map_err(to_str)?),
-        Request::PlanExports { manifest } => {
-            Response::Exports(service.plan_exports(ctx, &manifest).map_err(to_str)?)
-        }
+        Request::PlanExports { manifest, raw } => Response::Exports(
+            service
+                .plan_exports(ctx, manifest.as_deref(), raw)
+                .map_err(to_str)?,
+        ),
         Request::Search { query } => Response::Hits(service.search(ctx, query).map_err(to_str)?),
         Request::GetBlock { id } => Response::Block(service.get_block(ctx, &id).map_err(to_str)?),
         Request::GetBlockSource { id } => {
@@ -238,6 +249,9 @@ fn handle<I: Index>(
         }
         Request::RenderedBlock { id } => {
             Response::Rendered(service.rendered_block(ctx, &id).map_err(to_str)?)
+        }
+        Request::RenderFlat { id } => {
+            Response::Text(service.render_flat(ctx, &id).map_err(to_str)?)
         }
         Request::LinksFrom { id } => Response::Links(service.links_from(ctx, &id).map_err(to_str)?),
         Request::Backlinks { id } => Response::Links(service.backlinks(ctx, &id).map_err(to_str)?),
@@ -478,9 +492,10 @@ impl Client {
         }
     }
 
-    /// Convenience: plan the docs-as-data export for `manifest` against the live vault.
-    pub fn plan_exports(&self, manifest: String) -> io::Result<Vec<PlannedDoc>> {
-        match self.call(&Request::PlanExports { manifest })? {
+    /// Convenience: plan the docs-as-data export. `manifest = None` exports every root block to
+    /// `<slug>.md` (whole-KB); `raw` omits the banner in that case.
+    pub fn plan_exports(&self, manifest: Option<String>, raw: bool) -> io::Result<Vec<PlannedDoc>> {
+        match self.call(&Request::PlanExports { manifest, raw })? {
             Response::Exports(d) => Ok(d),
             other => Err(unexpected(other)),
         }
@@ -537,6 +552,14 @@ impl Client {
     /// Convenience: render a block (transclusions resolved).
     pub fn render_block(&self, id: BlockId) -> io::Result<Option<String>> {
         match self.call(&Request::RenderBlock { id })? {
+            Response::Text(t) => Ok(t),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: render a block to flat, self-contained Markdown (the published form).
+    pub fn render_flat(&self, id: BlockId) -> io::Result<Option<String>> {
+        match self.call(&Request::RenderFlat { id })? {
             Response::Text(t) => Ok(t),
             other => Err(unexpected(other)),
         }

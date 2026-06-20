@@ -23,6 +23,10 @@ pub struct ExportEntry {
     pub path: String,
     /// The block to render: a ULID or an exact (case-insensitive) block title.
     pub block: String,
+    /// When true, emit the pure flat-rendered content with **no** `@generated` banner. The
+    /// banner is the default (it warns against hand-editing); opt out per entry for files that
+    /// must be verbatim. Drift is still caught by `export --check` regardless.
+    pub raw: bool,
 }
 
 /// A parsed export manifest.
@@ -33,26 +37,48 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Parse a manifest. Format: one entry per line, `OUTPUT_PATH  BLOCK` — the first whitespace
-    /// run separates the (space-free) output path from the block target, which may be a ULID or a
-    /// title (and may itself contain spaces). Blank lines and lines starting with `#` are ignored.
+    /// Parse a manifest. Format, one entry per line:
+    ///
+    /// ```text
+    /// OUTPUT_PATH [--raw] BLOCK
+    /// ```
+    ///
+    /// The first whitespace run separates the (space-free) output path from the rest. Optional
+    /// `--`-prefixed flags follow (currently `--raw` / `--no-banner`), then the block target — a
+    /// ULID or a title, which may itself contain spaces. Blank lines and `#` comments are ignored.
     pub fn parse(text: &str) -> Result<Manifest, String> {
         let mut entries = Vec::new();
-        for (n, raw) in text.lines().enumerate() {
-            let line = raw.trim();
+        for (n, raw_line) in text.lines().enumerate() {
+            let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let (path, block) = line
+            let (path, mut rest) = line
                 .split_once(char::is_whitespace)
                 .ok_or_else(|| format!("manifest line {}: expected `PATH  BLOCK`", n + 1))?;
-            let block = block.trim();
+            rest = rest.trim_start();
+
+            // Peel optional `--flag` tokens between the path and the block target.
+            let mut raw = false;
+            while let Some(flag) = rest.split_whitespace().next() {
+                if !flag.starts_with("--") {
+                    break;
+                }
+                match flag {
+                    "--raw" | "--no-banner" => raw = true,
+                    other => return Err(format!("manifest line {}: unknown flag {other}", n + 1)),
+                }
+                rest = rest[flag.len()..].trim_start();
+            }
+
+            let block = rest.trim();
             if block.is_empty() {
                 return Err(format!("manifest line {}: missing block target", n + 1));
             }
             entries.push(ExportEntry {
                 path: path.to_string(),
                 block: block.to_string(),
+                raw,
             });
         }
         Ok(Manifest { entries })
@@ -79,6 +105,39 @@ fn banner(block_id: &BlockId, title: &str) -> String {
     )
 }
 
+/// If `s` begins (ignoring leading blank lines) with a `---`-fenced YAML frontmatter block,
+/// return the byte offset just past its closing `---` line. Otherwise `None`. Used so the
+/// generated banner can be placed **after** frontmatter — a file like a skill needs its `---`
+/// frontmatter to remain the very first thing, or tools won't recognise it.
+fn frontmatter_end(s: &str) -> Option<usize> {
+    let lead = s.len() - s.trim_start_matches('\n').len();
+    let t = &s[lead..];
+    if !(t.starts_with("---\n") || t.starts_with("---\r\n")) {
+        return None;
+    }
+    let after_open = lead + t.find('\n')? + 1;
+    let mut offset = after_open;
+    for line in s[after_open..].split_inclusive('\n') {
+        if line.trim_end_matches(['\n', '\r']) == "---" {
+            return Some(offset + line.len());
+        }
+        offset += line.len();
+    }
+    None
+}
+
+/// Splice the generated `banner` into `body`: after a leading YAML frontmatter block if present
+/// (so the frontmatter stays first), else at the very top.
+fn splice_banner(banner: &str, body: &str) -> String {
+    if let Some(end) = frontmatter_end(body) {
+        let (fm, rest) = body.split_at(end);
+        let rest = rest.trim_start_matches('\n');
+        format!("{}\n{banner}{rest}", fm.trim_end_matches('\n'))
+    } else {
+        format!("{banner}{body}")
+    }
+}
+
 /// Compute the full content for a single manifest entry against `vault`.
 pub fn plan_doc(vault: &Vault, entry: &ExportEntry) -> Result<PlannedDoc, String> {
     let block_id = vault.resolve(&entry.block).ok_or_else(|| {
@@ -93,9 +152,16 @@ pub fn plan_doc(vault: &Vault, entry: &ExportEntry) -> Result<PlannedDoc, String
         .unwrap_or_else(|| block_id.to_string());
     let body = render_flat(vault, &block_id)
         .ok_or_else(|| format!("could not render block {block_id}"))?;
-    let mut content = banner(&block_id, &title);
-    content.push_str(body.trim_end_matches('\n'));
-    content.push('\n');
+    let body = body.trim_end_matches('\n');
+    let mut content = if entry.raw {
+        body.to_string()
+    } else {
+        let banner = banner(&block_id, &title);
+        splice_banner(&banner, body)
+    };
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
     Ok(PlannedDoc {
         path: entry.path.clone(),
         block_id,
@@ -112,6 +178,71 @@ pub fn plan_exports(vault: &Vault, manifest: &Manifest) -> Result<Vec<PlannedDoc
         .collect()
 }
 
+/// A filesystem-friendly slug from a block title: lowercase, non-alphanumerics collapsed to
+/// single hyphens, trimmed. Empty titles fall back to the caller's choice.
+pub fn slug(title: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for c in title.trim().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.extend(c.to_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// Build a manifest that exports **every root block** (the natural "pages" — blocks nothing
+/// embeds) to `<slug>.md`, when no manifest file is provided. Filenames come from each root's
+/// title slug (falling back to the id); on a slug collision a short id suffix disambiguates.
+/// `raw` sets the banner policy for all generated entries. Entries are sorted by path for a
+/// stable, deterministic result.
+pub fn manifest_for_all_roots(vault: &Vault, raw: bool) -> Manifest {
+    use std::collections::HashMap;
+    // First pass: how many roots share each slug (to know when to disambiguate).
+    let roots: Vec<_> = vault.roots();
+    let mut slug_counts: HashMap<String, usize> = HashMap::new();
+    for id in &roots {
+        let s = vault
+            .block(id)
+            .map(|b| slug(&b.display_title()))
+            .unwrap_or_default();
+        let s = if s.is_empty() { id.to_string() } else { s };
+        *slug_counts.entry(s).or_insert(0) += 1;
+    }
+    let mut entries: Vec<ExportEntry> = roots
+        .iter()
+        .map(|id| {
+            let base = vault
+                .block(id)
+                .map(|b| slug(&b.display_title()))
+                .unwrap_or_default();
+            let base = if base.is_empty() {
+                id.to_string()
+            } else {
+                base
+            };
+            // Disambiguate colliding slugs with a short id suffix.
+            let name = if slug_counts.get(&base).copied().unwrap_or(0) > 1 {
+                let short = &id.to_string()[..id.to_string().len().min(8)];
+                format!("{base}-{short}")
+            } else {
+                base
+            };
+            ExportEntry {
+                path: format!("{name}.md"),
+                block: id.to_string(),
+                raw,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Manifest { entries }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,14 +257,27 @@ mod tests {
             vec![
                 ExportEntry {
                     path: "README.md".into(),
-                    block: "01ABCDEF".into()
+                    block: "01ABCDEF".into(),
+                    raw: false,
                 },
                 ExportEntry {
                     path: "docs/SPEC.md".into(),
-                    block: "A Long Title".into()
+                    block: "A Long Title".into(),
+                    raw: false,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parse_handles_raw_flag_before_block() {
+        let m = Manifest::parse("README.md --raw A Long Title\nx.md 01ABC\n").unwrap();
+        assert_eq!(m.entries[0].path, "README.md");
+        assert_eq!(m.entries[0].block, "A Long Title");
+        assert!(m.entries[0].raw);
+        assert!(!m.entries[1].raw);
+        // unknown flags are rejected
+        assert!(Manifest::parse("x.md --nope BLOCK\n").is_err());
     }
 
     #[test]
@@ -154,6 +298,7 @@ mod tests {
         let entry = ExportEntry {
             path: "README.md".into(),
             block: root.to_string(),
+            raw: false,
         };
         let doc = plan_doc(&v, &entry).unwrap();
         assert_eq!(doc.path, "README.md");
@@ -174,10 +319,41 @@ mod tests {
         let entry = ExportEntry {
             path: "out.md".into(),
             block: "My Doc".into(),
+            raw: false,
         };
         let doc = plan_doc(&v, &entry).unwrap();
         assert_eq!(doc.block_id, id);
         assert!(doc.content.contains("hello"));
+    }
+
+    #[test]
+    fn banner_goes_after_leading_frontmatter() {
+        // A block whose OWN frontmatter carries a title, but whose body begins with a second
+        // frontmatter block (e.g. a skill's name/description). split_frontmatter consumes only
+        // the first fence, so the skill frontmatter survives in the body — and the generated
+        // banner must land AFTER it so the file still starts with `---`.
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        v.insert_source(
+            id.clone(),
+            "---\ntitle: Skill Page\n---\n\n---\nname: my-skill\nuser-invocable: false\n---\n\n# Body\n",
+        );
+        let entry = ExportEntry {
+            path: "SKILL.md".into(),
+            block: id.to_string(),
+            raw: false,
+        };
+        let content = plan_doc(&v, &entry).unwrap().content;
+        assert!(
+            content.starts_with("---\nname: my-skill"),
+            "frontmatter must be first:\n{content}"
+        );
+        let fm_end = content.find("\n---\n").map(|i| i + 5).unwrap();
+        assert!(
+            content[fm_end..].contains(GENERATED_MARKER),
+            "banner must follow the frontmatter:\n{content}"
+        );
+        assert!(content.contains("# Body"));
     }
 
     #[test]
@@ -186,6 +362,7 @@ mod tests {
         let entry = ExportEntry {
             path: "x.md".into(),
             block: "nope".into(),
+            raw: false,
         };
         assert!(plan_doc(&v, &entry).is_err());
     }
@@ -202,10 +379,12 @@ mod tests {
                 ExportEntry {
                     path: "a.md".into(),
                     block: a.to_string(),
+                    raw: false,
                 },
                 ExportEntry {
                     path: "b.md".into(),
                     block: b.to_string(),
+                    raw: false,
                 },
             ],
         };
@@ -213,5 +392,59 @@ mod tests {
         assert_eq!(docs.len(), 2);
         assert_eq!(docs[0].path, "a.md");
         assert_eq!(docs[1].path, "b.md");
+    }
+
+    #[test]
+    fn slug_is_filesystem_friendly() {
+        assert_eq!(slug("Run mdkb locally"), "run-mdkb-locally");
+        assert_eq!(slug("Code blocks & languages"), "code-blocks-languages");
+        assert_eq!(slug("  Don't repeat — reuse  "), "don-t-repeat-reuse");
+        assert_eq!(slug(""), "");
+    }
+
+    #[test]
+    fn whole_kb_manifest_exports_roots_as_slugs_with_raw_and_collision_suffix() {
+        let mut v = Vault::new();
+        // two roots, one embeds a child (so the child is not a root)
+        let child = BlockId::generate();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        v.insert_source(child.clone(), "---\ntitle: Child\n---\nc\n");
+        v.insert_source(
+            a.clone(),
+            &format!("---\ntitle: Guide\n---\n![[{child}]]\n"),
+        );
+        v.insert_source(b.clone(), "---\ntitle: Guide\n---\nother\n"); // same title → slug collision
+
+        let m = manifest_for_all_roots(&v, true);
+        // child is embedded by a, so only a and b are roots → 2 entries
+        assert_eq!(m.entries.len(), 2, "{:?}", m.entries);
+        // colliding "guide" slug disambiguated with an id suffix; all raw
+        for e in &m.entries {
+            assert!(
+                e.path.starts_with("guide-") && e.path.ends_with(".md"),
+                "{}",
+                e.path
+            );
+            assert!(e.raw);
+        }
+        // raw plan → no banner
+        let docs = plan_exports(&v, &m).unwrap();
+        assert!(docs.iter().all(|d| !d.content.contains(GENERATED_MARKER)));
+    }
+
+    #[test]
+    fn raw_entry_omits_banner() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        v.insert_source(id.clone(), "# Pure\n\nbody\n");
+        let entry = ExportEntry {
+            path: "x.md".into(),
+            block: id.to_string(),
+            raw: true,
+        };
+        let content = plan_doc(&v, &entry).unwrap().content;
+        assert!(!content.contains(GENERATED_MARKER));
+        assert!(content.starts_with("# Pure"));
     }
 }
