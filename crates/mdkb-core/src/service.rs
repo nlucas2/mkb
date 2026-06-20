@@ -237,8 +237,7 @@ impl<I: Index> Service<I> {
         request: &crate::export::ExportRequest,
     ) -> Result<Vec<crate::export::PlannedDoc>, IndexError> {
         ctx.authorize(Capability::Read)?;
-        let manifest = crate::export::manifest_for_request(self.engine.vault(), request)
-            .map_err(IndexError::new)?;
+        let manifest = crate::export::manifest_for_request(self.engine.vault(), request);
         crate::export::plan_exports(self.engine.vault(), &manifest).map_err(IndexError::new)
     }
 

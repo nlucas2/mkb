@@ -1,0 +1,21 @@
+# vault/export.toml — which block generates which repo doc (docs-as-data).
+# Each [[doc]] is one generated file: `path` is written from the flat render of `block`
+# (a ULID or an exact block title). This is the on-disk twin of the export options a CLI
+# command computes — one command ≈ one [[doc]].
+#
+# Optional manifest-level [defaults] (e.g. `raw = true`) apply to every doc; a per-entry
+# `raw = …` overrides them. The skills keep their own YAML frontmatter, so the @generated
+# banner is spliced after it.
+
+[[doc]]
+path  = "docs/skills/mdkb-cli/SKILL.md"
+block = "CLI skill page"
+
+[[doc]]
+path  = "docs/skills/mdkb-knowledge/SKILL.md"
+block = "MCP skill page"
+
+# The on-disk format spec, authored as blocks.
+[[doc]]
+path  = "docs/SPEC.md"
+block = "SPEC page"

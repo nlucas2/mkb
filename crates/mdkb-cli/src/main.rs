@@ -94,7 +94,7 @@ maintenance:
   rebuild <vault>                   rebuild the index from blocks/
   export <vault> [flags]            generate flat docs from blocks (docs-as-data)
        With no selector: dumps every root block to <slug>.md under --root (default docs-export/).
-       With a manifest (<vault>/export.manifest or --manifest=<path>): writes each mapped doc.
+       With a manifest (<vault>/export.toml or --manifest=<path>): writes each mapped doc.
        With --tag=NAME: dumps roots carrying that tag to <slug>.md (add --include-non-root for
        every tagged block, transcluded ones included).
        Co-exported docs cross-link; a [[link]] to a block outside the export warns (and stays
@@ -453,17 +453,24 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
 
     // Build the export request. Its type makes illegal combinations unrepresentable, so the only
     // job here is to map the parsed flags onto the right variant:
-    //   --manifest=PATH          → Manifest(text)
-    //   --tag=NAME               → Slugs{ Tag } (the default export.manifest is NOT consulted)
+    //   --manifest=PATH          → Manifest(entries)  (parsed here; TOML, or JSON by .json suffix)
+    //   --tag=NAME               → Slugs{ Tag } (the default export.toml is NOT consulted)
     //   --follow-links / --raw   → Slugs{ AllRoots } (slug-mode signals; bypass the default
     //                              manifest, whose paths/banners are explicit)
-    //   (none, default exists)   → Manifest(default text)
+    //   (none, default exists)   → Manifest(entries from default export.toml)
     //   (none, no default)       → Slugs{ AllRoots } (the whole-KB dump)
-    let default_manifest = format!("{dir}/export.manifest");
+    // The manifest is parsed client-side (defaults resolved) and shipped as structured entries, so
+    // the protocol stays uniformly JSON and the daemon never parses the on-disk format.
+    let default_manifest = format!("{dir}/export.toml");
     let read_manifest = |p: &str| -> Result<ExportRequest, String> {
-        std::fs::read_to_string(p)
-            .map(ExportRequest::Manifest)
-            .map_err(|e| format!("reading manifest {p}: {e}"))
+        let text = std::fs::read_to_string(p).map_err(|e| format!("reading manifest {p}: {e}"))?;
+        let manifest = if p.ends_with(".json") {
+            mdkb_core::export::Manifest::parse_json(&text)
+        } else {
+            mdkb_core::export::Manifest::parse(&text)
+        }
+        .map_err(|e| format!("{p}: {e}"))?;
+        Ok(ExportRequest::Manifest(manifest.entries))
     };
     let request: ExportRequest = if let Some(name) = tag {
         ExportRequest::Slugs {
