@@ -57,7 +57,22 @@
       .preview { color:var(--muted); font-size:.9em; margin-top:.2rem; }
 
       .topbar { display:flex; align-items:center; gap:.5rem; padding:.7rem 2.5rem; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg); z-index:5; }
-      .topbar h1 { font-size:1.15rem; margin:0; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .topbar .titlewrap { flex:1; min-width:0; display:flex; flex-direction:column; gap:.2rem; }
+      .topbar h1 { font-size:1.15rem; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .tagrow { display:flex; flex-wrap:wrap; gap:.3rem; align-items:center; }
+      .tag { font-size:.78em; color:var(--accent); background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:.05rem .5rem; cursor:pointer; line-height:1.5; }
+      .tag:hover { background:var(--accent); color:var(--panel); }
+      .tag.inline { color:var(--muted); border-style:dashed; cursor:default; }
+      .tag.inline:hover { background:var(--panel); color:var(--muted); }
+      .tag .x { margin-left:.35rem; opacity:.7; font-weight:700; cursor:pointer; }
+      .tag .x:hover { opacity:1; color:var(--danger,#f38ba8); }
+      .tagadd { font-size:.78em; width:5.5rem; padding:.05rem .45rem; background:transparent; border:1px dashed var(--border); border-radius:999px; color:var(--fg); }
+      .tagadd:focus { outline:none; border-color:var(--accent); width:8rem; }
+      .results .crumb .tag { margin-left:.3rem; }
+      .taglist { list-style:none; padding:0; max-width:34rem; }
+      .taglist li { display:flex; align-items:center; gap:.6rem; padding:.35rem 0; border-bottom:1px solid var(--border); cursor:pointer; }
+      .taglist li:hover { color:var(--accent); }
+      .taglist .cnt { color:var(--muted); font-size:.85em; margin-left:auto; }
       .seg { display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
       .seg button { border:none; border-radius:0; border-right:1px solid var(--border); }
       .seg button:last-child { border-right:none; }
@@ -114,10 +129,11 @@
   <body>
     <div class="layout">
       <nav>
-        <input id="search" type="search" placeholder="Search…" />
+        <input id="search" type="search" placeholder="Search…  (tag:  #tag  lang:rust)" />
         <div class="navbtns">
           <button id="newblock">＋ Block</button>
           <button id="graphbtn">◎ Graph</button>
+          <button id="tagsbtn">＃ Tags</button>
         </div>
         <div class="navhd"><span>Blocks</span>
           <div class="seg small"><button id="tabRoots" class="on">Roots</button><button id="tabAll">All</button></div>
@@ -152,7 +168,8 @@
         try {
           const s = await invoke("connection_status");
           dotEl.classList.toggle("ok", s.connected);
-          statusTextEl.textContent = s.connected ? s.endpoint : "offline · " + s.endpoint;
+          statusTextEl.textContent = s.connected ? s.label : "offline · " + s.label;
+          statusTextEl.title = s.endpoint;
         } catch { dotEl.classList.remove("ok"); statusTextEl.textContent = "no connection"; }
       }
 
@@ -201,10 +218,22 @@
         }
       }
 
-      function topbar(title) {
+      // The topbar shows the title, an editable tag row, the view tabs, and delete. Managed
+      // (frontmatter) tags are removable chips; inline #hashtags are shown muted (edit them in
+      // the body). The always-visible "+ tag" input adds a managed tag (no hover affordances).
+      function topbar(view) {
         const m = (id, label) => `<button data-m="${id}" class="${mode===id?"on":""}">${label}</button>`;
+        const fm = new Set((view.fm_tags || []).map((t) => t.toLowerCase()));
+        const chips = (view.tags || []).map((t) => {
+          const managed = fm.has(t.toLowerCase());
+          if (managed) {
+            return `<span class="tag managed" data-tag="${esc(t)}">#${esc(t)}<span class="x" data-del="${esc(t)}" title="Remove tag">×</span></span>`;
+          }
+          return `<span class="tag inline" data-tag="${esc(t)}" title="inline #tag — edit it in the body">#${esc(t)}</span>`;
+        }).join("");
+        const tagrow = `<div class="tagrow">${chips}<input class="tagadd" id="tagadd" placeholder="+ tag" /></div>`;
         return `<div class="topbar">
-          <h1>${esc(title)}</h1>
+          <div class="titlewrap"><h1>${esc(view.title)}</h1>${tagrow}</div>
           <div class="seg">${m("read","Read")}${m("blocks","Blocks")}${m("edit","Edit")}</div>
           <button id="del" class="danger" title="Delete block">🗑</button>
         </div>`;
@@ -219,14 +248,39 @@
         let view;
         try { view = await invoke("render_block", { id }); }
         catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
-        mainEl.innerHTML = topbar(view.title) + `<div class="pad" id="body"></div>`;
+        mainEl.innerHTML = topbar(view) + `<div class="pad" id="body"></div>`;
         mainEl.querySelectorAll(".seg button").forEach((b) =>
           (b.onclick = () => { mode = b.dataset.m; openBlock(id, true); }));
         mainEl.querySelector("#del").onclick = () => del(id);
+        // Clicking a tag's body searches it; clicking its × removes it (managed tags only).
+        mainEl.querySelectorAll(".topbar .tag").forEach((t) =>
+          (t.onclick = (ev) => { if (!ev.target.dataset.del) searchTag(t.dataset.tag); }));
+        mainEl.querySelectorAll(".topbar .tag .x").forEach((x) =>
+          (x.onclick = (ev) => { ev.stopPropagation(); removeTag(id, view.fm_tags || [], x.dataset.del); }));
+        const add = mainEl.querySelector("#tagadd");
+        if (add) add.onkeydown = (ev) => {
+          if (ev.key === "Enter") { ev.preventDefault(); addTag(id, view.fm_tags || [], add.value); }
+        };
         const body = mainEl.querySelector("#body");
         if (mode === "edit") await renderEdit(body, id);
         else if (mode === "blocks") await renderBlocksView(body, id, view.html);
         else await renderReading(body, id, view.html);
+      }
+
+      // Set the block's managed tags to fmTags + `name` (deduped), then refresh.
+      async function addTag(id, fmTags, name) {
+        const t = String(name || "").trim().replace(/^#/, "");
+        if (!t) return;
+        const next = fmTags.slice();
+        if (!next.some((x) => x.toLowerCase() === t.toLowerCase())) next.push(t);
+        try { await invoke("set_tags", { id, tags: next }); invalidate(); await openBlock(id, true); }
+        catch (e) { alert(String(e)); }
+      }
+      // Remove `name` from the block's managed tags, then refresh.
+      async function removeTag(id, fmTags, name) {
+        const next = fmTags.filter((x) => x.toLowerCase() !== String(name).toLowerCase());
+        try { await invoke("set_tags", { id, tags: next }); invalidate(); await openBlock(id, true); }
+        catch (e) { alert(String(e)); }
       }
 
       // ---------- READ: clean "as-intended" document (embeds dissolved inline) ----------
@@ -551,6 +605,25 @@
         ro.observe(el);
       }
 
+      // ---------- tag browser ----------
+      async function showTags() {
+        active = null; renderNav();
+        let tags;
+        try { tags = await invoke("list_tags"); }
+        catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
+        const head = `<div class="topbar"><div class="titlewrap"><h1>Tags</h1></div></div>`;
+        if (!tags.length) {
+          mainEl.innerHTML = head + `<div class="pad"><p class="muted">No tags yet. Add tags to a block from its header, or use frontmatter <code>tags:</code> / inline <code>#hashtags</code>.</p></div>`;
+          return;
+        }
+        const items = tags.map((t) =>
+          `<li data-tag="${esc(t.tag)}"><span class="tag">#${esc(t.tag)}</span><span class="cnt">${t.count} block${t.count===1?"":"s"}</span></li>`
+        ).join("");
+        mainEl.innerHTML = head + `<div class="pad"><p class="muted">${tags.length} tag(s) — click to search.</p><ul class="taglist">${items}</ul></div>`;
+        mainEl.querySelectorAll(".taglist li").forEach((li) =>
+          (li.onclick = () => searchTag(li.dataset.tag)));
+      }
+
       // ---------- settings ----------
       async function showSettings() {
         active = null; renderNav();
@@ -597,23 +670,35 @@
       }
 
       // ---------- search ----------
+      // One runner, shared by the search box and clickable tag chips. The query string supports
+      // operators (tag:, #tag, lang:/code:) parsed in the shared core SearchQuery::parse.
       let timer = null;
+      async function runSearch(q) {
+        if (!q) { if (active) openBlock(active); return; }
+        active = null; renderNav();
+        try { mainEl.innerHTML = `<div class="pad" id="sr">${await invoke("search", { query: q })}</div>`; }
+        catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
+        mainEl.querySelectorAll('#sr a[href^="/block/"]').forEach((a) => {
+          a.onclick = (ev) => { ev.preventDefault(); openBlock(a.getAttribute("href").slice("/block/".length)); };
+        });
+        mainEl.querySelectorAll('#sr .tag[data-tag]').forEach((t) =>
+          (t.onclick = () => searchTag(t.dataset.tag)));
+      }
+      // Clicking a tag chip runs a `tag:<name>` search through the same box.
+      function searchTag(tag) {
+        searchEl.value = "tag:" + tag;
+        clearTimeout(timer);
+        runSearch(searchEl.value.trim());
+      }
       searchEl.addEventListener("input", () => {
         clearTimeout(timer);
         const q = searchEl.value.trim();
-        timer = setTimeout(async () => {
-          if (!q) { if (active) openBlock(active); return; }
-          active = null; renderNav();
-          try { mainEl.innerHTML = `<div class="pad" id="sr">${await invoke("search", { query: q })}</div>`; }
-          catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
-          mainEl.querySelectorAll('#sr a[href^="/block/"]').forEach((a) => {
-            a.onclick = (ev) => { ev.preventDefault(); openBlock(a.getAttribute("href").slice("/block/".length)); };
-          });
-        }, 200);
+        timer = setTimeout(() => runSearch(q), 200);
       });
 
       document.getElementById("newblock").onclick = newBlock;
       document.getElementById("graphbtn").onclick = showGraph;
+      document.getElementById("tagsbtn").onclick = showTags;
       document.getElementById("status").onclick = showSettings;
       document.getElementById("tabRoots").onclick = () => { if (navScope !== "roots") { navScope = "roots"; loadBlocks(active); } };
       document.getElementById("tabAll").onclick = () => { if (navScope !== "all") { navScope = "all"; loadBlocks(active); } };

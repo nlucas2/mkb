@@ -16,8 +16,13 @@ pub struct Block {
     pub id: BlockId,
     /// Optional human title (from frontmatter `title:`).
     pub title: Option<String>,
-    /// Tags attached to this block (frontmatter `tags:` + inline `#tag`), deduplicated.
+    /// All tags attached to this block (frontmatter `tags:` + inline `#tag`), deduplicated.
+    /// This is the union used for display and search.
     pub tags: Vec<String>,
+    /// The **managed** tags — those declared in frontmatter `tags:`. A subset of `tags`; the
+    /// rest are inline `#hashtag` "mentions" that live in the prose. The tag editor manages
+    /// only this set; inline mentions are changed by editing the body.
+    pub fm_tags: Vec<String>,
     /// Fenced-code languages appearing in the body (for language-filtered search).
     pub langs: Vec<String>,
     /// The Markdown body (everything after frontmatter), verbatim.
@@ -126,6 +131,7 @@ mod tests {
             id: BlockId::generate(),
             title: None,
             tags: vec![],
+            fm_tags: vec![],
             langs: vec![],
             body: body.to_string(),
         }

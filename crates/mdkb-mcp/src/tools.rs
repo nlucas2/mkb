@@ -69,6 +69,11 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
+            name: "list_tags",
+            description: "List all tags in the vault with how many blocks carry each (tag discovery). Use a returned tag with search's `tags` filter to scope a domain.",
+            schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
             name: "backlinks",
             description: "List blocks that reference or transclude a given block id.",
             schema: json!({
@@ -118,6 +123,18 @@ pub fn tool_definitions() -> Vec<ToolDef> {
                 "type": "object",
                 "properties": {"id": {"type": "string"}},
                 "required": ["id"]
+            }),
+        },
+        ToolDef {
+            name: "set_tags",
+            description: "Set a block's managed (frontmatter) tags to exactly the given list (replaces them; pass [] to clear). Inline #hashtags in the body are left untouched. Title and body are preserved.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "The full desired tag set"}
+                },
+                "required": ["id", "tags"]
             }),
         },
         ToolDef {
@@ -204,6 +221,7 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
         "list_blocks" => Request::ListBlocks,
         "list_roots" => Request::ListRoots,
         "graph" => Request::Graph,
+        "list_tags" => Request::ListTags,
         "backlinks" => Request::Backlinks { id: req_id("id")? },
         "links_from" => Request::LinksFrom { id: req_id("id")? },
         "create_block" => Request::CreateBlock {
@@ -216,6 +234,18 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             body: req_s("body")?,
         },
         "delete_block" => Request::DeleteBlock { id: req_id("id")? },
+        "set_tags" => Request::SetTags {
+            id: req_id("id")?,
+            tags: args
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .ok_or_else(|| "missing required argument: tags".to_string())?,
+        },
         "carve_block" => Request::CarveBlock {
             parent_id: req_id("parent_id")?,
             title: s("title"),
@@ -257,6 +287,7 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
         Response::Links(l) => to_json(l),
         Response::Stats(s) => to_json(s),
         Response::Graph(g) => to_json(g),
+        Response::Tags(t) => to_json(t),
     }
 }
 
@@ -288,7 +319,7 @@ mod tests {
         let id = BlockId::generate().to_string();
         let args = json!({
             "query": "q", "id": id, "source_id": id, "target_id": id, "parent_id": id,
-            "title": "T", "body": "b", "embed": true
+            "title": "T", "body": "b", "embed": true, "tags": ["x"]
         });
         for d in tool_definitions() {
             build_request(d.name, &args)
@@ -326,6 +357,31 @@ mod tests {
     fn missing_required_arg_errors() {
         assert!(build_request("get_block", &json!({})).is_err());
         assert!(build_request("create_block", &json!({})).is_err());
+        // set_tags requires a tags array.
+        let id = BlockId::generate().to_string();
+        assert!(build_request("set_tags", &json!({ "id": id })).is_err());
+    }
+
+    #[test]
+    fn set_tags_maps_id_and_tags() {
+        let id = BlockId::generate().to_string();
+        match build_request("set_tags", &json!({ "id": id, "tags": ["a", "b"] })).unwrap() {
+            Request::SetTags { tags, .. } => assert_eq!(tags, vec!["a", "b"]),
+            _ => panic!("expected set_tags"),
+        }
+        // An empty list is valid (clears tags).
+        match build_request("set_tags", &json!({ "id": id, "tags": [] })).unwrap() {
+            Request::SetTags { tags, .. } => assert!(tags.is_empty()),
+            _ => panic!("expected set_tags"),
+        }
+    }
+
+    #[test]
+    fn list_tags_maps() {
+        assert!(matches!(
+            build_request("list_tags", &json!({})).unwrap(),
+            Request::ListTags
+        ));
     }
 
     #[test]

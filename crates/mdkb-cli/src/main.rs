@@ -24,6 +24,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("render") => cmd_render(&args[1..]),
         Some("list") => cmd_list(&args[1..]),
         Some("search") => cmd_search(&args[1..]),
+        Some("tags") => cmd_tags(&args[1..]),
         Some("stats") => cmd_stats(&args[1..]),
         Some("daemon") => cmd_daemon(&args[1..]),
         Some("--version") | Some("-V") => {
@@ -44,6 +45,8 @@ usage:
   mdkb list <vault-dir>                     list root blocks (id  title)
   mdkb search <vault-dir> <query> [flags]   search across the vault (keyword + semantic)
        flags: --lang=<lang> --tag=<tag> (repeatable) --limit=<n>
+       query also accepts inline operators: tag:<t>  #<t>  lang:<l>  code:<l>
+  mdkb tags <vault-dir>                     list all tags with block counts
   mdkb stats <vault-dir>                    index statistics
   mdkb daemon <socket> <subcmd> [args]      talk to a running mdkbd over its socket
        subcmds: ping | stats | list | search <query> | render <id> | rebuild | conflicts
@@ -97,12 +100,17 @@ fn cmd_list(args: &[String]) -> Result<(), String> {
 fn cmd_search(args: &[String]) -> Result<(), String> {
     let dir = args.first().ok_or("missing <vault-dir>")?;
     let query_text = args.get(1).ok_or("missing <query>")?;
-    let mut q = SearchQuery::text(query_text);
+    // The positional query understands the same inline operators as the app/MCP
+    // (tag:, #tag, lang:/code:) via the shared parser; the --tag/--lang flags add to it.
+    let mut q = SearchQuery::parse(query_text);
     for flag in &args[2..] {
         if let Some(l) = flag.strip_prefix("--lang=") {
-            q.lang = Some(l.to_string());
+            q.lang = Some(l.to_lowercase());
         } else if let Some(t) = flag.strip_prefix("--tag=") {
-            q.tags.push(t.to_string());
+            let t = t.to_lowercase();
+            if !q.tags.contains(&t) {
+                q.tags.push(t);
+            }
         } else if let Some(n) = flag.strip_prefix("--limit=") {
             q.limit = n.parse().map_err(|_| format!("bad --limit: {n}"))?;
         } else {
@@ -129,6 +137,19 @@ fn cmd_stats(args: &[String]) -> Result<(), String> {
     println!("blocks:   {}", s.blocks);
     println!("roots:    {}", engine.vault().roots().len());
     println!("embedded: {}", s.embedded);
+    Ok(())
+}
+
+fn cmd_tags(args: &[String]) -> Result<(), String> {
+    let dir = args.first().ok_or("missing <vault-dir>")?;
+    let engine = readonly_engine(dir)?;
+    let tags = engine.index().tag_counts().map_err(|e| e.to_string())?;
+    if tags.is_empty() {
+        println!("(no tags)");
+    }
+    for t in tags {
+        println!("{:>4}  #{}", t.count, t.tag);
+    }
     Ok(())
 }
 

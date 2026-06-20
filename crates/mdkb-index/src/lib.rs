@@ -9,6 +9,7 @@ use std::path::Path;
 
 use mdkb_core::{
     BlockId, BlockRecord, Index, IndexError, IndexStats, LinkKind, LinkRow, SearchHit, SearchQuery,
+    TagCount,
 };
 use rusqlite::{params, params_from_iter, Connection};
 
@@ -364,6 +365,29 @@ impl Index for SqliteIndex {
             roots: 0, // filled in by the Service from the vault
             embedded,
         })
+    }
+
+    fn tag_counts(&self) -> Result<Vec<TagCount>, IndexError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT tag, COUNT(*) AS n FROM block_tags GROUP BY tag \
+                 ORDER BY n DESC, tag ASC",
+            )
+            .map_err(err)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(TagCount {
+                    tag: r.get::<_, String>(0)?,
+                    count: r.get::<_, i64>(1)? as usize,
+                })
+            })
+            .map_err(err)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(err)?);
+        }
+        Ok(out)
     }
 
     fn set_embedding(

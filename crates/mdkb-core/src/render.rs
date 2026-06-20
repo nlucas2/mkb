@@ -30,6 +30,11 @@ pub struct RenderedBlock {
     pub id: BlockId,
     /// Display title.
     pub title: String,
+    /// All tags on this block (frontmatter + inline `#tags`), for display/search.
+    pub tags: Vec<String>,
+    /// The **managed** (frontmatter) tags — the subset the tag editor can add/remove. The rest
+    /// of `tags` are inline `#hashtag` mentions edited in the body.
+    pub fm_tags: Vec<String>,
     /// Original block body, for round-trip editing.
     pub raw: String,
     /// Resolved Markdown for display (references → links, children → embed cards).
@@ -53,6 +58,8 @@ pub fn rendered_block(vault: &Vault, id: &BlockId) -> Option<RenderedBlock> {
     Some(RenderedBlock {
         id: id.clone(),
         title: block.display_title(),
+        tags: block.tags.clone(),
+        fm_tags: block.fm_tags.clone(),
         raw: block.body.clone(),
         rendered: render_body(vault, block, &mut visited),
     })

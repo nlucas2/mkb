@@ -57,6 +57,8 @@ impl AppState {
 struct BlockView {
     id: String,
     title: String,
+    tags: Vec<String>,
+    fm_tags: Vec<String>,
     content: String,
     html: String,
 }
@@ -156,6 +158,8 @@ fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockVi
         html: markdown_to_html(&rb.rendered),
         content: rb.raw,
         title: rb.title,
+        tags: rb.tags,
+        fm_tags: rb.fm_tags,
         id: rb.id.to_string(),
     })
 }
@@ -214,14 +218,13 @@ fn backlinks(state: tauri::State<'_, AppState>, id: String) -> Result<Vec<NavBlo
     Ok(out)
 }
 
-/// Search and return a ready-to-inject HTML fragment.
+/// Search and return a ready-to-inject HTML fragment. The query string supports inline
+/// operators (`tag:`, `#tag`, `lang:`/`code:`) parsed by the shared `SearchQuery::parse` so the
+/// app, CLI and MCP all understand the same syntax.
 #[tauri::command]
 fn search(state: tauri::State<'_, AppState>, query: String) -> Result<String, String> {
     let client = state.connected()?;
-    let q = SearchQuery {
-        text: Some(query.clone()),
-        ..Default::default()
-    };
+    let q = SearchQuery::parse(&query);
     let hits = client.search(q).map_err(|e| e.to_string())?;
     let rows: Vec<ResultRow> = hits
         .into_iter()
@@ -310,6 +313,38 @@ fn link_blocks(
     })
 }
 
+/// Set a block's managed (frontmatter) tags to exactly `tags` (replaces them; empty clears).
+#[tauri::command]
+fn set_tags(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    tags: Vec<String>,
+) -> Result<(), String> {
+    let client = state.connected()?;
+    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
+    client.set_tags(bid, tags).map_err(|e| e.to_string())
+}
+
+/// All tags in the vault with per-tag block counts, for the tag browser.
+#[tauri::command]
+fn list_tags(state: tauri::State<'_, AppState>) -> Result<Vec<TagCountView>, String> {
+    let client = state.connected()?;
+    let tags = client.list_tags().map_err(|e| e.to_string())?;
+    Ok(tags
+        .into_iter()
+        .map(|t| TagCountView {
+            tag: t.tag,
+            count: t.count,
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+struct TagCountView {
+    tag: String,
+    count: usize,
+}
+
 // ----- settings / connection -----
 
 /// The current connection config (for the Settings page).
@@ -338,18 +373,39 @@ fn save_settings(
     }
 }
 
-/// Whether the current client can reach a daemon (for a connection indicator).
+/// Whether the current client can reach a daemon (for a connection indicator). Returns a
+/// friendly `label` (the vault name for a local vault, or the host for a remote) plus the full
+/// `endpoint` for a tooltip.
 #[tauri::command]
 fn connection_status(state: tauri::State<'_, AppState>) -> Result<ConnStatus, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let connected = state.client.lock().map_err(|_| "state poisoned")?.ping();
+    let endpoint = state
+        .client
+        .lock()
+        .map_err(|_| "state poisoned")?
+        .endpoint();
+    let cfg = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
+    let label = match &cfg {
+        ConnectionConfig::Local { vault } => {
+            let name = vault
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| vault.display().to_string());
+            format!("{name} (local)")
+        }
+        ConnectionConfig::Remote { host, .. } => host.clone(),
+    };
     Ok(ConnStatus {
-        endpoint: client.endpoint(),
-        connected: client.ping(),
+        label,
+        endpoint,
+        connected,
     })
 }
 
 #[derive(Serialize)]
 struct ConnStatus {
+    label: String,
     endpoint: String,
     connected: bool,
 }
@@ -397,6 +453,8 @@ pub fn run() {
             carve_selection,
             delete_block,
             link_blocks,
+            set_tags,
+            list_tags,
             get_settings,
             save_settings,
             connection_status,

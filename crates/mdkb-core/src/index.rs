@@ -142,6 +142,55 @@ impl SearchQuery {
         }
     }
 
+    /// Parse a free-text query string with inline operators into a structured [`SearchQuery`].
+    ///
+    /// This is the **single source of truth** for mdkb's search-operator syntax, so every
+    /// surface (the desktop search box, the CLI, an MCP raw query) parses it identically rather
+    /// than re-implementing it. Recognised operators (case-insensitive keys):
+    ///
+    /// - `tag:NAME` or `#NAME` — require the tag `NAME` (repeatable; all required, AND).
+    /// - `lang:NAME` or `code:NAME` — require a fenced code block in language `NAME`.
+    ///
+    /// Everything else becomes the free-text (FTS) part. A leading `#` is treated as a tag only
+    /// when it looks like a tag token (`#word`), so Markdown headings pasted into the box still
+    /// search as text. Returns a query whose `text` is `None` when no free text remains.
+    pub fn parse(input: &str) -> SearchQuery {
+        let mut tags: Vec<String> = Vec::new();
+        let mut lang: Option<String> = None;
+        let mut words: Vec<&str> = Vec::new();
+
+        for token in input.split_whitespace() {
+            if let Some(rest) = strip_ci_prefix(token, "tag:") {
+                push_unique(&mut tags, rest);
+            } else if let Some(rest) = strip_ci_prefix(token, "lang:") {
+                set_lang(&mut lang, rest);
+            } else if let Some(rest) = strip_ci_prefix(token, "code:") {
+                set_lang(&mut lang, rest);
+            } else if let Some(rest) = token.strip_prefix('#') {
+                // `#tag` shorthand — only when it's a real tag token (not a bare `#`).
+                if !rest.is_empty() && rest.chars().all(is_tag_char) {
+                    push_unique(&mut tags, rest);
+                } else {
+                    words.push(token);
+                }
+            } else {
+                words.push(token);
+            }
+        }
+
+        let text = if words.is_empty() {
+            None
+        } else {
+            Some(words.join(" "))
+        };
+        SearchQuery {
+            text,
+            tags,
+            lang,
+            ..Default::default()
+        }
+    }
+
     /// The effective limit (defaulting `0` to 50).
     pub fn effective_limit(&self) -> usize {
         if self.limit == 0 {
@@ -150,6 +199,38 @@ impl SearchQuery {
             self.limit
         }
     }
+}
+
+/// Strip a case-insensitive prefix, returning the remainder when it matched and is non-empty.
+fn strip_ci_prefix<'a>(token: &'a str, prefix: &str) -> Option<&'a str> {
+    if token.len() >= prefix.len() && token[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        let rest = &token[prefix.len()..];
+        if rest.is_empty() {
+            None
+        } else {
+            Some(rest)
+        }
+    } else {
+        None
+    }
+}
+
+fn push_unique(tags: &mut Vec<String>, value: &str) {
+    let v = value.to_lowercase();
+    if !v.is_empty() && !tags.contains(&v) {
+        tags.push(v);
+    }
+}
+
+fn set_lang(lang: &mut Option<String>, value: &str) {
+    if !value.is_empty() {
+        *lang = Some(value.to_lowercase());
+    }
+}
+
+/// Characters allowed in a `#tag` shorthand token.
+fn is_tag_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '-' || c == '_' || c == '/'
 }
 
 /// A single search result.
@@ -172,6 +253,16 @@ pub struct IndexStats {
     pub roots: usize,
     /// Number of blocks with a stored embedding.
     pub embedded: usize,
+}
+
+/// A tag and how many blocks carry it. Used by the tag browser / discovery surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TagCount {
+    /// The tag name.
+    pub tag: String,
+    /// Number of blocks carrying it.
+    pub count: usize,
 }
 
 /// An error from an index operation.
@@ -221,6 +312,10 @@ pub trait Index {
 
     /// Index statistics.
     fn stats(&self) -> Result<IndexStats>;
+
+    /// All tags present in the index with the number of blocks carrying each, for tag
+    /// discovery. Order is unspecified; callers sort as they wish.
+    fn tag_counts(&self) -> Result<Vec<TagCount>>;
 
     /// Store (or replace) the embedding for a block, tagged with the producing `model_id`.
     fn set_embedding(&mut self, _id: &BlockId, _model_id: &str, _vector: &[f32]) -> Result<()> {
@@ -491,6 +586,21 @@ pub mod testing {
             })
         }
 
+        fn tag_counts(&self) -> Result<Vec<TagCount>> {
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            for b in self.blocks.values() {
+                for t in &b.tags {
+                    *counts.entry(t.clone()).or_insert(0) += 1;
+                }
+            }
+            let mut out: Vec<TagCount> = counts
+                .into_iter()
+                .map(|(tag, count)| TagCount { tag, count })
+                .collect();
+            out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(&b.tag)));
+            Ok(out)
+        }
+
         fn set_embedding(&mut self, id: &BlockId, model_id: &str, vector: &[f32]) -> Result<()> {
             self.embeddings
                 .insert(id.clone(), (model_id.to_string(), vector.to_vec()));
@@ -588,5 +698,46 @@ mod tests {
         let fused = reciprocal_rank_fusion(&keyword, &vector, 60.0);
         assert_eq!(fused[0].0, a);
         assert!(fused[0].1 > fused[1].1);
+    }
+
+    #[test]
+    fn parse_plain_text_only() {
+        let q = SearchQuery::parse("ingress timeout");
+        assert_eq!(q.text.as_deref(), Some("ingress timeout"));
+        assert!(q.tags.is_empty());
+        assert_eq!(q.lang, None);
+    }
+
+    #[test]
+    fn parse_extracts_tag_lang_and_text() {
+        let q = SearchQuery::parse("tag:k8s lang:Kusto cluster query");
+        assert_eq!(q.text.as_deref(), Some("cluster query"));
+        assert_eq!(q.tags, vec!["k8s"]);
+        // lang is normalised to lowercase.
+        assert_eq!(q.lang.as_deref(), Some("kusto"));
+    }
+
+    #[test]
+    fn parse_hash_shorthand_and_code_alias() {
+        let q = SearchQuery::parse("#networking code:rust retry");
+        assert_eq!(q.tags, vec!["networking"]);
+        assert_eq!(q.lang.as_deref(), Some("rust"));
+        assert_eq!(q.text.as_deref(), Some("retry"));
+    }
+
+    #[test]
+    fn parse_dedupes_tags_and_handles_no_free_text() {
+        let q = SearchQuery::parse("tag:k8s #K8S tag:net");
+        assert_eq!(q.tags, vec!["k8s", "net"]);
+        assert_eq!(q.text, None);
+    }
+
+    #[test]
+    fn parse_bare_hash_and_empty_operator_stay_text() {
+        // A lone `#` or `tag:` with no value is not an operator — keep it as text.
+        let q = SearchQuery::parse("# tag: heading");
+        assert_eq!(q.tags, Vec::<String>::new());
+        assert_eq!(q.lang, None);
+        assert_eq!(q.text.as_deref(), Some("# tag: heading"));
     }
 }

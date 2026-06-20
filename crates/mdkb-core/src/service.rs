@@ -13,7 +13,7 @@
 use crate::id::BlockId;
 use crate::index::{
     block_links, link_graph, transclusion_reaches, BlockRecord, GraphData, Index, IndexError,
-    IndexStats, LinkOutcome, LinkRow, SearchHit, SearchQuery,
+    IndexStats, LinkOutcome, LinkRow, SearchHit, SearchQuery, TagCount,
 };
 use crate::render::{render_block, rendered_block, RenderedBlock};
 use crate::sync::{SyncEngine, SyncReport};
@@ -209,6 +209,12 @@ impl<I: Index> Service<I> {
         Ok(link_graph(self.engine.vault()))
     }
 
+    /// All tags in the vault with the number of blocks carrying each (for tag discovery).
+    pub fn list_tags(&self, ctx: &RequestContext) -> Result<Vec<TagCount>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        self.engine.index().tag_counts()
+    }
+
     /// All link rows in the vault that are dangling (unresolved target) — for the health view.
     pub fn dangling_links(&self, ctx: &RequestContext) -> Result<Vec<LinkRow>, IndexError> {
         ctx.authorize(Capability::Read)?;
@@ -247,6 +253,18 @@ impl<I: Index> Service<I> {
     ) -> Result<(), IndexError> {
         ctx.authorize(Capability::Write)?;
         self.engine.update_block(id, title, body)
+    }
+
+    /// Set a block's managed (frontmatter) `tags:` to exactly `tags`. Inline `#hashtag`
+    /// mentions in the body are untouched; the title and body are preserved.
+    pub fn set_tags(
+        &mut self,
+        ctx: &RequestContext,
+        id: &BlockId,
+        tags: &[String],
+    ) -> Result<(), IndexError> {
+        ctx.authorize(Capability::Write)?;
+        self.engine.set_tags(id, tags)
     }
 
     /// Delete a block (file + index).

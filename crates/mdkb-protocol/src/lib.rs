@@ -17,7 +17,7 @@ pub use paths::DaemonPaths;
 
 use mdkb_core::{
     BlockId, BlockRecord, GraphData, Index, IndexStats, LinkOutcome, LinkRow, RenderedBlock,
-    RequestContext, SearchHit, SearchQuery, Service,
+    RequestContext, SearchHit, SearchQuery, Service, TagCount,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,8 @@ pub enum Request {
     ListRoots,
     /// The block-level knowledge graph.
     Graph,
+    /// All tags with per-tag block counts (tag discovery).
+    ListTags,
     /// Search (keyword + semantic).
     Search {
         /// The query.
@@ -93,6 +95,13 @@ pub enum Request {
         /// Block id.
         id: BlockId,
     },
+    /// Set a block's managed (frontmatter) tags to exactly this set.
+    SetTags {
+        /// Block id.
+        id: BlockId,
+        /// The full desired tag set (replaces existing frontmatter tags).
+        tags: Vec<String>,
+    },
     /// Carve a new child block out of an existing block. Returns the new child id.
     CarveBlock {
         /// Parent block id.
@@ -148,6 +157,8 @@ pub enum Response {
     Names(Vec<String>),
     /// The block-level knowledge graph.
     Graph(GraphData),
+    /// Tags with per-tag block counts.
+    Tags(Vec<TagCount>),
     /// Search results.
     Hits(Vec<SearchHit>),
     /// A single (optional) block record.
@@ -205,6 +216,7 @@ fn handle<I: Index>(
         Request::ListBlocks => Response::Ids(service.list_blocks(ctx).map_err(to_str)?),
         Request::ListRoots => Response::Ids(service.list_roots(ctx).map_err(to_str)?),
         Request::Graph => Response::Graph(service.graph(ctx).map_err(to_str)?),
+        Request::ListTags => Response::Tags(service.list_tags(ctx).map_err(to_str)?),
         Request::Search { query } => Response::Hits(service.search(ctx, query).map_err(to_str)?),
         Request::GetBlock { id } => Response::Block(service.get_block(ctx, &id).map_err(to_str)?),
         Request::GetBlockSource { id } => {
@@ -232,6 +244,10 @@ fn handle<I: Index>(
         }
         Request::DeleteBlock { id } => {
             service.delete_block(ctx, &id).map_err(to_str)?;
+            Response::Ok
+        }
+        Request::SetTags { id, tags } => {
+            service.set_tags(ctx, &id, &tags).map_err(to_str)?;
             Response::Ok
         }
         Request::CarveBlock {
@@ -439,6 +455,22 @@ impl Client {
     pub fn stats(&self) -> io::Result<IndexStats> {
         match self.call(&Request::Stats)? {
             Response::Stats(s) => Ok(s),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: all tags with per-tag block counts.
+    pub fn list_tags(&self) -> io::Result<Vec<TagCount>> {
+        match self.call(&Request::ListTags)? {
+            Response::Tags(t) => Ok(t),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: set a block's managed (frontmatter) tags to exactly `tags`.
+    pub fn set_tags(&self, id: BlockId, tags: Vec<String>) -> io::Result<()> {
+        match self.call(&Request::SetTags { id, tags })? {
+            Response::Ok => Ok(()),
             other => Err(unexpected(other)),
         }
     }

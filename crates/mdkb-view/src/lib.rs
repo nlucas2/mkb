@@ -131,10 +131,17 @@ pub fn search_results_html(query: &str, rows: &[ResultRow]) -> String {
         let crumb = if r.tags.is_empty() {
             String::new()
         } else {
-            format!(
-                "<span class=\"crumb\">{}</span>",
-                escape_html(&r.tags.join(" · "))
-            )
+            let chips: String = r
+                .tags
+                .iter()
+                .map(|t| {
+                    format!(
+                        "<span class=\"tag\" data-tag=\"{0}\">#{0}</span>",
+                        escape_html(t)
+                    )
+                })
+                .collect();
+            format!("<span class=\"crumb\">{chips}</span>")
         };
         out.push_str(&format!(
             "<li><a href=\"/block/{}\">{}</a>{}<div class=\"preview\">{}</div></li>",
@@ -211,6 +218,7 @@ pre code { background:none; padding:0; }
 blockquote { border-left:3px solid var(--accent); margin:0; padding-left:1rem; color:var(--muted); }
 table { border-collapse:collapse; } th,td { border:1px solid var(--border); padding:.4rem .6rem; }
 .muted { color:var(--muted); } .crumb { color:var(--muted); margin-left:.5rem; font-size:.85em; }
+.tag { font-size:.85em; color:var(--accent); background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:.02rem .45rem; margin-left:.3rem; text-decoration:none; }
 .results { list-style:none; padding:0; } .results li { padding:.6rem 0; border-bottom:1px solid var(--border); }
 .preview { color:var(--muted); font-size:.9em; margin-top:.2rem; }
 "#;
@@ -339,7 +347,8 @@ mod tests {
         let html = search_results_html("q", &rows);
         assert!(html.contains("href=\"/block/x\""));
         assert!(html.contains("&lt;dangerous&gt;"));
-        assert!(html.contains("top"));
+        // Tags render as clickable chips carrying the tag name.
+        assert!(html.contains("<span class=\"tag\" data-tag=\"top\">#top</span>"));
     }
 
     #[test]

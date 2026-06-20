@@ -199,10 +199,10 @@ impl<I: Index> SyncEngine<I> {
     // ---------- writes ----------
 
     /// Create a new block from `body` (+ optional title), writing `blocks/<ulid>.md`. Returns
-    /// the new block id.
+    /// the new block id. Frontmatter tags start empty; inline `#tags` in the body still apply.
     pub fn create_block(&mut self, title: Option<&str>, body: &str) -> Result<BlockId, IndexError> {
         let id = BlockId::generate();
-        let source = write_block(title, body);
+        let source = write_block(title, &[], body);
         self.write_file(&id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -211,17 +211,47 @@ impl<I: Index> SyncEngine<I> {
         Ok(id)
     }
 
-    /// Overwrite a block's body (+ optional title), persisting to its file.
+    /// Overwrite a block's body (+ optional title), persisting to its file. The block's managed
+    /// frontmatter `tags:` are **preserved** across the edit (tags are changed via
+    /// [`SyncEngine::set_tags`], not by body edits — so editing prose never drops tags).
     pub fn update_block(
         &mut self,
         id: &BlockId,
         title: Option<&str>,
         body: &str,
     ) -> Result<(), IndexError> {
-        if self.vault.block(id).is_none() {
-            return Err(IndexError::new(format!("unknown block: {id}")));
+        let existing = self
+            .vault
+            .block(id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
+        let fm_tags = existing.fm_tags.clone();
+        let source = write_block(title, &fm_tags, body);
+        self.write_file(id, &source)?;
+        self.ingest(id.clone(), &source)?;
+        self.hashes
+            .insert(id.clone(), hash_bytes(source.as_bytes()));
+        self.refresh_links()?;
+        Ok(())
+    }
+
+    /// Set a block's **managed** (frontmatter) tags to exactly `tags`, preserving its title and
+    /// body. Inline `#hashtag` mentions in the body are untouched. Tag names are trimmed and
+    /// de-duplicated (case-insensitive), preserving first-seen order.
+    pub fn set_tags(&mut self, id: &BlockId, tags: &[String]) -> Result<(), IndexError> {
+        let existing = self
+            .vault
+            .block(id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
+        let title = existing.title.clone();
+        let body = existing.body.clone();
+        let mut clean: Vec<String> = Vec::new();
+        for t in tags {
+            let t = t.trim();
+            if !t.is_empty() && !clean.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                clean.push(t.to_string());
+            }
         }
-        let source = write_block(title, body);
+        let source = write_block(title.as_deref(), &clean, &body);
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -350,5 +380,41 @@ mod tests {
         e.delete_block(&id).unwrap();
         assert!(!dir.path().join(format!("blocks/{id}.md")).exists());
         assert_eq!(e.index().stats().unwrap().blocks, 0);
+    }
+
+    #[test]
+    fn set_tags_persists_and_body_edits_preserve_them() {
+        let (dir, mut e) = engine();
+        let id = e.create_block(Some("Note"), "body\n").unwrap();
+        // Set managed tags.
+        e.set_tags(&id, &["k8s".to_string(), "ops".to_string()])
+            .unwrap();
+        let on_disk = std::fs::read_to_string(dir.path().join(format!("blocks/{id}.md"))).unwrap();
+        assert!(on_disk.contains("tags: [k8s, ops]"), "got:\n{on_disk}");
+        assert_eq!(e.vault().block(&id).unwrap().fm_tags, vec!["k8s", "ops"]);
+
+        // A plain body edit must NOT drop the managed tags (the historical bug).
+        e.update_block(&id, Some("Note"), "edited body\n").unwrap();
+        let after = std::fs::read_to_string(dir.path().join(format!("blocks/{id}.md"))).unwrap();
+        assert!(after.contains("tags: [k8s, ops]"), "tags dropped:\n{after}");
+        assert_eq!(e.vault().block(&id).unwrap().fm_tags, vec!["k8s", "ops"]);
+        assert_eq!(e.vault().block(&id).unwrap().body, "edited body\n");
+    }
+
+    #[test]
+    fn set_tags_dedupes_and_can_clear() {
+        let (dir, mut e) = engine();
+        let id = e.create_block(None, "b\n").unwrap();
+        e.set_tags(&id, &["a".into(), "A".into(), "b".into()])
+            .unwrap();
+        assert_eq!(e.vault().block(&id).unwrap().fm_tags, vec!["a", "b"]);
+        // Clearing removes the frontmatter entirely (pure body again).
+        e.set_tags(&id, &[]).unwrap();
+        assert!(e.vault().block(&id).unwrap().fm_tags.is_empty());
+        let on_disk = std::fs::read_to_string(dir.path().join(format!("blocks/{id}.md"))).unwrap();
+        assert!(
+            !on_disk.contains("tags:"),
+            "tags should be gone:\n{on_disk}"
+        );
     }
 }

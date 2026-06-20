@@ -22,6 +22,9 @@ pub fn parse_block(id: BlockId, source: &str) -> Block {
         title = parse_title(fm);
         tags = parse_fm_tags(fm);
     }
+    // The frontmatter tags are the managed set; inline #tags are prose mentions merged into the
+    // searchable union but not managed by the tag editor.
+    let fm_tags = tags.clone();
     // Inline #tags from the body, appended (deduped) after frontmatter tags.
     for t in inline_tags(body) {
         if !tags.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
@@ -37,19 +40,38 @@ pub fn parse_block(id: BlockId, source: &str) -> Block {
         id,
         title,
         tags,
+        fm_tags,
         langs,
         body: body.to_string(),
     }
 }
 
-/// Serialize a [`Block`]'s metadata + body back into file text. Frontmatter is emitted only
-/// when there is metadata mdkb manages (a title and/or frontmatter-worthy data); inline tags
-/// live in the body and are not re-emitted as frontmatter.
-pub fn write_block(title: Option<&str>, body: &str) -> String {
-    match title.map(str::trim).filter(|t| !t.is_empty()) {
-        Some(t) => format!("---\ntitle: {t}\n---\n\n{}", body.trim_start_matches('\n')),
-        None => body.to_string(),
+/// Serialize a block's managed metadata + body back into file text. Frontmatter is emitted only
+/// when there is metadata mdkb manages: a `title:` and/or `tags:`. Inline `#hashtag` mentions
+/// live in the body and are not re-emitted as frontmatter (they round-trip as prose). `tags`
+/// are the managed (frontmatter) tags; pass an empty slice for none.
+pub fn write_block(title: Option<&str>, tags: &[String], body: &str) -> String {
+    let title = title.map(str::trim).filter(|t| !t.is_empty());
+    let clean_tags: Vec<&str> = tags
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    if title.is_none() && clean_tags.is_empty() {
+        return body.to_string();
     }
+
+    let mut fm = String::from("---\n");
+    if let Some(t) = title {
+        fm.push_str(&format!("title: {t}\n"));
+    }
+    if !clean_tags.is_empty() {
+        fm.push_str(&format!("tags: [{}]\n", clean_tags.join(", ")));
+    }
+    fm.push_str("---\n\n");
+    fm.push_str(body.trim_start_matches('\n'));
+    fm
 }
 
 /// Split leading YAML frontmatter (`---` … `---`) from the body. Returns `(frontmatter, body)`
@@ -246,14 +268,34 @@ mod tests {
 
     #[test]
     fn write_block_round_trips_through_parse() {
-        let text = write_block(Some("My Title"), "the body\n");
+        let text = write_block(Some("My Title"), &[], "the body\n");
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.title.as_deref(), Some("My Title"));
         assert_eq!(b.body, "the body\n");
     }
 
     #[test]
-    fn write_block_without_title_is_pure_body() {
-        assert_eq!(write_block(None, "hello\n"), "hello\n");
+    fn write_block_without_title_or_tags_is_pure_body() {
+        assert_eq!(write_block(None, &[], "hello\n"), "hello\n");
+    }
+
+    #[test]
+    fn write_block_round_trips_frontmatter_tags() {
+        let tags = vec!["k8s".to_string(), "ops".to_string()];
+        let text = write_block(Some("Deploy"), &tags, "body\n");
+        assert!(text.contains("tags: [k8s, ops]"));
+        let b = parse_block(BlockId::generate(), &text);
+        assert_eq!(b.fm_tags, vec!["k8s", "ops"]);
+        assert_eq!(b.tags, vec!["k8s", "ops"]);
+        assert_eq!(b.title.as_deref(), Some("Deploy"));
+    }
+
+    #[test]
+    fn write_block_emits_tags_without_title() {
+        let tags = vec!["solo".to_string()];
+        let text = write_block(None, &tags, "body\n");
+        let b = parse_block(BlockId::generate(), &text);
+        assert_eq!(b.fm_tags, vec!["solo"]);
+        assert_eq!(b.title, None);
     }
 }

@@ -29,7 +29,7 @@ pub use id::{BlockId, IdCodec, IdError, MarkerMatch, NativeIdCodec};
 pub use index::{
     block_links, link_graph, reciprocal_rank_fusion, transclusion_reaches, BlockRecord, GraphData,
     GraphEdge, GraphNode, Index, IndexError, IndexStats, LinkKind, LinkOutcome, LinkRow, SearchHit,
-    SearchQuery,
+    SearchQuery, TagCount,
 };
 pub use link::{extract_references, Reference};
 pub use render::{render_block, rendered_block, RenderedBlock};
