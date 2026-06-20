@@ -45,6 +45,11 @@ Only embeds expand at render time, so only embeds can form a cycle. An embed tha
 create a transclusion cycle is **auto-downgraded to a reference**; references are never
 restricted.
 
+A target may be a **ULID or a block title** (titles resolve case-insensitively). Prefer the
+**ULID** you get back from `create`/`search`: it is stable across title edits and never ambiguous.
+A title is fine for hand-authoring, but it can drift or collide, so don't rely on it for a durable
+link.
+
 ## Search - hybrid + operators
 
 Search fuses keyword (bm25) and vector ranking, so prefer a **natural phrase**

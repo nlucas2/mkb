@@ -573,7 +573,7 @@
           (items.length ? items.map((b, i) =>
             `<div class="opt ${i===sel?"sel":""}" data-i="${i}">${esc(b.title || "(untitled)")} <small>${b.id.slice(0,8)}</small></div>`
           ).join("") : `<div class="opt muted">No match — Enter to create “${esc(picker.query)}”</div>`) +
-          `<div class="mk">Enter inserts; an empty match creates a new block with this title.</div>`;
+          `<div class="mk">Enter inserts the block's stable id; an empty match creates a new block. Tip: a <code>[[title]]</code> you type by hand resolves too.</div>`;
         el.querySelectorAll(".opt[data-i]").forEach((o) =>
           (o.onmousedown = (ev) => { ev.preventDefault(); picker.sel = +o.dataset.i; choosePicker(false); }));
       }

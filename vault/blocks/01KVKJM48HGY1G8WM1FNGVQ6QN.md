@@ -14,7 +14,9 @@ the content inside a block*; it carries **no structural meaning**.
 > that nothing embeds is a top-level entry. Promoting a chunk to its own page is the same
 > operation as carving out a sub-block — they are identical.
 
-Each block is one file `blocks/<ULID>.md`: the ULID filename **is** the identity (rename the
-title or move the file freely — references resolve by ULID, never by path or title). The exact
-on-disk format — frontmatter, the `![[child]]` / `[[reference]]` directives — is specified in
-[`SPEC.md`](./SPEC.md).
+Each block is one file `blocks/<ULID>.md`: the ULID filename **is** the identity. A `![[ULID]]` /
+`[[ULID]]` reference resolves by that stable id, so it never breaks — rename the title or move the
+file freely. Targets may also be written as a block **title** (resolved case-insensitively) for
+convenience, but a title is not identity, so prefer the ULID when a link must survive renames or
+when titles could collide. The exact on-disk format — frontmatter, the `![[child]]` /
+`[[reference]]` directives — is specified in [`SPEC.md`](./SPEC.md).
