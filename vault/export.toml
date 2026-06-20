@@ -19,3 +19,8 @@ block = "MCP skill page"
 [[doc]]
 path  = "docs/SPEC.md"
 block = "SPEC page"
+
+# Contributor/agent working rules.
+[[doc]]
+path  = "AGENTS.md"
+block = "AGENTS page"
