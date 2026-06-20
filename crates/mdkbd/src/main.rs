@@ -107,7 +107,7 @@ fn run() -> Result<(), String> {
         token: cfg.token.clone().unwrap_or_default(),
     });
 
-    // Serve requests until interrupted.
-    server::serve(cfg.socket(), net, shared).map_err(|e| e.to_string())?;
+    // Serve requests until interrupted (or, when armed, until idle self-shutdown).
+    server::serve(cfg.socket(), net, shared, cfg.idle_timeout).map_err(|e| e.to_string())?;
     Ok(())
 }

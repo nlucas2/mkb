@@ -20,6 +20,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Client, DaemonPaths};
 
+/// How long a **client‑auto‑started** daemon may sit with no requests before it self‑reaps.
+/// Only applied to daemons we spawn here; a daemon a user runs manually (or the remote/k3s
+/// deployment) gets no `--idle-timeout` and runs forever. 15 minutes keeps a vault warm across
+/// normal pauses while ensuring an unused vault's daemon (and its embedder RAM) is reclaimed.
+const AUTOSTART_IDLE_SECS: u64 = 900;
+
 /// Where a client should connect, persisted in the client's config file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -173,6 +179,10 @@ fn spawn_detached(paths: &DaemonPaths, mdkbd_path: Option<&Path>) -> Result<(), 
         .arg(&paths.socket)
         .arg("--db")
         .arg(&paths.db)
+        // Auto-started daemons self-reap when idle so an unused vault doesn't leak a process
+        // (and its embedder RAM). A manually-run daemon omits this and runs forever.
+        .arg("--idle-timeout")
+        .arg(AUTOSTART_IDLE_SECS.to_string())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(log_err));

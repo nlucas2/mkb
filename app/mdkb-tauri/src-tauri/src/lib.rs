@@ -7,7 +7,7 @@
 //! and reached over the wire. This file is connection management + command glue only.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use mdkb_core::{BlockId, GraphData, SearchQuery};
 use mdkb_protocol::{connect, Client, ConnectionConfig, DaemonPaths};
@@ -15,9 +15,39 @@ use mdkb_view::{block_title, markdown_to_html, search_results_html, ResultRow};
 use serde::Serialize;
 use tauri::Manager;
 
-/// Shared application state: the (reconnectable) connection to the daemon.
+/// Shared application state: the (reconnectable) connection to the daemon, plus what's needed
+/// to transparently re-establish it. A local daemon may self-reap when idle (or crash), so the
+/// app must be able to respawn it on the next interaction rather than going dead.
 struct AppState {
     client: Mutex<Client>,
+    /// The active connection config (local vault or remote), so we can reconnect.
+    cfg: Mutex<ConnectionConfig>,
+    /// Path to the bundled `mdkbd` (for local-mode auto-start), resolved once at startup.
+    mdkbd: Option<PathBuf>,
+}
+
+impl AppState {
+    /// A live client, transparently reconnecting if the current connection is dead.
+    ///
+    /// Local daemons self-reap after an idle period (and can crash); when that happens the next
+    /// command would otherwise fail. We ping first and, if unreachable, re-resolve the client —
+    /// which for a local vault respawns a detached daemon (`connect`/`ensure_daemon`) — so an
+    /// idled-out daemon is invisible to the user beyond a brief cold-start on the next action.
+    fn connected(&self) -> Result<MutexGuard<'_, Client>, String> {
+        let mut guard = self.client.lock().map_err(|_| "state poisoned")?;
+        if guard.ping() {
+            return Ok(guard);
+        }
+        let cfg = self.cfg.lock().map_err(|_| "state poisoned")?.clone();
+        match connect(&cfg, self.mdkbd.as_deref()) {
+            Ok(fresh) => {
+                eprintln!("mdkb: reconnected ({})", fresh.endpoint());
+                *guard = fresh;
+            }
+            Err(e) => eprintln!("mdkb: reconnect failed: {e}"),
+        }
+        Ok(guard)
+    }
 }
 
 /// A block prepared for the front-end: stable id, display title, raw Markdown (for editing),
@@ -76,7 +106,7 @@ struct NavBlock {
 
 #[tauri::command]
 fn list_blocks(state: tauri::State<'_, AppState>) -> Result<Vec<NavBlock>, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let roots = client.list_roots().map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for id in roots {
@@ -97,7 +127,7 @@ fn list_blocks(state: tauri::State<'_, AppState>) -> Result<Vec<NavBlock>, Strin
 /// (an empty query returns all block records), so there is no second listing path.
 #[tauri::command]
 fn block_index(state: tauri::State<'_, AppState>) -> Result<Vec<NavBlock>, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let all = client
         .search(SearchQuery {
             limit: 10_000,
@@ -116,7 +146,7 @@ fn block_index(state: tauri::State<'_, AppState>) -> Result<Vec<NavBlock>, Strin
 /// Render a block to HTML (children resolved by the daemon, Markdown→HTML by mdkb-view).
 #[tauri::command]
 fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockView, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
     let rb = client
         .rendered_block(bid)
@@ -133,7 +163,7 @@ fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockVi
 /// Raw Markdown body of a block (for the editor).
 #[tauri::command]
 fn block_source(state: tauri::State<'_, AppState>, id: String) -> Result<String, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
     Ok(client
         .get_block_source(bid)
@@ -144,7 +174,7 @@ fn block_source(state: tauri::State<'_, AppState>, id: String) -> Result<String,
 /// The block's title (if any).
 #[tauri::command]
 fn block_title_of(state: tauri::State<'_, AppState>, id: String) -> Result<Option<String>, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
     Ok(client
         .get_block(bid)
@@ -155,14 +185,14 @@ fn block_title_of(state: tauri::State<'_, AppState>, id: String) -> Result<Optio
 /// The whole block-level knowledge graph.
 #[tauri::command]
 fn graph(state: tauri::State<'_, AppState>) -> Result<GraphData, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     client.graph().map_err(|e| e.to_string())
 }
 
 /// Backlinks (blocks that reference or transclude `id`), as nav blocks.
 #[tauri::command]
 fn backlinks(state: tauri::State<'_, AppState>, id: String) -> Result<Vec<NavBlock>, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
     let rows = client.backlinks(bid).map_err(|e| e.to_string())?;
     let mut seen = std::collections::HashSet::new();
@@ -187,7 +217,7 @@ fn backlinks(state: tauri::State<'_, AppState>, id: String) -> Result<Vec<NavBlo
 /// Search and return a ready-to-inject HTML fragment.
 #[tauri::command]
 fn search(state: tauri::State<'_, AppState>, query: String) -> Result<String, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let q = SearchQuery {
         text: Some(query.clone()),
         ..Default::default()
@@ -215,7 +245,7 @@ fn save_block(
     title: Option<String>,
     body: String,
 ) -> Result<(), String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
     client
         .update_block(bid, title.as_deref(), &body)
@@ -229,7 +259,7 @@ fn create_block(
     title: Option<String>,
     body: String,
 ) -> Result<String, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     client
         .create_block(title.as_deref(), &body)
         .map(|id| id.to_string())
@@ -245,7 +275,7 @@ fn carve_selection(
     start: usize,
     end: usize,
 ) -> Result<String, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let pid = BlockId::parse(&parent_id).map_err(|e| e.to_string())?;
     client
         .carve_selection(pid, start, end)
@@ -256,7 +286,7 @@ fn carve_selection(
 /// Delete a block.
 #[tauri::command]
 fn delete_block(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
     client.delete_block(bid).map_err(|e| e.to_string())
 }
@@ -269,7 +299,7 @@ fn link_blocks(
     target_id: String,
     embed: bool,
 ) -> Result<String, String> {
-    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    let client = state.connected()?;
     let s = BlockId::parse(&source_id).map_err(|e| e.to_string())?;
     let t = BlockId::parse(&target_id).map_err(|e| e.to_string())?;
     let outcome = client.link(s, t, embed).map_err(|e| e.to_string())?;
@@ -299,6 +329,8 @@ fn save_settings(
     let client = resolve_client(&app, &config);
     let ok = client.ping();
     *state.client.lock().map_err(|_| "state poisoned")? = client;
+    // Keep the stored config in sync so later auto-reconnects target the new vault/host.
+    *state.cfg.lock().map_err(|_| "state poisoned")? = config;
     if ok {
         Ok(())
     } else {
@@ -342,9 +374,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let cfg = current_config();
+            let mdkbd = bundled_mdkbd(app.handle());
             let client = resolve_client(app.handle(), &cfg);
             app.manage(AppState {
                 client: Mutex::new(client),
+                cfg: Mutex::new(cfg),
+                mdkbd,
             });
             Ok(())
         })

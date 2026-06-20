@@ -190,6 +190,11 @@ source of truth; on any doubt, rebuild from files.
   for its lifetime (released by the OS on exit, so it can't go stale). A second daemon for the
   same vault refuses to start. This holds even if the socket file is deleted out from under a
   running daemon, so a vault can never have two concurrent writers/watchers.
+- **Idle self-shutdown (no leaked daemons).** A client-auto-started daemon self-reaps after an
+  idle period (`--idle-timeout`, default 15 min) so an unused vault doesn't leave a process (and
+  its embedder RAM) resident; any request defers it. Manually-run and remote daemons run forever.
+  Clients self-heal — the next interaction respawns an idled-out/crashed local daemon — so this
+  is invisible beyond a brief cold start.
 - **Presentation is shared** via `mdkb-view` (Markdown→HTML, wikilink/embed decoration, XSS
   neutralization). The web UI and desktop UI render through the exact same path.
 

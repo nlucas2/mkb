@@ -16,6 +16,10 @@ pub struct Config {
     pub listen: Option<String>,
     /// Shared token for network auth (required when `listen` is set).
     pub token: Option<String>,
+    /// Self-shutdown after this long with no requests. `None` = run forever (the default for
+    /// a manually-run or remote daemon). Clients that auto-start a daemon pass a value so an
+    /// unused vault's daemon reaps itself instead of leaking.
+    pub idle_timeout: Option<std::time::Duration>,
     /// Whether `--help` was requested.
     pub help: bool,
 }
@@ -27,7 +31,7 @@ impl Config {
 mdkbd — mdkb headless daemon
 
 usage:
-  mdkbd [--vault <dir>] [--db <path>] [--socket <path>] [--listen <addr>] [--token <tok>]
+  mdkbd [--vault <dir>] [--db <path>] [--socket <path>] [--listen <addr>] [--token <tok>] [--idle-timeout <secs>]
 
 options:
   --vault <dir>     vault directory (default: $MDKB_VAULT or ~/mdkb-vault)
@@ -35,6 +39,7 @@ options:
   --socket <path>   local socket: Unix socket / Windows named pipe (default: <vault>/.mdkb/mdkbd.sock)
   --listen <addr>   ALSO serve over TCP at <addr> (e.g. 0.0.0.0:7820); requires a token
   --token <tok>     shared token network clients must present ($MDKB_TOKEN also accepted)
+  --idle-timeout <secs>  self-shutdown after <secs> with no requests (0 = never; default: never)
   --help            show this help
 
 The index and socket directory (<vault>/.mdkb) is local-only and must be excluded
@@ -66,6 +71,7 @@ are rejected. The Unix socket remains local-only and trusted."
         let mut socket: Option<PathBuf> = None;
         let mut listen: Option<String> = None;
         let mut token: Option<String> = std::env::var("MDKB_TOKEN").ok().filter(|s| !s.is_empty());
+        let mut idle_secs: Option<u64> = None;
         let mut help = false;
 
         let mut it = args.peekable();
@@ -77,6 +83,9 @@ are rejected. The Unix socket remains local-only and trusted."
                 "--socket" => socket = Some(require_value(&mut it, "--socket")?.into()),
                 "--listen" => listen = Some(require_value(&mut it, "--listen")?),
                 "--token" => token = Some(require_value(&mut it, "--token")?),
+                "--idle-timeout" => {
+                    idle_secs = Some(parse_secs(&require_value(&mut it, "--idle-timeout")?)?)
+                }
                 other => {
                     if let Some(v) = other.strip_prefix("--vault=") {
                         vault = Some(v.into());
@@ -88,6 +97,8 @@ are rejected. The Unix socket remains local-only and trusted."
                         listen = Some(v.into());
                     } else if let Some(v) = other.strip_prefix("--token=") {
                         token = Some(v.into());
+                    } else if let Some(v) = other.strip_prefix("--idle-timeout=") {
+                        idle_secs = Some(parse_secs(v)?);
                     } else {
                         return Err(format!("unknown argument: {other}"));
                     }
@@ -116,6 +127,9 @@ are rejected. The Unix socket remains local-only and trusted."
             paths,
             listen,
             token,
+            idle_timeout: idle_secs
+                .filter(|s| *s > 0)
+                .map(std::time::Duration::from_secs),
             help,
         })
     }
@@ -138,6 +152,12 @@ fn require_value(
     flag: &str,
 ) -> Result<String, String> {
     it.next().ok_or_else(|| format!("{flag} requires a value"))
+}
+
+fn parse_secs(s: &str) -> Result<u64, String> {
+    s.trim()
+        .parse::<u64>()
+        .map_err(|_| format!("--idle-timeout expects a whole number of seconds, got {s:?}"))
 }
 
 #[cfg(test)]
@@ -170,6 +190,39 @@ mod tests {
     #[test]
     fn unknown_arg_errors() {
         assert!(Config::from_args(["--nope".into()].into_iter()).is_err());
+    }
+
+    #[test]
+    fn idle_timeout_parses_and_zero_means_never() {
+        // Absent → never.
+        let cfg = Config::from_args(["--vault=/tmp/v".into()].into_iter()).unwrap();
+        assert_eq!(cfg.idle_timeout, None);
+        // A positive value → Some(Duration).
+        let cfg = Config::from_args(
+            [
+                "--vault=/tmp/v".into(),
+                "--idle-timeout".into(),
+                "900".into(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(cfg.idle_timeout, Some(std::time::Duration::from_secs(900)));
+        // `=` form works too.
+        let cfg =
+            Config::from_args(["--vault=/tmp/v".into(), "--idle-timeout=30".into()].into_iter())
+                .unwrap();
+        assert_eq!(cfg.idle_timeout, Some(std::time::Duration::from_secs(30)));
+        // Zero disables it (treated as never).
+        let cfg =
+            Config::from_args(["--vault=/tmp/v".into(), "--idle-timeout=0".into()].into_iter())
+                .unwrap();
+        assert_eq!(cfg.idle_timeout, None);
+        // Non-numeric is an error.
+        assert!(Config::from_args(
+            ["--vault=/tmp/v".into(), "--idle-timeout=soon".into()].into_iter()
+        )
+        .is_err());
     }
 
     #[test]

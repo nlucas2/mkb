@@ -16,9 +16,11 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mdkb_core::RequestContext;
 use mdkb_protocol::{decode_request, dispatch, encode_response, transport, Request, Response};
@@ -33,6 +35,72 @@ const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
 /// is trusted and left without a timeout.
 const TCP_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Tracks the time of the most recent request so an idle daemon can reap itself.
+///
+/// Shared (via `Arc`) between every connection handler and the idle watchdog. A monotonic
+/// millisecond clock (ms since process start) is good enough — we only compare elapsed time.
+#[derive(Clone)]
+pub struct Activity {
+    last_ms: Arc<AtomicU64>,
+    epoch: Instant,
+}
+
+impl Activity {
+    /// Create an activity tracker, marking "now" as the last activity.
+    pub fn new() -> Self {
+        let me = Activity {
+            last_ms: Arc::new(AtomicU64::new(0)),
+            epoch: Instant::now(),
+        };
+        me.touch();
+        me
+    }
+
+    /// Record that a request just happened.
+    pub fn touch(&self) {
+        let ms = self.epoch.elapsed().as_millis() as u64;
+        self.last_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// How long since the last recorded activity.
+    pub fn idle_for(&self) -> Duration {
+        let now = self.epoch.elapsed().as_millis() as u64;
+        let last = self.last_ms.load(Ordering::Relaxed);
+        Duration::from_millis(now.saturating_sub(last))
+    }
+}
+
+impl Default for Activity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Watch for inactivity and self-terminate once the daemon has been idle for `timeout`.
+///
+/// Only armed when a client auto-starts the daemon (it passes `--idle-timeout`); a manually-run
+/// or remote daemon never gets one and runs forever. On reap we remove the socket file (so the
+/// next client cold-starts cleanly) and exit; the OS releases the vault lock on exit.
+fn spawn_idle_watchdog(activity: Activity, timeout: Duration, socket: PathBuf) {
+    // Re-check on a fraction of the timeout so we never overshoot by much (bounded to 1..=30s).
+    let tick = timeout
+        .div_f32(10.0)
+        .clamp(Duration::from_secs(1), Duration::from_secs(30));
+    thread::spawn(move || loop {
+        thread::sleep(tick);
+        if activity.idle_for() >= timeout {
+            eprintln!(
+                "mdkbd: idle for {:?} (>= {:?}); shutting down {}",
+                activity.idle_for(),
+                timeout,
+                socket.display()
+            );
+            let _ = std::fs::remove_file(&socket);
+            std::process::exit(0);
+        }
+    });
+}
+
 /// Network listener configuration.
 #[derive(Clone)]
 pub struct NetConfig {
@@ -43,14 +111,30 @@ pub struct NetConfig {
 }
 
 /// Serve the local socket (always) and, if configured, a TCP listener (in a side thread).
-pub fn serve(socket: &Path, net: Option<NetConfig>, service: SharedService) -> io::Result<()> {
+pub fn serve(
+    socket: &Path,
+    net: Option<NetConfig>,
+    service: SharedService,
+    idle_timeout: Option<Duration>,
+) -> io::Result<()> {
+    // When a client auto-starts us it passes an idle timeout; arm a watchdog so an unused
+    // vault's daemon reaps itself instead of leaking. Every request (local or network) touches
+    // the shared tracker. `None` (manual/remote daemon) → no tracker, runs forever.
+    let activity = idle_timeout.map(|timeout| {
+        let activity = Activity::new();
+        spawn_idle_watchdog(activity.clone(), timeout, socket.to_path_buf());
+        eprintln!("mdkbd: idle self-shutdown armed ({timeout:?})");
+        activity
+    });
+
     if let Some(net) = net {
         let svc = SharedService::clone(&service);
         let addr = net.addr.clone();
+        let act = activity.clone();
         match TcpListener::bind(&addr) {
             Ok(listener) => {
                 eprintln!("mdkbd: network listener on {addr} (token auth required)");
-                thread::spawn(move || serve_tcp(listener, net, svc));
+                thread::spawn(move || serve_tcp(listener, net, svc, act));
             }
             Err(e) => eprintln!("mdkbd: failed to bind network listener {addr}: {e}"),
         }
@@ -69,9 +153,17 @@ pub fn serve(socket: &Path, net: Option<NetConfig>, service: SharedService) -> i
         match stream {
             Ok(stream) => {
                 let svc = SharedService::clone(&service);
+                let act = activity.clone();
                 thread::spawn(move || {
                     // `&Stream` is both Read and Write, so one stream serves reader and writer.
-                    if let Err(e) = handle(&stream, &stream, RequestContext::local(), None, svc) {
+                    if let Err(e) = handle(
+                        &stream,
+                        &stream,
+                        RequestContext::local(),
+                        None,
+                        svc,
+                        act.as_ref(),
+                    ) {
                         eprintln!("mdkbd: connection error: {e}");
                     }
                 });
@@ -82,12 +174,18 @@ pub fn serve(socket: &Path, net: Option<NetConfig>, service: SharedService) -> i
     Ok(())
 }
 
-fn serve_tcp(listener: TcpListener, net: NetConfig, service: SharedService) {
+fn serve_tcp(
+    listener: TcpListener,
+    net: NetConfig,
+    service: SharedService,
+    activity: Option<Activity>,
+) {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let svc = SharedService::clone(&service);
                 let token = net.token.clone();
+                let act = activity.clone();
                 let peer = stream
                     .peer_addr()
                     .map(|a| a.to_string())
@@ -103,7 +201,7 @@ fn serve_tcp(listener: TcpListener, net: NetConfig, service: SharedService) {
                         }
                     };
                     let ctx = RequestContext::remote(peer);
-                    if let Err(e) = handle(stream, writer, ctx, Some(token), svc) {
+                    if let Err(e) = handle(stream, writer, ctx, Some(token), svc, act.as_ref()) {
                         eprintln!("mdkbd: tcp connection error: {e}");
                     }
                 });
@@ -114,13 +212,15 @@ fn serve_tcp(listener: TcpListener, net: NetConfig, service: SharedService) {
 }
 
 /// Handle one connection. `token`, when `Some`, requires the client to authenticate before
-/// any data request is honoured; the connection context is upgraded on success.
+/// any data request is honoured; the connection context is upgraded on success. Each decoded
+/// request marks `activity` (when present) so the idle watchdog sees the daemon is in use.
 fn handle(
     reader: impl Read,
     mut writer: impl Write,
     mut ctx: RequestContext,
     token: Option<String>,
     service: SharedService,
+    activity: Option<&Activity>,
 ) -> io::Result<()> {
     let mut reader = BufReader::new(reader);
     loop {
@@ -150,9 +250,17 @@ fn handle(
         }
         let response = match decode_request(line) {
             Ok(Request::Authenticate { token: presented }) => {
+                if let Some(a) = activity {
+                    a.touch();
+                }
                 authenticate(&mut ctx, token.as_deref(), &presented)
             }
             Ok(req) => {
+                // A real request — including a Ping liveness check — counts as use and defers
+                // idle shutdown.
+                if let Some(a) = activity {
+                    a.touch();
+                }
                 let mut guard = service.lock().unwrap_or_else(|p| p.into_inner());
                 dispatch(&mut guard, &ctx, req)
             }
