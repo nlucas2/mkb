@@ -34,3 +34,12 @@ block = "README page"
 [[doc]]
 path  = "docs/architecture.md"
 block = "Architecture page"
+
+# Dedup/audit skill — repair side of the search-before-write discipline.
+[[doc]]
+path  = "docs/skills/mdkb-dedup/SKILL.md"
+block = "Dedup skill page (CLI)"
+
+[[doc]]
+path  = "docs/skills/mdkb-dedup-mcp/SKILL.md"
+block = "Dedup skill page (MCP)"
