@@ -11,7 +11,7 @@ approach before continuing.
 
 ## What mdkb is
 
-![[01KVKH5GTTRZ7XET8N2SYC5EPN]]
+![[01KVHJ76YA04MEM71HNDB7RT8G]]
 
 See `README.md` for the full overview and `docs/` for details.
 

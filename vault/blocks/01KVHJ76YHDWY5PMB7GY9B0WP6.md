@@ -1,10 +1,10 @@
 ---
-title: Shared note: vault & connection
+title: "Shared note: vault & connection"
 tags: [mdkb, config]
 ---
 
-**Shared note — the vault is the source of truth.** *(Edit this one block; every
-run-guide below updates at once.)*
+**Shared note — the vault is the source of truth.** *(Edit this one block; everything that
+embeds it updates at once.)*
 
 - A vault is a directory of `blocks/<id>.md` files; the index in `.mdkb/` is a
   rebuildable cache.

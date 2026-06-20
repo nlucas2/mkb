@@ -9,13 +9,12 @@ approach before continuing.
 
 ## What mdkb is
 
-A **personal Markdown knowledge base that is a tool, not an agent.** It serves two equal
-consumers: **you**, the human, via a desktop app that renders the knowledge cleanly with live
-transclusion (edit a block once, every block that embeds it reflects the change); and **AI
-clients** (e.g. GitHub Copilot) via an MCP server exposing deterministic search / write / link
-tools. The store works fully with all AI turned off — agents are clients, never part of the
-store. Markdown files on disk are the single source of truth; the index is a rebuildable cache,
-never authoritative.
+mdkb is a **personal Markdown knowledge base** — **a tool, not an agent**. The unit of
+knowledge is a **block**, and every block is a single Markdown file: a block can *embed*
+other blocks (`![[id]]`, a live copy) or *link* to them (`[[id]]`), and a "page" is just a
+block you open at the top. It serves two equal consumers — **you**, through a desktop app,
+and **AI clients**, through an MCP server — and works fully with all AI turned off. The
+Markdown files are the single source of truth; the index is a rebuildable cache.
 
 See `README.md` for the full overview and `docs/` for details.
 

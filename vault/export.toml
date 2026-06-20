@@ -24,3 +24,8 @@ block = "SPEC page"
 [[doc]]
 path  = "AGENTS.md"
 block = "AGENTS page"
+
+# Project overview / front page.
+[[doc]]
+path  = "README.md"
+block = "README page"
