@@ -333,6 +333,21 @@ both connect using the two paradigms above — a **local** socket or a **remote*
   indexed), index `rebuild`, token-gated TCP transport for cluster deploy, Dockerfile + k8s
   manifest + example MCP config (`deploy/`).
 
+### Follow-ups / known gaps
+
+- **Windows desktop app — observability** *(planned)*: the Tauri shell runs in the Windows
+  `windows` subsystem (no console), and its diagnostics are best-effort stderr writes that go
+  nowhere in a GUI launch. `tauri::Builder::run()` still ends in `.expect(...)`, so a genuine
+  WebView2 init failure would panic **silently and undiagnosably**. Add structured logging to
+  a rolling file in the app-data dir (`tracing` + `tracing-subscriber` + `tracing-appender`),
+  install a panic hook that records to the same log, and replace the `.expect` with a logged
+  graceful exit.
+  - *Investigation note:* a "window flashes then disappears" symptom on Windows was reproduced
+    only by a pathological harness (force-killing the app + daemon + webview every ~2s, which
+    races the shared WebView2 profile lock at `%LOCALAPPDATA%\dev.mdkb.desktop\EBWebView`).
+    Normal launches, and relaunch-after-crash, were reliable in testing. The file log above is
+    what would let us confirm/deny this in the wild rather than theorize.
+
 ## Deployment
 
 See [`deploy/README.md`](./deploy/README.md). In short: run `mdkbd --vault <dir>` locally,

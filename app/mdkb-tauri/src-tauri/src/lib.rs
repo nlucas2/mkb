@@ -15,6 +15,17 @@ use mdkb_view::{block_title, markdown_to_html, search_results_html, ResultRow};
 use serde::Serialize;
 use tauri::Manager;
 
+/// Best-effort diagnostic line to stderr. A GUI build opts into the Windows "windows"
+/// subsystem (no console), which leaves stderr as an invalid handle — and `eprintln!` would
+/// **panic** on that failed write, taking the app down during startup. This swallows the
+/// error so logging is never load-bearing.
+macro_rules! log_line {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 /// Shared application state: the (reconnectable) connection to the daemon, plus what's needed
 /// to transparently re-establish it. A local daemon may self-reap when idle (or crash), so the
 /// app must be able to respawn it on the next interaction rather than going dead.
@@ -41,10 +52,10 @@ impl AppState {
         let cfg = self.cfg.lock().map_err(|_| "state poisoned")?.clone();
         match connect(&cfg, self.mdkbd.as_deref()) {
             Ok(fresh) => {
-                eprintln!("mdkb: reconnected ({})", fresh.endpoint());
+                log_line!("mdkb: reconnected ({})", fresh.endpoint());
                 *guard = fresh;
             }
-            Err(e) => eprintln!("mdkb: reconnect failed: {e}"),
+            Err(e) => log_line!("mdkb: reconnect failed: {e}"),
         }
         Ok(guard)
     }
@@ -87,11 +98,11 @@ fn bundled_mdkbd(app: &tauri::AppHandle) -> Option<PathBuf> {
 fn resolve_client(app: &tauri::AppHandle, cfg: &ConnectionConfig) -> Client {
     match connect(cfg, bundled_mdkbd(app).as_deref()) {
         Ok(client) => {
-            eprintln!("mdkb: connected ({})", client.endpoint());
+            log_line!("mdkb: connected ({})", client.endpoint());
             client
         }
         Err(e) => {
-            eprintln!("mdkb: {e}; falling back to the local socket");
+            log_line!("mdkb: {e}; falling back to the local socket");
             Client::new(DaemonPaths::for_default_vault().socket)
         }
     }
