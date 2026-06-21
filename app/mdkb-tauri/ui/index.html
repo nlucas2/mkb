@@ -68,6 +68,16 @@
       button:hover { background:var(--hover); }
       button.primary { background:var(--accent); color:var(--panel); border-color:var(--accent); font-weight:600; }
       button.danger:hover { border-color:var(--bad); color:var(--bad); }
+      /* Human-only (locked) blocks: a lock toggle, a badge by the title, a tinted page border,
+         and a disabled editor. The lock state comes from the daemon (block.locked). */
+      #lock.on { border-color:var(--accent); color:var(--accent); }
+      .lockbadge { display:inline-flex; align-items:center; gap:.25rem; font-size:.72rem; font-weight:600;
+        text-transform:uppercase; letter-spacing:.04em; color:var(--accent);
+        border:1px solid var(--accent); border-radius:4px; padding:.05rem .35rem; margin-left:.5rem; vertical-align:middle; }
+      main.locked .pad { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); border-radius:8px; }
+      .lockednote { display:flex; align-items:center; gap:.5rem; padding:1rem 1.2rem; margin:.4rem 0;
+        border:1px dashed var(--accent); border-radius:8px; color:var(--muted); background:color-mix(in srgb, var(--accent) 8%, transparent); }
+      .lockednote .lk { font-size:1.1rem; }
       /* Inline SVG glyphs render identically across platforms (unlike emoji); align to text. */
       .ico-svg { vertical-align:middle; }
       nav ul { list-style:none; margin:0; padding:0; overflow-y:auto; flex:1; }
@@ -184,9 +194,23 @@
       .modes { display:flex; gap:1rem; margin:.5rem 0; }
       .hint { color:var(--muted); font-size:.85em; margin-top:.3rem; }
       .savebar { margin-top:1rem; display:flex; gap:.6rem; align-items:center; }
+
+      /* In-app notifications + confirm dialog. Tauri's webview disables the native
+         alert()/confirm()/prompt(), so we provide our own so errors are visible and destructive
+         actions are confirmed. */
+      .toastwrap { position:fixed; right:1rem; bottom:1rem; z-index:50; display:flex; flex-direction:column; gap:.5rem; max-width:24rem; }
+      .toast { background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--accent);
+        border-radius:8px; padding:.6rem .8rem; font-size:.9em; box-shadow:0 6px 24px rgba(0,0,0,.35); animation:toastin .15s ease-out; }
+      .toast.error { border-left-color:var(--bad); }
+      @keyframes toastin { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+      .modal-back { position:fixed; inset:0; z-index:60; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; }
+      .modal { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:1.2rem 1.3rem; max-width:26rem; box-shadow:0 12px 48px rgba(0,0,0,.5); }
+      .modal p { margin:0 0 1rem; }
+      .modal .row { display:flex; gap:.6rem; justify-content:flex-end; }
     </style>
   </head>
   <body>
+    <div class="toastwrap" id="toasts"></div>
     <div class="layout">
       <nav id="nav">
         <input id="search" type="search" placeholder="Search…  (tag:  #tag  lang:rust)" />
@@ -211,6 +235,43 @@
       const { invoke } = window.__TAURI__.core;
       const blocksEl = document.getElementById("blocks");
       const mainEl = document.getElementById("main");
+
+      // --- In-app notifications + confirm (Tauri's webview disables native alert/confirm). ---
+      function toast(message, kind) {
+        const wrap = document.getElementById("toasts");
+        if (!wrap) return;
+        const t = document.createElement("div");
+        t.className = "toast" + (kind === "error" ? " error" : "");
+        t.textContent = String(message);
+        wrap.appendChild(t);
+        setTimeout(() => {
+          t.style.transition = "opacity .3s"; t.style.opacity = "0";
+          setTimeout(() => t.remove(), 300);
+        }, kind === "error" ? 6000 : 3000);
+      }
+      // A promise-based confirm dialog. Resolves true on confirm, false on cancel/backdrop/Esc.
+      function confirmModal(message, { confirmLabel = "Confirm", danger = false } = {}) {
+        return new Promise((resolve) => {
+          const back = document.createElement("div");
+          back.className = "modal-back";
+          back.innerHTML = `<div class="modal"><p></p><div class="row">
+            <button data-a="cancel">Cancel</button>
+            <button class="${danger ? "danger" : "primary"}" data-a="ok"></button></div></div>`;
+          back.querySelector("p").textContent = message;
+          back.querySelector('[data-a="ok"]').textContent = confirmLabel;
+          const done = (v) => { back.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
+          const onKey = (e) => { if (e.key === "Escape") done(false); if (e.key === "Enter") done(true); };
+          back.addEventListener("click", (e) => {
+            if (e.target === back) done(false);
+            else if (e.target.dataset.a === "ok") done(true);
+            else if (e.target.dataset.a === "cancel") done(false);
+          });
+          document.addEventListener("keydown", onKey);
+          document.body.appendChild(back);
+          back.querySelector('[data-a="ok"]').focus();
+        });
+      }
+
       const searchEl = document.getElementById("search");
       const dotEl = document.getElementById("dot");
       const statusTextEl = document.getElementById("statustext");
@@ -369,9 +430,12 @@
           return `<span class="tag inline" data-tag="${esc(t)}" title="inline #tag — edit it in the body">#${esc(t)}</span>`;
         }).join("");
         const tagrow = `<div class="tagrow">${chips}<input class="tagadd" id="tagadd" placeholder="+ tag" /></div>`;
+        const badge = view.locked ? `<span class="lockbadge" title="Human-only: AI clients can read this block but not modify it">🔒 Locked</span>` : "";
+        const lockBtn = `<button id="lock" class="${view.locked?"on":""}" title="${view.locked?"Unlock — allow edits (incl. AI clients)":"Lock — make this block human-only (read-only to AI clients)"}" aria-label="${view.locked?"Unlock block":"Lock block"}">${view.locked?"🔒":"🔓"}</button>`;
         return `<div class="topbar">
-          <div class="titlewrap"><h1>${esc(view.title)}</h1>${tagrow}</div>
+          <div class="titlewrap"><h1>${esc(view.title)}${badge}</h1>${tagrow}</div>
           <div class="seg">${m("read","Read")}${m("blocks","Blocks")}${m("edit","Edit")}</div>
+          ${lockBtn}
           <button id="del" class="danger" title="Delete block" aria-label="Delete block"><svg class="ico-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>
         </div>`;
       }
@@ -387,9 +451,11 @@
         try { view = await invoke("render_block", { id }); }
         catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
         mainEl.innerHTML = topbar(view) + `<div class="pad" id="body"></div>`;
+        mainEl.classList.toggle("locked", !!view.locked);
         mainEl.querySelectorAll(".seg button").forEach((b) =>
           (b.onclick = () => { mode = b.dataset.m; openBlock(id, true); }));
         mainEl.querySelector("#del").onclick = () => del(id);
+        mainEl.querySelector("#lock").onclick = () => toggleLock(id, !!view.locked);
         // Clicking a tag's body searches it; clicking its × removes it (managed tags only).
         mainEl.querySelectorAll(".topbar .tag").forEach((t) =>
           (t.onclick = (ev) => { if (!ev.target.dataset.del) searchTag(t.dataset.tag); }));
@@ -400,9 +466,19 @@
           if (ev.key === "Enter") { ev.preventDefault(); addTag(id, view.fm_tags || [], add.value); }
         };
         const body = mainEl.querySelector("#body");
-        if (mode === "edit") await renderEdit(body, id);
-        else if (mode === "blocks") await renderBlocksView(body, id, view.html);
+        if (mode === "edit") await renderEdit(body, id, !!view.locked);
+        else if (mode === "blocks") await renderBlocksView(body, id, view.html, !!view.locked);
         else await renderReading(body, id, view.html);
+      }
+
+      // Toggle a block's human-only lock. Only the app can do this (it holds the app scope);
+      // the daemon enforces it. On success, re-open the block so the UI reflects the new state.
+      async function toggleLock(id, currentlyLocked) {
+        try {
+          await invoke("set_lock", { id, locked: !currentlyLocked });
+          invalidate();
+          await openBlock(id, true);
+        } catch (e) { toast(String(e), "error"); }
       }
 
       // Set the block's managed tags to fmTags + `name` (deduped), then refresh.
@@ -412,13 +488,13 @@
         const next = fmTags.slice();
         if (!next.some((x) => x.toLowerCase() === t.toLowerCase())) next.push(t);
         try { await invoke("set_tags", { id, tags: next }); invalidate(); await openBlock(id, true); }
-        catch (e) { alert(String(e)); }
+        catch (e) { toast(String(e), "error"); }
       }
       // Remove `name` from the block's managed tags, then refresh.
       async function removeTag(id, fmTags, name) {
         const next = fmTags.filter((x) => x.toLowerCase() !== String(name).toLowerCase());
         try { await invoke("set_tags", { id, tags: next }); invalidate(); await openBlock(id, true); }
-        catch (e) { alert(String(e)); }
+        catch (e) { toast(String(e), "error"); }
       }
 
       // ---------- READ: clean "as-intended" document (embeds dissolved inline) ----------
@@ -441,8 +517,9 @@
       }
 
       // ---------- BLOCKS: interactive view (click-to-edit, embed cards, +add) ----------
-      async function renderBlocksView(body, id, html) {
+      async function renderBlocksView(body, id, html, locked) {
         body.innerHTML =
+          (locked ? `<div class="lockednote"><span class="lk">🔒</span><span>Locked (human-only) — unlock in the header to edit this block. Embedded blocks follow their own lock state.</span></div>` : "") +
           `<div class="content" id="content">${html}</div>` +
           `<div class="addrow"><button id="add">＋ Add block here</button></div>`;
         highlightIn(body);
@@ -468,9 +545,18 @@
       // Replace `regionEl` with an inline editor for block `blockId`.
       async function inlineEdit(regionEl, blockId, done) {
         if (regionEl.dataset.editing) return;
+        // A locked (human-only) block isn't editable here — give a clear cue rather than opening
+        // an editor whose save would be refused by the daemon. Lock is per-block, so a locked
+        // embed card is caught here even when the parent is unlocked.
+        try {
+          if (await invoke("block_locked", { id: blockId })) {
+            toast("🔒 This block is locked — open it and unlock (🔓) to edit.");
+            return;
+          }
+        } catch { /* fall through: if the check fails, let the edit attempt surface the error */ }
         regionEl.dataset.editing = "1";
         let src = "";
-        try { src = await invoke("block_source", { id: blockId }); } catch (e) { alert(String(e)); return; }
+        try { src = await invoke("block_source", { id: blockId }); } catch (e) { toast(String(e), "error"); return; }
         const wrap = document.createElement("div");
         const ta = document.createElement("textarea");
         ta.className = "editarea"; ta.value = src; ta.spellcheck = false;
@@ -488,7 +574,7 @@
           if (finished) return; finished = true;
           if (ta.value !== src) {
             try { await invoke("save_block", { id: blockId, title: null, body: ta.value }); invalidate(); }
-            catch (e) { alert(String(e)); }
+            catch (e) { toast(String(e), "error"); }
           }
           done();
         };
@@ -504,7 +590,12 @@
       }
 
       // ---------- EDIT tab: title + raw body + carve-by-selection ----------
-      async function renderEdit(body, id) {
+      async function renderEdit(body, id, locked) {
+        if (locked) {
+          body.innerHTML = `<div class="lockednote"><span class="lk">🔒</span>
+            <span>This block is <strong>locked</strong> (human-only). Unlock it (🔓 in the header) to edit — AI clients can read it but not modify it.</span></div>`;
+          return;
+        }
         const [src, title] = await Promise.all([
           invoke("block_source", { id }),
           invoke("block_title_of", { id }),
@@ -626,7 +717,7 @@
           const title = query.trim();
           if (!title) { closePicker(); return; }
           try { targetId = await invoke("create_block", { title, body: `# ${title}\n\n` }); invalidate(); }
-          catch (e) { alert(String(e)); closePicker(); return; }
+          catch (e) { toast(String(e), "error"); closePicker(); return; }
         }
         const directive = (embed ? "![[" : "[[") + targetId + "]]";
         const after = ta.value.slice(ta.selectionStart);
@@ -849,13 +940,14 @@
           const card = [...mainEl.querySelectorAll("blockquote.mdkb-embed a[href^='mdkb:']")]
             .find((a) => a.getAttribute("href").includes(child));
           if (card) inlineEdit(card.closest("blockquote.mdkb-embed"), child, () => openBlock(parentId, true));
-        } catch (e) { alert(String(e)); }
+        } catch (e) { toast(String(e), "error"); }
       }
 
       async function del(id) {
-        if (!confirm("Delete this block? Its file will be removed.")) return;
+        const ok = await confirmModal("Delete this block? Its file will be removed.", { confirmLabel: "Delete", danger: true });
+        if (!ok) return;
         try { await invoke("delete_block", { id }); active = null; invalidate(); await loadBlocks(); }
-        catch (e) { alert(String(e)); }
+        catch (e) { toast(String(e), "error"); }
       }
 
       // ---------- graph ----------

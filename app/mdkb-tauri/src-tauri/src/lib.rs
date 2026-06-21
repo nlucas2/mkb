@@ -350,6 +350,19 @@ fn set_tags(
     client.set_tags(bid, tags).map_err(|e| e.to_string())
 }
 
+/// Whether a block is locked (human-only). Cheap lookup used by the Blocks view to show a clear
+/// "locked" cue instead of silently failing an edit.
+#[tauri::command]
+fn block_locked(state: tauri::State<'_, AppState>, id: String) -> Result<bool, String> {
+    let client = state.connected()?;
+    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
+    Ok(client
+        .get_block(bid)
+        .map_err(|e| e.to_string())?
+        .map(|b| b.locked)
+        .unwrap_or(false))
+}
+
 /// Lock or unlock a block (the human-only flag). The desktop app is the only client granted this
 /// (the app scope); a locked block is read-only to AI clients until a human unlocks it here.
 #[tauri::command]
@@ -507,6 +520,7 @@ pub fn run() {
             link_blocks,
             set_tags,
             set_lock,
+            block_locked,
             list_tags,
             get_settings,
             save_settings,

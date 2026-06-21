@@ -513,13 +513,15 @@ impl Client {
                 let stream = transport::connect_local(socket)?;
                 let mut writer = &stream;
                 let mut reader = BufReader::new(&stream);
-                // The desktop app upgrades its scope (lock management) once per connection,
-                // before the actual request — mirroring the TCP auth handshake below.
+                // The desktop app upgrades its scope (lock management) once per connection, before
+                // the actual request — mirroring the TCP auth handshake below. This is a privilege
+                // *upgrade*, not a gate: it is best-effort, so an older daemon that doesn't know
+                // the op (or otherwise declines) simply leaves the connection at the default scope
+                // and the request still proceeds. The daemon keeps the connection open after an
+                // error, so the next line is the real request either way.
                 if self.announce_app {
                     send(&mut writer, &Request::AnnounceApp)?;
-                    if let Response::Error { message } = read_one(&mut reader)? {
-                        return Err(io::Error::new(io::ErrorKind::PermissionDenied, message));
-                    }
+                    let _ = read_one(&mut reader)?;
                 }
                 send(&mut writer, request)?;
                 read_one(&mut reader)
