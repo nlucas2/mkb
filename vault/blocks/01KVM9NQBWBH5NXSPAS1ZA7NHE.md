@@ -1,0 +1,21 @@
+---
+title: "README: Install — container"
+---
+
+### Install: container
+
+Run the daemon as a networked, token-gated service — the image bakes in the embedding model,
+so semantic search works offline. Thin clients reach it over TCP with `MDKB_REMOTE` +
+`MDKB_TOKEN`.
+
+```sh
+# on the host (set a real token; replace <registry>)
+docker run -d --name mdkb -p 127.0.0.1:7820:7820 \
+  -v ~/mdkb-vault:/vault \
+  <registry>/mdkb:latest --vault /vault --listen 0.0.0.0:7820 --token "$MDKB_TOKEN"
+
+# from a client (e.g. the web UI) — connect over the token-gated TCP API
+mdkb-web --remote 127.0.0.1:7820 --token "$MDKB_TOKEN"   # http://127.0.0.1:7878
+```
+
+See [`deploy/README.md`](./deploy/README.md) for the Kubernetes manifest and full cluster setup.

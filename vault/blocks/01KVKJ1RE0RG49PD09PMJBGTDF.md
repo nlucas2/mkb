@@ -1,9 +1,9 @@
 ---
-title: "README: Choosing an embedder (config.json)"
+title: "README: Configuration — choosing an embedder"
 tags: [doc, readme]
 ---
 
-#### Choosing an embedder (`config.json`)
+## Configuration: choosing an embedder (`config.json`)
 
 The embedder backend is configurable per vault via an optional `<vault>/.mdkb/config.json`.
 The model is **never downloaded at runtime** — local models are loaded from disk, and the

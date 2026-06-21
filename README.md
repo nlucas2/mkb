@@ -15,48 +15,233 @@ Markdown files are the single source of truth; the index is a rebuildable cache.
 > **[`docs/architecture.md`](./docs/architecture.md)** for the design and
 > **[`docs/SPEC.md`](./docs/SPEC.md)** for the exact on-disk format.
 
-## Two ways to run it
+## Getting started
 
-mdkb supports two deployment paradigms. The Markdown vault is the source of truth in both; the
-difference is *where the daemon runs* and *how clients reach it*.
+### Pick your interface
 
-**Shared note — the vault is the source of truth.** *(Edit this one block; everything that
-embeds it updates at once.)*
+mdkb is one knowledge base with three front-ends — pick whichever fits the moment. They all
+read and write the same vault *through the daemon*, and **you never start the daemon yourself**:
+each client auto-starts it on first use and it self-reaps when idle.
 
-- A vault is a directory of `blocks/<id>.md` files; the index in `.mdkb/` is a
-  rebuildable cache.
-- The daemon serves a local socket by default. To connect over the network, run it
-  with `--listen <host:port> --token <token>` and point clients at that.
-- Clients (CLI, MCP, web, desktop) never write files directly — they go through the
-  daemon, the single writer.
+| If you want to… | Use | What it is |
+|---|---|---|
+| Read, edit, and browse the graph | **Desktop app** (or the local **web UI**) | a Markdown editor + knowledge-graph browser |
+| Script, search, or pipe from a terminal | **CLI** — `mdkb` | `mdkb search ~/vault "how do I…"` |
+| Give an AI assistant your notes | **MCP server** — `mdkb-mcp` | a set of tools your MCP client calls |
 
-### 1. Local-first (single machine)
+Everything works with AI turned off; semantic search is an optional local model (see
+*Configuration* below).
 
-Everything runs on your machine: `mdkbd` owns the vault and a local socket (a **Unix-domain
-socket** on Linux/macOS, a **named pipe** on Windows), and the CLI, MCP server, web UI, and
-desktop app all connect to it. To use multiple machines, **sync only the Markdown** (OneDrive,
-etc.) — each machine runs its own daemon and keeps its own local index. This is the default and
-needs no configuration.
+### Install: release binary
 
-```sh
-mdkbd --vault ~/mdkb-vault          # serves ~/mdkb-vault/.mdkb/mdkbd.sock
-```
-
-### 2. Remote / shared daemon (e.g. in a cluster)
-
-One `mdkbd` runs centrally (e.g. a `replicas: 1` Deployment in k3s) and serves a **token-gated
-TCP** API. Thin clients — desktop app, web UI, CLI, MCP — connect over the network by setting
-`MDKB_REMOTE=host:port` and `MDKB_TOKEN=<token>` (resolved by the shared `Client::from_env`). The
-daemon stays a single writer; you scale *clients*, not the daemon. Network access is opt-in and
-fails closed without a valid token.
+Download the latest archive for your platform from the **Releases** page and unpack it. Each
+archive carries every binary — `mdkb` (CLI), `mdkbd` (daemon), `mdkb-mcp` (MCP server),
+`mdkb-web` (web UI) — plus a `model/` directory beside them, so offline semantic search works
+out of the box.
 
 ```sh
-mdkbd --vault /vault --listen 0.0.0.0:7820 --token "$MDKB_TOKEN"   # on the server
-export MDKB_REMOTE=mdkbd.example:7820 MDKB_TOKEN=…                 # on each client
+# Linux / macOS (example: macos-arm64 — also published: linux-amd64)
+mkdir -p ~/.local/opt/mdkb
+tar -xzf mdkb-<version>-macos-arm64.tar.gz -C ~/.local/opt/mdkb
+export PATH="$HOME/.local/opt/mdkb:$PATH"     # keep the binaries beside model/
+mdkb --help
 ```
 
-See [`deploy/README.md`](./deploy/README.md) for the Kubernetes manifest and end-to-end
-remote setup.
+On Windows, download `mdkb-<version>-windows-amd64.zip` (binaries) or the `…-setup.exe`
+desktop installer. Keep the binaries together with the `model/` folder — the daemon looks for
+`model/` beside its own executable.
+
+### Install: container
+
+Run the daemon as a networked, token-gated service — the image bakes in the embedding model,
+so semantic search works offline. Thin clients reach it over TCP with `MDKB_REMOTE` +
+`MDKB_TOKEN`.
+
+```sh
+# on the host (set a real token; replace <registry>)
+docker run -d --name mdkb -p 127.0.0.1:7820:7820 \
+  -v ~/mdkb-vault:/vault \
+  <registry>/mdkb:latest --vault /vault --listen 0.0.0.0:7820 --token "$MDKB_TOKEN"
+
+# from a client (e.g. the web UI) — connect over the token-gated TCP API
+mdkb-web --remote 127.0.0.1:7820 --token "$MDKB_TOKEN"   # http://127.0.0.1:7878
+```
+
+See [`deploy/README.md`](./deploy/README.md) for the Kubernetes manifest and full cluster setup.
+
+### Install: from source
+
+Requires Rust (stable); the workspace pins `rust-version = 1.80`. Clone the repo, then run any
+interface straight from the source tree — each command auto-starts the daemon:
+
+```sh
+cargo build --workspace                          # build everything
+cargo run -p mdkb-cli -- list ./my-vault         # CLI
+cargo run -p mdkb-web -- --vault ./my-vault      # web UI → http://127.0.0.1:7878
+cargo run -p mdkb-mcp -- --vault ./my-vault      # MCP server (stdio)
+
+cargo test --workspace                           # the suite (green before every commit)
+```
+
+The desktop app lives in its own workspace and needs the Tauri toolchain — see
+[`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
+
+## Core principles
+
+The design follows from a few rules, each stated once in its own block and reused everywhere:
+**Markdown files are the source of truth** and the index is a **rebuildable cache** (above);
+**block = file = page** with `![[embed]]` for live reuse and `[[ref]]` for links (the intro and
+`docs/SPEC.md`); and **one shared core** behind thin clients (the Contributing rules below).
+
+## Using mdkb
+
+### Command line (`mdkb`)
+
+Every `mdkb` command takes a vault directory and auto-starts (then reuses) that vault's daemon —
+the daemon owns the one warm index and is the single writer.
+
+```sh
+# reads
+mdkb list ~/my-vault                                   # root blocks: id  title
+mdkb search ~/my-vault "how do I restart nginx"
+mdkb search ~/my-vault kusto --lang=kusto
+mdkb search ~/my-vault "ops" --tag=ops --limit=10
+mdkb render ~/my-vault <block-id>                      # children inlined
+mdkb tags ~/my-vault
+mdkb stats ~/my-vault
+
+# writes (body via stdin where shown)
+echo "# Note" | mdkb create ~/my-vault --title="Note"  # prints the new id
+mdkb set-tags ~/my-vault <id> ops kusto
+mdkb link ~/my-vault <src> <dst> --embed
+```
+
+Running from source instead? Use `cargo run -p mdkb-cli -- …` in place of `mdkb`.
+
+### From an AI client (MCP)
+
+The MCP server (`mdkb-mcp`) is a thin client of the daemon; point any MCP client at it and it
+auto-starts a daemon for the given vault.
+
+```jsonc
+// example MCP client config entry
+{
+  "command": "mdkb-mcp",
+  "args": ["--vault", "/path/to/my-vault"]
+}
+```
+
+For guidance on using mdkb *well* as an AI client — the DRY/transclusion principle, the process
+for adding knowledge, and effective search patterns — see the example skill at
+[`docs/skills/mdkb-knowledge/SKILL.md`](./docs/skills/mdkb-knowledge/SKILL.md).
+
+### Desktop app & web UI
+
+Two front-ends share the same `mdkb-view` rendering layer (so they can't drift apart), and both
+connect either way — a **local** socket or a **remote** TCP daemon.
+
+- **Desktop app** (`app/mdkb-tauri`) — a Tauri app over the same crates, and a full **editor and
+  graph browser**, not just a viewer. It exposes the same three block modes as the rest of mdkb —
+  **Read** (the clean document, embeds dissolved inline), **Blocks** (the working view, each embed
+  an editable card), and **Edit** (raw Markdown with the `[[` picker and **Carve selection**).
+
+  On top of those it adds **inline editing** (click rendered content to edit that block in place;
+  type `[[` for a link/embed picker), a **"references in this block" legend** under the editor
+  (the outgoing links/embeds, each resolved to its target with a preview, click-to-open) and
+  **hover previews** on rendered wikilink chips, **New / Add / Carve / Delete** block actions, a
+  force-directed **knowledge graph** (nodes sized by link degree, computed in `mdkb-core`
+  `link_graph`), **linked references** per block, and **Settings** (choose a Local vault or a
+  Remote daemon `host:port` + token, no env vars). Point Settings → Local vault at your vault and
+  go; see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
+
+- **Local web UI** (`mdkb-web`) — the same views in a browser:
+
+  ```sh
+  mdkb-web --vault ~/my-vault                                 # local → http://127.0.0.1:7878
+  mdkb-web --remote mdkbd.example:7820 --token "$MDKB_TOKEN"  # a remote daemon
+  ```
+
+## Configuration: choosing an embedder (`config.json`)
+
+The embedder backend is configurable per vault via an optional `<vault>/.mdkb/config.json`.
+The model is **never downloaded at runtime** — local models are loaded from disk, and the
+shipped container image bakes the model in. The `embedder` block selects the source:
+
+```jsonc
+// 1. default / file absent → bundled vendored model (the container ships one); falls back
+//    to the offline hash embedder if no bundled model is present (e.g. a plain `cargo run`).
+{ "embedder": { "kind": "bundled" } }
+
+// 2. a different ONNX model directory on disk (ONNX weights + tokenizer files)
+{ "embedder": { "kind": "local", "path": "/models/bge-large", "dim": 1024 } }
+
+// 3. a remote OpenAI-compatible /v1/embeddings endpoint (vLLM, LM Studio, llama.cpp, TEI,
+//    OpenAI). Build the daemon with the `remote` feature. The API key, if any, is read from
+//    the named environment variable so it never lives in config.json.
+{ "embedder": { "kind": "remote", "url": "http://vllm:8000/v1/embeddings",
+                "model": "bge-m3", "api_key_env": "MDKB_EMBED_KEY", "dim": 1024 } }
+
+// 4. force the offline, dependency-free hash embedder (no model)
+{ "embedder": { "kind": "hash" } }
+```
+
+The bundled model directory is resolved from `$MDKB_BUNDLED_MODEL_DIR`, else a `model/`
+directory beside the binary. Any misconfiguration (missing model, unreachable endpoint)
+logs a warning and falls back to the hash embedder, so the tool always keeps working.
+The `onnx` (local models) and `remote` (HTTP endpoint) backends are opt-in cargo features;
+default builds pull neither and stay fully offline.
+
+## Deployment
+
+See [`deploy/README.md`](./deploy/README.md). In short: run `mdkbd --vault <dir>` locally,
+or deploy the daemon to k3s/Kubernetes as a single writer (`replicas: 1`) serving a
+token-gated TCP API (`deploy/k8s.yaml`, `Dockerfile`). Sync only the Markdown vault across
+machines; each daemon keeps its own local, rebuildable index.
+
+## Under the hood
+
+Implementation details most users never touch — clients auto-start and self-reap the daemon for
+you; the vault Markdown is the only thing you manage.
+
+### How clients reach the daemon
+
+The Markdown vault is the source of truth either way; what changes is *where the daemon runs* and
+*how clients reach it*.
+
+- **Local (default).** `mdkbd` owns the vault and a local socket — a **Unix-domain socket** on
+  Linux/macOS, a **named pipe** on Windows — and the CLI, MCP server, web UI, and desktop app all
+  connect to it. No configuration; clients auto-start it. To work across machines, **sync only the
+  Markdown** (OneDrive, etc.) — each machine runs its own daemon and keeps its own local index.
+- **Remote / shared.** One `mdkbd` runs centrally (e.g. a `replicas: 1` Deployment in k3s) and
+  serves a **token-gated TCP** API. Thin clients connect by setting `MDKB_REMOTE=host:port` and
+  `MDKB_TOKEN=<token>`. The daemon stays the single writer; you scale *clients*, not the daemon.
+  Network access is opt-in and fails closed without a valid token.
+
+Either way the daemon is the **single writer**: clients never touch `blocks/` files directly, and
+the `.mdkb/` index is a rebuildable cache.
+
+### Running the daemon manually
+
+You normally never do this — every client auto-starts and reuses the daemon. Run it yourself
+only to keep a vault warm, expose it over the network, or run it as a service:
+
+```sh
+mdkbd --vault ~/my-vault            # serves ~/my-vault/.mdkb/mdkbd.sock
+
+# from another shell, clients connect to (or would auto-start) that vault's daemon
+mdkb ping  ~/my-vault
+mdkb stats ~/my-vault
+mdkb search ~/my-vault "restart the web server"
+```
+
+By default the offline hash embedder is used (deterministic, no downloads). For real semantic
+embeddings from a local ONNX model, the **daemon** owns embedding (clients are thin and need no
+embedder). Release builds already include the `onnx` backend and a bundled model; from source,
+enable the feature:
+
+```sh
+cargo run -p mdkbd --features onnx -- --vault ~/my-vault
+```
 
 ## Single daemon per vault
 
@@ -86,13 +271,6 @@ daemon a user runs **manually**, or the **remote/shared** daemon, gets no idle t
 forever. Clients self-heal: if a local daemon has idled out (or crashed), the next interaction
 transparently respawns it — at most a brief cold start.
 
-## Core principles
-
-The design follows from a few rules, each stated once in its own block and reused everywhere:
-**Markdown files are the source of truth** and the index is a **rebuildable cache** (above);
-**block = file = page** with `![[embed]]` for live reuse and `[[ref]]` for links (the intro and
-`docs/SPEC.md`); and **one shared core** behind thin clients (the Contributing rules below).
-
 ## Workspace layout
 
 | Crate | Kind | Role |
@@ -111,22 +289,49 @@ The design follows from a few rules, each stated once in its own block and reuse
 If a piece of behavior doesn't clearly belong to transport or presentation, it belongs in
 `mdkb-core`.
 
-## Requirements
+### What each crate/module does
 
-- Rust (stable). The workspace pins `rust-version = 1.80`.
-
-## Build, test, run
-
-```sh
-# build everything
-cargo build --workspace
-
-# run the test suite (must be green before every commit — see Contributing)
-cargo test --workspace
-
-# see CLI usage
-cargo run -p mdkb-cli -- --help
-```
+- `mdkb-core`:
+  - `id` — `BlockId` (ULID): a block's identity is its filename stem.
+  - `blockfile` — parse a block file (`blocks/<ULID>.md`): YAML frontmatter (`title:`, `tags:`)
+    + clean Markdown body; collects inline `#tags` and code-fence languages.
+  - `block` — the block model (id, title, tags, langs, body) + derived views (children,
+    references, contextual text for embeddings).
+  - `link` — `[[target]]` / `![[target]]` directive parsing (target = ULID or title, display alias).
+  - `vault` — the DAG: a map of `BlockId → Block` loaded from `blocks/`, with id/title
+    resolution, children/backlinks, and root detection.
+  - `render` — the transclusion resolver: expands `![[id]]` children (the "edit once, reflects
+    everywhere" guarantee), renders `[[id]]` as `mdkb:` links, and is **total** — breaks cycles
+    and degrades dangling targets locally with a visible note.
+  - `index` — storage-agnostic `Index` trait, owned records, search query/hit types, link
+    extraction, the knowledge graph, transclusion-reachability, and hybrid ranking (RRF).
+  - `sync` — `SyncEngine`: reconciles the `blocks/` directory with an index (hash-skip
+    unchanged files, incremental reindex, deletion + conflict-copy detection); owns block
+    create/update/delete/carve writes.
+- `mdkb-index` — SQLite + FTS5 implementation of `Index` (keyword search, tag/lang filters,
+  vector storage, brute-force cosine, hybrid keyword+vector fusion, backlinks, stats). Bundled
+  SQLite, no system dependency.
+- `mdkb-embed` — `Embedder` backends: the offline deterministic `HashEmbedder` and a bundled
+  INT8 ONNX model (no runtime download); configurable per vault.
+- `mdkb-core::service` — the shared `Service` API (search / get / render / create / update /
+  delete / carve / link / reconcile) with a `RequestContext` + capability gate on every call.
+  Every client goes through this; behavior is never reimplemented per client.
+- `mdkb-protocol` — newline-delimited JSON wire types, a blocking `Client` (local socket or
+  token-gated TCP), the shared `dispatch` handler, and the shared connection layer
+  (`ConnectionConfig` / `connect` / `ensure_daemon` — auto-starts a **detached** daemon).
+- `mdkbd` — the headless daemon: owns a `SyncEngine` over SQLite + the vault, a `notify` file
+  watcher that auto-reconciles external edits, and a local-socket server (Unix socket / Windows
+  named pipe). Can also serve a **token-gated TCP** listener (opt-in via `--listen`,
+  fail-closed) for remote/cluster clients.
+- `mdkb` CLI — a **thin daemon client** (auto-starts `mdkbd` for the vault, then dispatches over
+  the socket; reads *and* writes, a full equivalent of the MCP surface). Reads: `list`, `render`,
+  `get`, `search`, `tags`, `backlinks`, `links`, `stats`, `conflicts`, `ping`. Writes: `create`,
+  `update`, `set-tags`, `link`, `carve`, `flatten`, `delete`. Maintenance: `rebuild`, `export`.
+- `mdkb-mcp` — an MCP server (JSON-RPC 2.0 over stdio) exposing the knowledge base as tools
+  (`search`, `get_block`, `render_block`, `list_blocks`, `list_roots`, `graph`, `list_tags`,
+  `backlinks`, `links_from`, `create_block`, `update_block`, `set_tags`, `delete_block`,
+  `carve_block`, `flatten_block`, `link_blocks`, `stats`, `rebuild`, `conflicts`). A thin client that forwards
+  every call to the daemon and auto-starts `mdkbd` if needed.
 
 ## The vault (`vault/`)
 
@@ -185,166 +390,6 @@ text and prints a `warning:` — unless **`--follow-links`** pulls the linked bl
 The CLI/MCP skills, **[`docs/SPEC.md`](./docs/SPEC.md)**, **[`AGENTS.md`](./AGENTS.md)**, and this
 README are all generated from blocks in the vault.
 
-### What each crate/module does
-
-- `mdkb-core`:
-  - `id` — `BlockId` (ULID): a block's identity is its filename stem.
-  - `blockfile` — parse a block file (`blocks/<ULID>.md`): YAML frontmatter (`title:`, `tags:`)
-    + clean Markdown body; collects inline `#tags` and code-fence languages.
-  - `block` — the block model (id, title, tags, langs, body) + derived views (children,
-    references, contextual text for embeddings).
-  - `link` — `[[target]]` / `![[target]]` directive parsing (target = ULID or title, display alias).
-  - `vault` — the DAG: a map of `BlockId → Block` loaded from `blocks/`, with id/title
-    resolution, children/backlinks, and root detection.
-  - `render` — the transclusion resolver: expands `![[id]]` children (the "edit once, reflects
-    everywhere" guarantee), renders `[[id]]` as `mdkb:` links, and is **total** — breaks cycles
-    and degrades dangling targets locally with a visible note.
-  - `index` — storage-agnostic `Index` trait, owned records, search query/hit types, link
-    extraction, the knowledge graph, transclusion-reachability, and hybrid ranking (RRF).
-  - `sync` — `SyncEngine`: reconciles the `blocks/` directory with an index (hash-skip
-    unchanged files, incremental reindex, deletion + conflict-copy detection); owns block
-    create/update/delete/carve writes.
-- `mdkb-index` — SQLite + FTS5 implementation of `Index` (keyword search, tag/lang filters,
-  vector storage, brute-force cosine, hybrid keyword+vector fusion, backlinks, stats). Bundled
-  SQLite, no system dependency.
-- `mdkb-embed` — `Embedder` backends: the offline deterministic `HashEmbedder` and a bundled
-  INT8 ONNX model (no runtime download); configurable per vault.
-- `mdkb-core::service` — the shared `Service` API (search / get / render / create / update /
-  delete / carve / link / reconcile) with a `RequestContext` + capability gate on every call.
-  Every client goes through this; behavior is never reimplemented per client.
-- `mdkb-protocol` — newline-delimited JSON wire types, a blocking `Client` (local socket or
-  token-gated TCP), the shared `dispatch` handler, and the shared connection layer
-  (`ConnectionConfig` / `connect` / `ensure_daemon` — auto-starts a **detached** daemon).
-- `mdkbd` — the headless daemon: owns a `SyncEngine` over SQLite + the vault, a `notify` file
-  watcher that auto-reconciles external edits, and a local-socket server (Unix socket / Windows
-  named pipe). Can also serve a **token-gated TCP** listener (opt-in via `--listen`,
-  fail-closed) for remote/cluster clients.
-- `mdkb` CLI — a **thin daemon client** (auto-starts `mdkbd` for the vault, then dispatches over
-  the socket; reads *and* writes, a full equivalent of the MCP surface). Reads: `list`, `render`,
-  `get`, `search`, `tags`, `backlinks`, `links`, `stats`, `conflicts`, `ping`. Writes: `create`,
-  `update`, `set-tags`, `link`, `carve`, `flatten`, `delete`. Maintenance: `rebuild`, `export`.
-- `mdkb-mcp` — an MCP server (JSON-RPC 2.0 over stdio) exposing the knowledge base as tools
-  (`search`, `get_block`, `render_block`, `list_blocks`, `list_roots`, `graph`, `list_tags`,
-  `backlinks`, `links_from`, `create_block`, `update_block`, `set_tags`, `delete_block`,
-  `carve_block`, `flatten_block`, `link_blocks`, `stats`, `rebuild`, `conflicts`). A thin client that forwards
-  every call to the daemon and auto-starts `mdkbd` if needed.
-
-## Usage (current)
-
-```sh
-# Every CLI command takes a vault dir and auto-starts (then reuses) that vault's daemon.
-# The daemon owns the one warm index and is the single writer.
-
-# reads
-cargo run -p mdkb-cli -- list ./my-vault                     # root blocks: id  title
-cargo run -p mdkb-cli -- search ./my-vault "how do I restart nginx"
-cargo run -p mdkb-cli -- search ./my-vault kusto --lang=kusto
-cargo run -p mdkb-cli -- search ./my-vault "ops" --tag=ops --limit=10
-cargo run -p mdkb-cli -- render ./my-vault <block-id>        # children inlined
-cargo run -p mdkb-cli -- tags ./my-vault
-cargo run -p mdkb-cli -- stats ./my-vault
-
-# writes (body via stdin where shown)
-echo "# Note" | cargo run -p mdkb-cli -- create ./my-vault --title="Note"   # prints new id
-cargo run -p mdkb-cli -- set-tags ./my-vault <id> ops kusto
-cargo run -p mdkb-cli -- link ./my-vault <src> <dst> --embed
-```
-
-### Running the daemon
-
-```sh
-# start the daemon (defaults: vault ~/mdkb-vault, socket <vault>/.mdkb/mdkbd.sock)
-cargo run -p mdkbd -- --vault ./my-vault
-
-# from another shell, the CLI auto-connects to (and would auto-start) that vault's daemon
-cargo run -p mdkb-cli -- ping ./my-vault
-cargo run -p mdkb-cli -- stats ./my-vault
-cargo run -p mdkb-cli -- search ./my-vault "restart the web server"
-```
-
-By default the offline hash embedder is used (deterministic, no downloads). For real
-semantic embeddings via a local ONNX model, run the **daemon** with the `onnx` feature (the
-daemon owns embedding; the CLI is a thin client and needs no embedder):
-
-```sh
-cargo run -p mdkbd --features onnx -- --vault ./my-vault
-```
-
-#### Choosing an embedder (`config.json`)
-
-The embedder backend is configurable per vault via an optional `<vault>/.mdkb/config.json`.
-The model is **never downloaded at runtime** — local models are loaded from disk, and the
-shipped container image bakes the model in. The `embedder` block selects the source:
-
-```jsonc
-// 1. default / file absent → bundled vendored model (the container ships one); falls back
-//    to the offline hash embedder if no bundled model is present (e.g. a plain `cargo run`).
-{ "embedder": { "kind": "bundled" } }
-
-// 2. a different ONNX model directory on disk (ONNX weights + tokenizer files)
-{ "embedder": { "kind": "local", "path": "/models/bge-large", "dim": 1024 } }
-
-// 3. a remote OpenAI-compatible /v1/embeddings endpoint (vLLM, LM Studio, llama.cpp, TEI,
-//    OpenAI). Build the daemon with the `remote` feature. The API key, if any, is read from
-//    the named environment variable so it never lives in config.json.
-{ "embedder": { "kind": "remote", "url": "http://vllm:8000/v1/embeddings",
-                "model": "bge-m3", "api_key_env": "MDKB_EMBED_KEY", "dim": 1024 } }
-
-// 4. force the offline, dependency-free hash embedder (no model)
-{ "embedder": { "kind": "hash" } }
-```
-
-The bundled model directory is resolved from `$MDKB_BUNDLED_MODEL_DIR`, else a `model/`
-directory beside the binary. Any misconfiguration (missing model, unreachable endpoint)
-logs a warning and falls back to the hash embedder, so the tool always keeps working.
-The `onnx` (local models) and `remote` (HTTP endpoint) backends are opt-in cargo features;
-default builds pull neither and stay fully offline.
-
-### Using mdkb from an AI agent (MCP)
-
-The MCP server (`mdkb-mcp`) is a thin client of the daemon; point any MCP client at it and it
-auto-starts a daemon for the given vault.
-
-```jsonc
-// example MCP client config entry
-{
-  "command": "mdkb-mcp",
-  "args": ["--vault", "/path/to/my-vault"]
-}
-```
-
-For guidance on using mdkb *well* as an AI client — the DRY/transclusion principle, the process
-for adding knowledge, and effective search patterns — see the example skill at
-[`docs/skills/mdkb-knowledge/SKILL.md`](./docs/skills/mdkb-knowledge/SKILL.md).
-
-### Browsing in a UI
-
-Two front-ends share the same `mdkb-view` rendering layer (so they can't drift apart), and
-both connect using the two paradigms above — a **local** socket or a **remote** TCP daemon.
-
-- **Local web UI** (`mdkb-web`):
-
-  ```sh
-  # local daemon:
-  mdkbd --vault ./my-vault &
-  cargo run -p mdkb-web -- --vault ./my-vault          # http://127.0.0.1:7878
-
-  # remote daemon:
-  cargo run -p mdkb-web -- --remote mdkbd.example:7820 --token "$MDKB_TOKEN"
-  ```
-
-- **Desktop shell** (`app/mdkb-tauri`) — a Tauri app over the same crates. It is a full
-  **editor and graph browser**, not just a viewer. It exposes the same three block modes as the rest of mdkb — **Read** (the clean document, embeds dissolved inline), **Blocks** (the working view, each embed an editable card), and **Edit** (raw Markdown with the `[[` picker and **Carve selection**).
-
-  On top of those it adds **inline editing** (click rendered content to edit that block in
-  place; type `[[` for a link/embed picker), a **"references in this block" legend** under the
-  editor (the outgoing links/embeds, each resolved to its target with a preview, click-to-open)
-  and **hover previews** on rendered wikilink chips, **New / Add / Carve / Delete** block actions,
-  a force-directed **knowledge graph** (nodes sized by link degree, computed in `mdkb-core`
-  `link_graph`), **linked references** per block, and **Settings** (choose a Local vault or a
-  Remote daemon `host:port` + token, no env vars). Lives in its own workspace (needs the Tauri
-  toolchain); see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
-
 ## Roadmap
 
 - **Phase 0 — Scaffold** *(done)*: workspace, crates, governance docs.
@@ -384,13 +429,6 @@ both connect using the two paradigms above — a **local** socket or a **remote*
   Tag each edge with its kind in `mdkb-core` (`link_graph`) so the two are distinguishable in
   the data, then render them differently in the UI (e.g. solid edges for `![[transclusions]]`,
   dashed for `[[refs]]`) so a reused/embedded block reads visibly different from a plain link.
-
-## Deployment
-
-See [`deploy/README.md`](./deploy/README.md). In short: run `mdkbd --vault <dir>` locally,
-or deploy the daemon to k3s/Kubernetes as a single writer (`replicas: 1`) serving a
-token-gated TCP API (`deploy/k8s.yaml`, `Dockerfile`). Sync only the Markdown vault across
-machines; each daemon keeps its own local, rebuildable index.
 
 ## License
 

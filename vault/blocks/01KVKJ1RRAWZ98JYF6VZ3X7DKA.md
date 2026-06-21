@@ -12,35 +12,23 @@ tags: [doc, doc-page, user]
 > **[`docs/architecture.md`](./docs/architecture.md)** for the design and
 > **[`docs/SPEC.md`](./docs/SPEC.md)** for the exact on-disk format.
 
-![[01KVKJ1R2KE4ZCAPJM9C25ZBV6]]
+## Getting started
 
-![[01KVKBYMCVYWADCHVEJFBGZR8Z]]
+![[01KVM9NPR2HD2WF05GKFYNMG68]]
 
-![[01KVKBYMDS9STTDCAVZMYDVPHG]]
+![[01KVM9NQ2N1BKBJHS9TJQCW5KB]]
 
-![[01KVKJ1R428705BJD9VXGTRSDV]]
-
-## Workspace layout
-
-![[01KVKH5GX94BYEDTNEMA5W1NHS]]
+![[01KVM9NQBWBH5NXSPAS1ZA7NHE]]
 
 ![[01KVKJ1R5D3GMJ7GCVYVKN04X2]]
 
-![[01KVKJ1R6TX2CP1QPB3HDVKYP2]]
+![[01KVKJ1R428705BJD9VXGTRSDV]]
 
-![[01KVKJ1R8416YVA07D34004351]]
-
-### What each crate/module does
-
-![[01KVKJ1R9MMSB6C1T9FBTDFNRG]]
+## Using mdkb
 
 ![[01KVKJ1RB2HP9V609P81AWWS41]]
 
-![[01KVKJ1RCJDFP7KFY56ENW3PR1]]
-
-![[01KVKJ1RE0RG49PD09PMJBGTDF]]
-
-### Using mdkb from an AI agent (MCP)
+### From an AI client (MCP)
 
 ![[01KVKJ1QYRSVX6DW8B575BW44X]]
 
@@ -50,9 +38,38 @@ for adding knowledge, and effective search patterns — see the example skill at
 
 ![[01KVKJ1RFN39VZ0AXVRJ3VHMFB]]
 
-![[01KVKJ1RH7H3T01HXTN3HTQRAT]]
+![[01KVKJ1RE0RG49PD09PMJBGTDF]]
 
 ![[01KVKJ1RM8647XQC65WD0G37YN]]
+
+## Under the hood
+
+Implementation details most users never touch — clients auto-start and self-reap the daemon for
+you; the vault Markdown is the only thing you manage.
+
+![[01KVKJ1R2KE4ZCAPJM9C25ZBV6]]
+
+![[01KVKJ1RCJDFP7KFY56ENW3PR1]]
+
+![[01KVKBYMCVYWADCHVEJFBGZR8Z]]
+
+![[01KVKBYMDS9STTDCAVZMYDVPHG]]
+
+## Workspace layout
+
+![[01KVKH5GX94BYEDTNEMA5W1NHS]]
+
+### What each crate/module does
+
+![[01KVKJ1R9MMSB6C1T9FBTDFNRG]]
+
+![[01KVKJ1R6TX2CP1QPB3HDVKYP2]]
+
+![[01KVKJ1R8416YVA07D34004351]]
+
+![[01KVKJ1RH7H3T01HXTN3HTQRAT]]
+
+![[01KVM9NQP8GEPRXQRKK062E37R]]
 
 ## Contributing
 
