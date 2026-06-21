@@ -138,6 +138,30 @@
       blockquote.mdkb-embed > p:first-child { margin:0 0 .3rem; font-size:.85em; color:var(--muted); }
       blockquote.mdkb-embed .wikilink { background:transparent; border:none; padding:0; color:var(--mauve); }
 
+      /* Hover affordance: resolved chips that carry a preview tooltip get a dotted underline so
+         it's clear they're hoverable. Applied via JS only to chips that actually have a tooltip. */
+      .wikilink.hoverable { text-decoration:underline dotted var(--muted); text-underline-offset:2px; }
+      .reading .wikilink.hoverable { text-decoration:underline dotted var(--accent); }
+      /* Custom preview tooltip (deliberate ~1s delay; positioned in JS). */
+      .mdkb-tip { position:fixed; z-index:60; max-width:340px; background:var(--panel); border:1px solid var(--accent);
+        border-radius:6px; box-shadow:0 6px 20px rgba(0,0,0,.45); padding:.4rem .55rem; font-size:.82em; pointer-events:none; }
+      .mdkb-tip .tt { font-weight:600; margin-bottom:.15rem; }
+      .mdkb-tip .tp { color:var(--muted); white-space:normal; overflow-wrap:anywhere; }
+      .mdkb-tip .un { color:var(--bad); }
+
+      /* "References in this block" legend under the editor (outgoing links/embeds, live). */
+      .reflegend { margin-top:.7rem; border-top:1px solid var(--border); padding-top:.55rem; }
+      .reflegend h4 { margin:0 0 .4rem; font-size:.78em; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; }
+      .reflegend .none { color:var(--muted); font-size:.85em; }
+      .reflegend ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.25rem; }
+      .reflegend li { display:flex; align-items:baseline; gap:.45rem; font-size:.86em; min-width:0; }
+      .reflegend .k { flex:0 0 auto; font-size:.7em; padding:.02rem .3rem; border-radius:4px; border:1px solid var(--border); color:var(--muted); }
+      .reflegend .k.embed { color:var(--mauve); border-color:var(--mauve); }
+      .reflegend a.t { flex:0 0 auto; color:var(--fg); text-decoration:none; cursor:pointer; }
+      .reflegend a.t:hover { color:var(--accent); text-decoration:underline; }
+      .reflegend .pv { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+      .reflegend li.unresolved a.t { color:var(--bad); cursor:default; }
+
       .refs { margin-top:2rem; border-top:1px solid var(--border); padding-top:1rem; }
       .refs h3 { font-size:.95rem; color:var(--muted); margin:.2rem 0 .6rem; }
       .refs ul { list-style:none; padding:0; margin:0; } .refs li { padding:.2rem 0; }
@@ -356,6 +380,7 @@
       // keeps the mode you're in. Mode only changes via the view tabs or creating a block.
       async function openBlock(id, _keepMode) {
         active = id;
+        hideTip();
         renderNav();
         mainEl.scrollTop = 0;
         let view;
@@ -411,6 +436,7 @@
         }
         body.innerHTML = `<div class="content reading">${tmp.innerHTML}</div>`;
         highlightIn(body);
+        attachChipHovers(body);
         // References stay navigable (the global mdkb: handler covers them); no edit affordances.
       }
 
@@ -420,6 +446,7 @@
           `<div class="content" id="content">${html}</div>` +
           `<div class="addrow"><button id="add">＋ Add block here</button></div>`;
         highlightIn(body);
+        attachChipHovers(body);
         const content = body.querySelector("#content");
         // Deliberate click (not hover) to edit. Clicking inside an embed card edits that child;
         // clicking the parent's own prose edits the parent. Links navigate (handled separately).
@@ -488,10 +515,14 @@
             <button class="primary" id="save">Save</button>
             <button id="carve" title="Extract the selected text into its own reusable block">⑂ Carve selection</button>
             <span class="muted" id="msg">Type <code>[[</code> to link/embed a block.</span>
-          </div>`;
+          </div>
+          <div class="reflegend" id="reflegend"></div>`;
         body.querySelector("#t").value = title || "";
         const ta = body.querySelector("#b");
         ta.value = src; attachPicker(ta);
+        const legend = body.querySelector("#reflegend");
+        renderLegend(legend, ta.value);
+        ta.addEventListener("input", () => renderLegend(legend, ta.value));
         body.querySelector("#save").onclick = async () => {
           try {
             await invoke("save_block", { id, title: body.querySelector("#t").value.trim() || null, body: ta.value });
@@ -635,6 +666,132 @@
         if (!window.hljs) return;
         root.querySelectorAll("pre code").forEach((el) => {
           try { window.hljs.highlightElement(el); } catch {}
+        });
+      }
+
+      // ---------- reference previews + chip hover tooltips ----------
+      // Short preview text for a block, cached. First meaningful line of its body (frontmatter and
+      // leading heading hashes stripped). The daemon stays authoritative; this is display-only.
+      const previewCache = new Map();
+      function firstMeaningfulLine(src) {
+        const s = String(src).replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
+        for (const line of s.split("\n")) {
+          const t = line.trim();
+          if (t) return t.replace(/^#+\s*/, "").slice(0, 140);
+        }
+        return "";
+      }
+      async function loadPreview(id) {
+        if (previewCache.has(id)) return previewCache.get(id);
+        let p = "";
+        try { p = firstMeaningfulLine(await invoke("block_source", { id })); } catch {}
+        previewCache.set(id, p);
+        return p;
+      }
+
+      // A single custom tooltip with a deliberate delay so it never feels twitchy.
+      let tipEl = null, tipTimer = null, hoverChip = null;
+      function hideTip() {
+        if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
+        if (tipEl) { tipEl.remove(); tipEl = null; }
+      }
+      async function showTipFor(a) {
+        const href = a.getAttribute("href") || "";
+        if (!href.startsWith("mdkb:")) return;
+        const id = href.slice("mdkb:".length).split("#")[0];
+        const meta = indexCache && indexCache.find((b) => b.id === id);
+        const title = meta ? (meta.title || id) : id;
+        const preview = await loadPreview(id);
+        if (hoverChip !== a || tipEl) return; // pointer left during load, or a newer hover won
+        const el = document.createElement("div");
+        el.className = "mdkb-tip";
+        el.innerHTML = `<div class="tt">${esc(title)}</div>` +
+          (preview ? `<div class="tp">${esc(preview)}</div>` : `<div class="tp un">(empty block)</div>`);
+        document.body.appendChild(el);
+        tipEl = el;
+        // Position just below the chip, clamped to the viewport.
+        const r = a.getBoundingClientRect();
+        el.style.left = r.left + "px";
+        el.style.top = (r.bottom + 6) + "px";
+        const tr = el.getBoundingClientRect();
+        if (tr.right > window.innerWidth - 8) el.style.left = Math.max(8, window.innerWidth - 8 - tr.width) + "px";
+        if (tr.bottom > window.innerHeight - 8) el.style.top = Math.max(8, r.top - tr.height - 6) + "px";
+      }
+      // Wire hover tooltips onto resolved wikilink chips under `root`. The hit target is the chip
+      // element itself (no extra padding/zone); the tooltip fires ~1s after mouseenter and is
+      // cleared on mouseleave. Unresolved chips get no tooltip and no affordance.
+      function attachChipHovers(root) {
+        root.querySelectorAll('a.wikilink[href^="mdkb:"]').forEach((a) => {
+          if (a.classList.contains("unresolved")) return;
+          a.classList.add("hoverable");
+          a.addEventListener("mouseenter", () => {
+            hideTip();
+            hoverChip = a;
+            tipTimer = setTimeout(() => { tipTimer = null; showTipFor(a); }, 1000);
+          });
+          a.addEventListener("mouseleave", () => { hoverChip = null; hideTip(); });
+        });
+      }
+      // A floating tooltip must not linger when the page moves.
+      window.addEventListener("scroll", hideTip, true);
+
+      // ---------- "references in this block" legend (outgoing, live) ----------
+      // Parse the live editor text for [[link]] / ![[embed]] directives. Code spans and fenced
+      // blocks are masked so example directives shown as code aren't counted, mirroring the core
+      // parser; the daemon remains authoritative on save. Returns [{embed, target}] in order.
+      function parseDirectives(text) {
+        const masked = String(text)
+          .replace(/```[\s\S]*?```/g, (m) => m.replace(/[^\n]/g, " "))
+          .replace(/`[^`\n]*`/g, (m) => " ".repeat(m.length));
+        const re = /(!?)\[\[([^\]\n|]+)(?:\|[^\]\n]*)?\]\]/g;
+        const out = [];
+        let m;
+        while ((m = re.exec(masked))) out.push({ embed: m[1] === "!", target: m[2].trim() });
+        return out;
+      }
+      // Resolve a directive target (ULID or title) to a known block, mirroring core resolution
+      // (id first, then case-insensitive title) against the picker's block index.
+      function resolveTarget(target) {
+        if (!indexCache || !target) return null;
+        const byId = indexCache.find((b) => b.id === target);
+        if (byId) return byId;
+        const lt = target.toLowerCase();
+        return indexCache.find((b) => (b.title || "").toLowerCase() === lt) || null;
+      }
+      // Render the legend for `text` into the `#reflegend` container, deduped, with lazy previews
+      // and click-to-open on resolved targets.
+      function renderLegend(container, text) {
+        if (!container) return;
+        const dirs = parseDirectives(text);
+        const seen = new Set();
+        const items = [];
+        for (const d of dirs) {
+          const key = (d.embed ? "!" : "") + d.target.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          items.push(d);
+        }
+        if (!items.length) {
+          container.innerHTML = `<h4>References in this block</h4>` +
+            `<div class="none">No links or embeds yet — type <code>[[</code> to add one.</div>`;
+          return;
+        }
+        container.innerHTML = `<h4>References in this block (${items.length})</h4><ul>${
+          items.map((d) => {
+            const r = resolveTarget(d.target);
+            const kind = d.embed ? `<span class="k embed">embed</span>` : `<span class="k">link</span>`;
+            const title = r ? (r.title || r.id) : d.target;
+            const go = r ? ` data-go="${esc(r.id)}"` : "";
+            const pv = r ? ` data-pv="${esc(r.id)}"` : "";
+            return `<li class="${r ? "" : "unresolved"}">${kind}<a class="t"${go}>${esc(title)}</a>` +
+              `<span class="pv"${pv}></span></li>`;
+          }).join("")
+        }</ul>`;
+        container.querySelectorAll("a.t[data-go]").forEach((a) =>
+          (a.onclick = () => openBlock(a.dataset.go)));
+        container.querySelectorAll(".pv[data-pv]").forEach(async (sp) => {
+          const p = await loadPreview(sp.dataset.pv);
+          if (p) sp.textContent = "— " + p;
         });
       }
 
