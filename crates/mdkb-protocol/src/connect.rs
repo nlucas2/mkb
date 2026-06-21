@@ -20,11 +20,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Client, DaemonPaths};
 
-/// How long a **client‑auto‑started** daemon may sit with no requests before it self‑reaps.
-/// Only applied to daemons we spawn here; a daemon a user runs manually (or the remote/k3s
-/// deployment) gets no `--idle-timeout` and runs forever. 15 minutes keeps a vault warm across
-/// normal pauses while ensuring an unused vault's daemon (and its embedder RAM) is reclaimed.
-const AUTOSTART_IDLE_SECS: u64 = 900;
+/// How long a **client‑auto‑started** daemon may sit with **no requests and no interactive lease**
+/// before it self‑reaps. Only applied to daemons we spawn here; a daemon a user runs manually (or
+/// the remote/k3s deployment) gets no `--idle-timeout` and runs forever.
+///
+/// This is now a short *grace* window, not a long warm‑hold: a long‑lived client (the desktop app
+/// / web UI) holds a heartbeat **lease** that keeps the daemon alive while it's open, so when that
+/// client closes the daemon winds down within ~this grace instead of lingering for 15 minutes.
+/// Momentary clients (CLI/MCP) keep the daemon warm only through this window — long enough for
+/// fast back‑to‑back commands, short enough that walking away reclaims the process (and its
+/// embedder RAM) promptly.
+const AUTOSTART_IDLE_SECS: u64 = 120;
 
 /// Where a client should connect, persisted in the client's config file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

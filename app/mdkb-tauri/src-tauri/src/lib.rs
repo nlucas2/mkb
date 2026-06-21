@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use mdkb_core::{BlockId, GraphData, SearchQuery};
 use mdkb_protocol::{connect, Client, ConnectionConfig, DaemonPaths};
@@ -25,6 +26,13 @@ macro_rules! log_line {
         let _ = writeln!(std::io::stderr(), $($arg)*);
     }};
 }
+
+/// How often the desktop app renews its interactive lease with the daemon. The window is open,
+/// so the daemon must not self-reap; a heartbeat both renews the lease and counts as activity.
+const HEARTBEAT_SECS: u64 = 10;
+/// Lease time-to-live. Set to ~3× the heartbeat interval so a couple of missed beats are tolerated,
+/// while a crashed/closed app still lets the lease expire promptly (it never pins the daemon open).
+const LEASE_TTL_MS: u64 = 30_000;
 
 /// Shared application state: the (reconnectable) connection to the daemon, plus what's needed
 /// to transparently re-establish it. A local daemon may self-reap when idle (or crash), so the
@@ -447,6 +455,24 @@ pub fn run() {
                 client: Mutex::new(client),
                 cfg: Mutex::new(cfg),
                 mdkbd,
+            });
+
+            // Hold the interactive lease for as long as the window is open. This both renews the
+            // lease and registers activity, so the daemon won't self-reap while the app is up; if
+            // the daemon was idle-reaped or crashed, `connected()` transparently respawns it. The
+            // thread dies with the process on quit, after which the lease expires and the daemon
+            // is free to wind down on its own — no explicit teardown needed.
+            //
+            // The lease id is per-process (the pid): stable for this app instance and distinct
+            // from any other interactive client. Leases are keyed for liveness, not security, and
+            // pids don't collide across concurrently running processes.
+            let lease = format!("mdkb-app-{}", std::process::id());
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                if let Ok(client) = handle.state::<AppState>().connected() {
+                    let _ = client.heartbeat(&lease, LEASE_TTL_MS);
+                }
+                std::thread::sleep(Duration::from_secs(HEARTBEAT_SECS));
             });
             Ok(())
         })

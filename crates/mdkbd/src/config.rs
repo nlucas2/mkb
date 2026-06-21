@@ -39,7 +39,8 @@ options:
   --socket <path>   local socket: Unix socket / Windows named pipe (default: <vault>/.mdkb/mdkbd.sock)
   --listen <addr>   ALSO serve over TCP at <addr> (e.g. 0.0.0.0:7820); requires a token
   --token <tok>     shared token network clients must present ($MDKB_TOKEN also accepted)
-  --idle-timeout <secs>  self-shutdown after <secs> with no requests (0 = never; default: never)
+  --idle-timeout <secs>  self-shutdown after <secs> with no requests AND no interactive lease
+                         (0 = never; default: never when run manually)
   --help            show this help
 
 The index and socket directory (<vault>/.mdkb) is local-only and must be excluded

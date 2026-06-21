@@ -14,11 +14,12 @@
 //!   data request is rejected until the client sends `Authenticate { token }` with the
 //!   daemon's shared token, which upgrades the connection to `Caller::Authenticated`.
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -76,21 +77,70 @@ impl Default for Activity {
     }
 }
 
-/// Watch for inactivity and self-terminate once the daemon has been idle for `timeout`.
+/// A held lease's ttl is clamped to this range, so a misbehaving client can neither pin the
+/// daemon forever (no upper bound) nor thrash with a near-zero ttl.
+const MIN_LEASE_TTL: Duration = Duration::from_secs(1);
+const MAX_LEASE_TTL: Duration = Duration::from_secs(300);
+
+/// Active **interactive leases**. A long-lived client (the desktop app / web UI) holds a lease to
+/// keep an auto-started daemon alive while it is open; momentary clients (CLI/MCP) don't need one.
+///
+/// A lease is acquired-or-renewed by a heartbeat and expires `ttl` after the last heartbeat, so a
+/// crashed client never pins the daemon (the lease simply ages out). Shared (via `Arc`) between
+/// the connection handlers and the idle watchdog.
+#[derive(Clone, Default)]
+pub struct Leases {
+    inner: Arc<Mutex<HashMap<String, Instant>>>,
+}
+
+impl Leases {
+    fn guard(&self) -> std::sync::MutexGuard<'_, HashMap<String, Instant>> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Acquire-or-renew `lease`, expiring `ttl` (clamped) from now. Idempotent in `lease`.
+    pub fn heartbeat(&self, lease: &str, ttl: Duration) {
+        let ttl = ttl.clamp(MIN_LEASE_TTL, MAX_LEASE_TTL);
+        self.guard().insert(lease.to_string(), Instant::now() + ttl);
+    }
+
+    /// Drop `lease` (clean release). Unknown leases are ignored.
+    pub fn release(&self, lease: &str) {
+        self.guard().remove(lease);
+    }
+
+    /// Whether any unexpired lease is held. Prunes expired leases as a side effect.
+    pub fn any_active(&self) -> bool {
+        let now = Instant::now();
+        let mut g = self.guard();
+        g.retain(|_, exp| *exp > now);
+        !g.is_empty()
+    }
+}
+
+/// Whether an auto-started daemon should reap itself now: it must be **both** idle for at least
+/// `timeout` **and** holding no interactive lease. Factored out so the decision is unit-testable
+/// without spawning the watchdog thread (which calls `process::exit`).
+fn should_reap(idle: Duration, timeout: Duration, leases: &Leases) -> bool {
+    idle >= timeout && !leases.any_active()
+}
+
+/// Watch for inactivity and self-terminate once the daemon has been idle for `timeout` **and** no
+/// interactive lease is held.
 ///
 /// Only armed when a client auto-starts the daemon (it passes `--idle-timeout`); a manually-run
 /// or remote daemon never gets one and runs forever. On reap we remove the socket file (so the
 /// next client cold-starts cleanly) and exit; the OS releases the vault lock on exit.
-fn spawn_idle_watchdog(activity: Activity, timeout: Duration, socket: PathBuf) {
+fn spawn_idle_watchdog(activity: Activity, timeout: Duration, leases: Leases, socket: PathBuf) {
     // Re-check on a fraction of the timeout so we never overshoot by much (bounded to 1..=30s).
     let tick = timeout
         .div_f32(10.0)
         .clamp(Duration::from_secs(1), Duration::from_secs(30));
     thread::spawn(move || loop {
         thread::sleep(tick);
-        if activity.idle_for() >= timeout {
+        if should_reap(activity.idle_for(), timeout, &leases) {
             eprintln!(
-                "mdkbd: idle for {:?} (>= {:?}); shutting down {}",
+                "mdkbd: idle for {:?} (>= {:?}) and no interactive lease; shutting down {}",
                 activity.idle_for(),
                 timeout,
                 socket.display()
@@ -120,9 +170,20 @@ pub fn serve(
     // When a client auto-starts us it passes an idle timeout; arm a watchdog so an unused
     // vault's daemon reaps itself instead of leaking. Every request (local or network) touches
     // the shared tracker. `None` (manual/remote daemon) → no tracker, runs forever.
+    //
+    // An interactive client (desktop app / web UI) holds a lease that keeps the daemon alive
+    // while it's open; the watchdog only reaps when idle **and** no lease is held. Momentary
+    // clients (CLI/MCP) don't lease — their request activity already defers the timer. The lease
+    // registry exists regardless (it's cheap); only the watchdog consults it.
+    let leases = Leases::default();
     let activity = idle_timeout.map(|timeout| {
         let activity = Activity::new();
-        spawn_idle_watchdog(activity.clone(), timeout, socket.to_path_buf());
+        spawn_idle_watchdog(
+            activity.clone(),
+            timeout,
+            leases.clone(),
+            socket.to_path_buf(),
+        );
         eprintln!("mdkbd: idle self-shutdown armed ({timeout:?})");
         activity
     });
@@ -131,10 +192,11 @@ pub fn serve(
         let svc = SharedService::clone(&service);
         let addr = net.addr.clone();
         let act = activity.clone();
+        let lz = leases.clone();
         match TcpListener::bind(&addr) {
             Ok(listener) => {
                 eprintln!("mdkbd: network listener on {addr} (token auth required)");
-                thread::spawn(move || serve_tcp(listener, net, svc, act));
+                thread::spawn(move || serve_tcp(listener, net, svc, act, lz));
             }
             Err(e) => eprintln!("mdkbd: failed to bind network listener {addr}: {e}"),
         }
@@ -154,6 +216,7 @@ pub fn serve(
             Ok(stream) => {
                 let svc = SharedService::clone(&service);
                 let act = activity.clone();
+                let lz = leases.clone();
                 thread::spawn(move || {
                     // `&Stream` is both Read and Write, so one stream serves reader and writer.
                     if let Err(e) = handle(
@@ -163,6 +226,7 @@ pub fn serve(
                         None,
                         svc,
                         act.as_ref(),
+                        &lz,
                     ) {
                         eprintln!("mdkbd: connection error: {e}");
                     }
@@ -179,6 +243,7 @@ fn serve_tcp(
     net: NetConfig,
     service: SharedService,
     activity: Option<Activity>,
+    leases: Leases,
 ) {
     for stream in listener.incoming() {
         match stream {
@@ -186,6 +251,7 @@ fn serve_tcp(
                 let svc = SharedService::clone(&service);
                 let token = net.token.clone();
                 let act = activity.clone();
+                let lz = leases.clone();
                 let peer = stream
                     .peer_addr()
                     .map(|a| a.to_string())
@@ -201,7 +267,8 @@ fn serve_tcp(
                         }
                     };
                     let ctx = RequestContext::remote(peer);
-                    if let Err(e) = handle(stream, writer, ctx, Some(token), svc, act.as_ref()) {
+                    if let Err(e) = handle(stream, writer, ctx, Some(token), svc, act.as_ref(), &lz)
+                    {
                         eprintln!("mdkbd: tcp connection error: {e}");
                     }
                 });
@@ -221,6 +288,7 @@ fn handle(
     token: Option<String>,
     service: SharedService,
     activity: Option<&Activity>,
+    leases: &Leases,
 ) -> io::Result<()> {
     let mut reader = BufReader::new(reader);
     loop {
@@ -254,6 +322,23 @@ fn handle(
                     a.touch();
                 }
                 authenticate(&mut ctx, token.as_deref(), &presented)
+            }
+            // Lease ops are a daemon-lifecycle concern, handled here rather than dispatched to
+            // core: a heartbeat acquires-or-renews an interactive lease (keeping the daemon alive
+            // while a long-lived client is open); release drops it. Both also count as activity.
+            Ok(Request::Heartbeat { lease, ttl_ms }) => {
+                if let Some(a) = activity {
+                    a.touch();
+                }
+                leases.heartbeat(&lease, Duration::from_millis(ttl_ms));
+                Response::Ok
+            }
+            Ok(Request::ReleaseLease { lease }) => {
+                if let Some(a) = activity {
+                    a.touch();
+                }
+                leases.release(&lease);
+                Response::Ok
             }
             Ok(req) => {
                 // A real request — including a Ping liveness check — counts as use and defers
@@ -298,4 +383,58 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lease_holds_then_expires() {
+        let leases = Leases::default();
+        assert!(!leases.any_active(), "no leases initially");
+        leases.heartbeat("app", Duration::from_secs(60));
+        assert!(leases.any_active(), "an unexpired lease is active");
+        // A near-zero ttl is clamped up to MIN_LEASE_TTL, so it doesn't vanish instantly; but a
+        // ttl in the past is impossible to request — expiry is tested via release below.
+        leases.release("app");
+        assert!(!leases.any_active(), "released lease is gone");
+    }
+
+    #[test]
+    fn heartbeat_is_idempotent_renew() {
+        let leases = Leases::default();
+        leases.heartbeat("app", Duration::from_secs(10));
+        leases.heartbeat("app", Duration::from_secs(10)); // renew same id, not a second lease
+                                                          // Only one lease id is tracked.
+        assert_eq!(leases.guard().len(), 1);
+        assert!(leases.any_active());
+    }
+
+    #[test]
+    fn expired_lease_is_pruned_and_not_active() {
+        let leases = Leases::default();
+        // Insert an already-expired entry directly to simulate a stale lease (no real sleep).
+        leases
+            .guard()
+            .insert("stale".to_string(), Instant::now() - Duration::from_secs(1));
+        assert!(
+            !leases.any_active(),
+            "expired lease must not keep the daemon alive"
+        );
+        assert_eq!(leases.guard().len(), 0, "any_active prunes expired leases");
+    }
+
+    #[test]
+    fn should_reap_requires_idle_and_no_lease() {
+        let leases = Leases::default();
+        let timeout = Duration::from_secs(120);
+        // Idle past the grace, no lease → reap.
+        assert!(should_reap(Duration::from_secs(121), timeout, &leases));
+        // Not idle enough → keep.
+        assert!(!should_reap(Duration::from_secs(10), timeout, &leases));
+        // Idle past the grace BUT a lease is held → keep (interactive client attached).
+        leases.heartbeat("app", Duration::from_secs(60));
+        assert!(!should_reap(Duration::from_secs(121), timeout, &leases));
+    }
 }

@@ -159,6 +159,24 @@ pub enum Request {
         /// The shared token.
         token: String,
     },
+    /// Acquire-or-renew an **interactive lease** that keeps an auto-started daemon alive while a
+    /// long-lived client (the desktop app / web UI) is open. The `lease` id is chosen by the
+    /// client and stable for its lifetime, so this op is idempotent (acquire and renew are one).
+    /// The lease expires `ttl_ms` after the last heartbeat, so a crashed client never pins the
+    /// daemon. Handled by the daemon's lifecycle layer, not core. Momentary clients (CLI/MCP)
+    /// don't need a lease — their request activity already defers the idle timer.
+    Heartbeat {
+        /// Client-chosen, stable lease id.
+        lease: String,
+        /// Lease lifetime in milliseconds from now (the daemon may clamp it).
+        ttl_ms: u64,
+    },
+    /// Release an interactive lease (the client is closing cleanly). The daemon then reaps itself
+    /// after the normal idle grace if nothing else holds it. Unknown leases are ignored.
+    ReleaseLease {
+        /// The lease id to drop.
+        lease: String,
+    },
 }
 
 /// A response from the daemon.
@@ -323,6 +341,9 @@ fn handle<I: Index>(
         Request::Conflicts => Response::Names(service.conflicts(ctx).map_err(to_str)?),
         Request::Authenticate { .. } => Response::Error {
             message: "authenticate is handled by the transport layer".to_string(),
+        },
+        Request::Heartbeat { .. } | Request::ReleaseLease { .. } => Response::Error {
+            message: "lease ops are handled by the daemon lifecycle layer".to_string(),
         },
     })
 }
@@ -721,6 +742,29 @@ impl Client {
     /// Convenience: ping; returns true if the daemon answered.
     pub fn ping(&self) -> bool {
         matches!(self.call(&Request::Ping), Ok(Response::Pong))
+    }
+
+    /// Convenience: acquire-or-renew an interactive lease (keeps an auto-started daemon alive
+    /// while a long-lived client is open). Idempotent in `lease`; call periodically (every
+    /// ~`ttl_ms`/3) as a heartbeat.
+    pub fn heartbeat(&self, lease: &str, ttl_ms: u64) -> io::Result<()> {
+        match self.call(&Request::Heartbeat {
+            lease: lease.to_string(),
+            ttl_ms,
+        })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: release an interactive lease (the client is closing cleanly).
+    pub fn release_lease(&self, lease: &str) -> io::Result<()> {
+        match self.call(&Request::ReleaseLease {
+            lease: lease.to_string(),
+        })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
     }
 }
 
