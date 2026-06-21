@@ -61,7 +61,7 @@ impl AppState {
         match connect(&cfg, self.mdkbd.as_deref()) {
             Ok(fresh) => {
                 log_line!("mdkb: reconnected ({})", fresh.endpoint());
-                *guard = fresh;
+                *guard = fresh.as_app();
             }
             Err(e) => log_line!("mdkb: reconnect failed: {e}"),
         }
@@ -80,6 +80,7 @@ struct BlockView {
     fm_tags: Vec<String>,
     content: String,
     html: String,
+    locked: bool,
 }
 
 // ----- connection management -----
@@ -103,15 +104,19 @@ fn bundled_mdkbd(app: &tauri::AppHandle) -> Option<PathBuf> {
 /// Resolve a [`Client`] for `cfg`. Local mode ensures a **detached** daemon is running
 /// (auto-start that outlives the app); remote mode builds a TCP client. Falls back to the
 /// default local socket on error so the window still opens (the UI shows the failure).
+///
+/// The returned client is marked [`Client::as_app`]: the desktop app is the human surface, so it
+/// announces the app scope (lock management) on each request. Over a remote transport the daemon
+/// ignores the announce, so lock/unlock is simply unavailable there.
 fn resolve_client(app: &tauri::AppHandle, cfg: &ConnectionConfig) -> Client {
     match connect(cfg, bundled_mdkbd(app).as_deref()) {
         Ok(client) => {
             log_line!("mdkb: connected ({})", client.endpoint());
-            client
+            client.as_app()
         }
         Err(e) => {
             log_line!("mdkb: {e}; falling back to the local socket");
-            Client::new(DaemonPaths::for_default_vault().socket)
+            Client::new(DaemonPaths::for_default_vault().socket).as_app()
         }
     }
 }
@@ -180,6 +185,7 @@ fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockVi
         tags: rb.tags,
         fm_tags: rb.fm_tags,
         id: rb.id.to_string(),
+        locked: rb.locked,
     })
 }
 
@@ -344,6 +350,15 @@ fn set_tags(
     client.set_tags(bid, tags).map_err(|e| e.to_string())
 }
 
+/// Lock or unlock a block (the human-only flag). The desktop app is the only client granted this
+/// (the app scope); a locked block is read-only to AI clients until a human unlocks it here.
+#[tauri::command]
+fn set_lock(state: tauri::State<'_, AppState>, id: String, locked: bool) -> Result<(), String> {
+    let client = state.connected()?;
+    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
+    client.set_lock(bid, locked).map_err(|e| e.to_string())
+}
+
 /// All tags in the vault with per-tag block counts, for the tag browser.
 #[tauri::command]
 fn list_tags(state: tauri::State<'_, AppState>) -> Result<Vec<TagCountView>, String> {
@@ -491,6 +506,7 @@ pub fn run() {
             delete_block,
             link_blocks,
             set_tags,
+            set_lock,
             list_tags,
             get_settings,
             save_settings,

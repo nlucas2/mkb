@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mdkb_core::RequestContext;
+use mdkb_core::{Caller, RequestContext, Scope};
 use mdkb_protocol::{decode_request, dispatch, encode_response, transport, Request, Response};
 
 use crate::SharedService;
@@ -340,6 +340,15 @@ fn handle(
                 leases.release(&lease);
                 Response::Ok
             }
+            // Scope upgrade for the desktop app: grant lock management, but only over the local
+            // (trusted) transport. On a remote/authenticated connection it's refused — lock
+            // management is a local human surface, not something a network token confers.
+            Ok(Request::AnnounceApp) => {
+                if let Some(a) = activity {
+                    a.touch();
+                }
+                announce_app(&mut ctx)
+            }
             Ok(req) => {
                 // A real request — including a Ping liveness check — counts as use and defers
                 // idle shutdown.
@@ -369,6 +378,22 @@ fn authenticate(ctx: &mut RequestContext, expected: Option<&str>, presented: &st
         }
         Some(_) => Response::Error {
             message: "authentication failed".to_string(),
+        },
+    }
+}
+
+/// Grant the **app** scope (lock management) to a connection — but only a local, trusted one.
+/// Lock/unlock is a local human surface: a remote connection (even an authenticated one) is
+/// refused, so a network token never confers the ability to toggle locks. This is a local-trust
+/// guardrail, not a security boundary.
+fn announce_app(ctx: &mut RequestContext) -> Response {
+    match ctx.caller {
+        Caller::Local => {
+            ctx.scope = Scope::APP;
+            Response::Ok
+        }
+        _ => Response::Error {
+            message: "lock management is available only to the local desktop app".to_string(),
         },
     }
 }

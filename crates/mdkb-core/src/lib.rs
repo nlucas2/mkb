@@ -35,7 +35,7 @@ pub use index::{
 };
 pub use link::{extract_references, Reference};
 pub use render::{render_block, render_flat, rendered_block, RenderedBlock};
-pub use service::{Caller, Capability, RequestContext, Service};
+pub use service::{Caller, Capability, RequestContext, Scope, Service};
 pub use sync::{SyncEngine, SyncReport};
 pub use vault::{block_rel_path, read_block_files, safe_relative_path, Vault, BLOCKS_DIR};
 

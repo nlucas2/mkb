@@ -177,6 +177,21 @@ pub enum Request {
         /// The lease id to drop.
         lease: String,
     },
+    /// Lock or unlock a block (toggle its human-only `locked` flag). Requires the `ManageLocks`
+    /// capability, which only the desktop app's connection holds — so this is effectively an
+    /// app-only op (see [`Request::AnnounceApp`]).
+    SetLock {
+        /// Block id.
+        id: BlockId,
+        /// `true` to lock (human-only), `false` to unlock.
+        locked: bool,
+    },
+    /// Declare this connection the **desktop app** — the human surface — upgrading its scope to
+    /// include `ManageLocks` (lock/unlock). Per-connection, mirroring [`Request::Authenticate`];
+    /// it mutates the daemon-side request context. This is a local-trust guardrail, not a
+    /// security boundary: the local Unix socket is already trusted, and this just keeps machine
+    /// clients (CLI/MCP) from toggling locks. On a token-gated remote transport it is rejected.
+    AnnounceApp,
 }
 
 /// A response from the daemon.
@@ -339,8 +354,15 @@ fn handle<I: Index>(
             Response::Ok
         }
         Request::Conflicts => Response::Names(service.conflicts(ctx).map_err(to_str)?),
+        Request::SetLock { id, locked } => {
+            service.set_lock(ctx, &id, locked).map_err(to_str)?;
+            Response::Ok
+        }
         Request::Authenticate { .. } => Response::Error {
             message: "authenticate is handled by the transport layer".to_string(),
+        },
+        Request::AnnounceApp => Response::Error {
+            message: "announce_app is handled by the daemon connection layer".to_string(),
         },
         Request::Heartbeat { .. } | Request::ReleaseLease { .. } => Response::Error {
             message: "lease ops are handled by the daemon lifecycle layer".to_string(),
@@ -403,12 +425,18 @@ enum Transport {
 #[derive(Debug, Clone)]
 pub struct Client {
     transport: Transport,
+    /// When set, each **local** request is preceded by an [`Request::AnnounceApp`] handshake so
+    /// the connection is granted the app scope (lock management). Only the desktop app sets this;
+    /// because every `call` opens a fresh connection, the announce must be re-sent each time
+    /// (mirroring how the TCP transport re-authenticates per connection).
+    announce_app: bool,
 }
 impl Client {
     /// Point a client at a daemon local socket path (Unix socket / Windows named pipe).
     pub fn new(socket: impl Into<PathBuf>) -> Self {
         Client {
             transport: Transport::Local(socket.into()),
+            announce_app: false,
         }
     }
 
@@ -419,7 +447,16 @@ impl Client {
                 addr: addr.into(),
                 token: token.into(),
             },
+            announce_app: false,
         }
+    }
+
+    /// Mark this client as the **desktop app** (the human surface): each local request announces
+    /// the app scope, so lock/unlock (`set_lock`) is permitted. A no-op effect on a remote (TCP)
+    /// transport, where lock management is not granted. The CLI and MCP server never set this.
+    pub fn as_app(mut self) -> Self {
+        self.announce_app = true;
+        self
     }
 
     /// The socket path, if this is a local-socket client.
@@ -476,6 +513,14 @@ impl Client {
                 let stream = transport::connect_local(socket)?;
                 let mut writer = &stream;
                 let mut reader = BufReader::new(&stream);
+                // The desktop app upgrades its scope (lock management) once per connection,
+                // before the actual request — mirroring the TCP auth handshake below.
+                if self.announce_app {
+                    send(&mut writer, &Request::AnnounceApp)?;
+                    if let Response::Error { message } = read_one(&mut reader)? {
+                        return Err(io::Error::new(io::ErrorKind::PermissionDenied, message));
+                    }
+                }
                 send(&mut writer, request)?;
                 read_one(&mut reader)
             }
@@ -536,6 +581,15 @@ impl Client {
     /// Convenience: set a block's managed (frontmatter) tags to exactly `tags`.
     pub fn set_tags(&self, id: BlockId, tags: Vec<String>) -> io::Result<()> {
         match self.call(&Request::SetTags { id, tags })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: lock or unlock a block (human-only flag). Requires the app scope — call this
+    /// on a client built with [`Client::as_app`]; an agent client is rejected by the daemon.
+    pub fn set_lock(&self, id: BlockId, locked: bool) -> io::Result<()> {
+        match self.call(&Request::SetLock { id, locked })? {
             Response::Ok => Ok(()),
             other => Err(unexpected(other)),
         }

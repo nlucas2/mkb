@@ -73,6 +73,10 @@ pub struct RenderedBlock {
     pub raw: String,
     /// Resolved Markdown for display (references → links, children → embed cards).
     pub rendered: String,
+    /// Human-only (`locked`) flag — the UI shows a lock affordance and disables editing until a
+    /// human unlocks it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub locked: bool,
 }
 
 /// Render a block (by id) to Markdown with its children expanded. Returns `None` if the id is
@@ -96,6 +100,7 @@ pub fn rendered_block(vault: &Vault, id: &BlockId) -> Option<RenderedBlock> {
         fm_tags: block.fm_tags.clone(),
         raw: block.body.clone(),
         rendered: render_body(vault, block, &mut visited),
+        locked: block.locked,
     })
 }
 
