@@ -33,54 +33,127 @@ pub enum Caller {
     Remote(String),
 }
 
-/// A capability a request needs.
+/// A capability a request needs. The set a caller holds is its [`Scope`]; `authorize` checks
+/// membership. This is the seam for scoped authentication — e.g. a read-only token grants only
+/// `Read`, and `ManageLocks` (lock/unlock) is reserved for the desktop app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
-    /// Read-only access.
+    /// Read-only access (search, get, render, graph…).
     Read,
-    /// Mutating access.
+    /// Mutate an **unlocked** block (create/update/set-tags/delete/carve/flatten/link).
     Write,
+    /// Lock or unlock a block (toggle the human-only flag). App-only.
+    ManageLocks,
 }
 
-/// Per-request context. Carries identity and is the hook for future authorization.
+/// The set of capabilities a caller has been granted — a small, explicit authorization scope.
+/// Locked-block writes are governed by the block's own state (a locked block is immutable to
+/// *every* scope via the write path); `ManageLocks` gates the unlock that precedes an edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scope {
+    read: bool,
+    write: bool,
+    manage_locks: bool,
+}
+
+impl Scope {
+    /// No access — un-authenticated remote callers fail closed.
+    pub const NONE: Scope = Scope {
+        read: false,
+        write: false,
+        manage_locks: false,
+    };
+    /// Read but not write (the shape a future read-only token would grant).
+    pub const READ_ONLY: Scope = Scope {
+        read: true,
+        write: false,
+        manage_locks: false,
+    };
+    /// Read + write unlocked blocks, but **cannot** lock/unlock. The default for machine clients
+    /// (CLI, MCP) and token-authenticated callers today.
+    pub const AGENT: Scope = Scope {
+        read: true,
+        write: true,
+        manage_locks: false,
+    };
+    /// Everything, including lock management. Granted to the desktop app (the human surface).
+    pub const APP: Scope = Scope {
+        read: true,
+        write: true,
+        manage_locks: true,
+    };
+
+    /// Whether this scope grants `cap`.
+    pub fn can(&self, cap: Capability) -> bool {
+        match cap {
+            Capability::Read => self.read,
+            Capability::Write => self.write,
+            Capability::ManageLocks => self.manage_locks,
+        }
+    }
+}
+
+/// Per-request context: who is calling (identity) and what they may do (scope).
 #[derive(Debug, Clone)]
 pub struct RequestContext {
-    /// The caller.
+    /// The caller (transport identity, for logging/diagnostics).
     pub caller: Caller,
+    /// The granted capability scope.
+    pub scope: Scope,
 }
 
 impl RequestContext {
-    /// A local, trusted context.
+    /// A local, trusted context with the **agent** scope (read + write, no lock management). This
+    /// is the default for the CLI and MCP server; the desktop app upgrades to [`Scope::APP`].
     pub fn local() -> Self {
         RequestContext {
             caller: Caller::Local,
+            scope: Scope::AGENT,
         }
     }
 
-    /// A remote context with an opaque principal id.
+    /// A local context with the full **app** scope (adds lock management). Used by the desktop
+    /// app — the single human surface allowed to lock/unlock.
+    pub fn local_app() -> Self {
+        RequestContext {
+            caller: Caller::Local,
+            scope: Scope::APP,
+        }
+    }
+
+    /// A remote context with an opaque principal id. Fails closed (empty scope) until it
+    /// authenticates with a token.
     pub fn remote(id: impl Into<String>) -> Self {
         RequestContext {
             caller: Caller::Remote(id.into()),
+            scope: Scope::NONE,
         }
     }
 
-    /// A network context that has presented a valid shared token.
+    /// A network context that has presented a valid shared token: the **agent** scope today
+    /// (read + write, no lock management). Scoped tokens (e.g. read-only) plug in here.
     pub fn authenticated(id: impl Into<String>) -> Self {
         RequestContext {
             caller: Caller::Authenticated(id.into()),
+            scope: Scope::AGENT,
         }
     }
 
-    /// Authorize `cap` for this caller. Local and token-authenticated callers are permitted
-    /// everything today; un-authenticated remote callers fail closed. This is the single
-    /// choke point where finer-grained (e.g. read-only token) authz will be enforced later.
-    pub fn authorize(&self, _cap: Capability) -> Result<(), IndexError> {
-        match &self.caller {
-            Caller::Local | Caller::Authenticated(_) => Ok(()),
-            Caller::Remote(id) => Err(IndexError::new(format!(
-                "unauthorized: remote caller {id} (authenticate with a token first)"
-            ))),
+    /// Authorize `cap` against this context's scope. The single choke point for authorization.
+    pub fn authorize(&self, cap: Capability) -> Result<(), IndexError> {
+        if self.scope.can(cap) {
+            return Ok(());
         }
+        let msg = match (&self.caller, cap) {
+            (Caller::Remote(id), _) => {
+                format!("unauthorized: remote caller {id} (authenticate with a token first)")
+            }
+            (_, Capability::ManageLocks) => {
+                "locking/unlocking is human-only: do it in the desktop app".to_string()
+            }
+            (_, c) => format!("unauthorized: missing {c:?} capability"),
+        };
+        Err(IndexError::new(msg))
     }
 }
 
@@ -124,7 +197,18 @@ impl<I: Index> Service<I> {
         id: &BlockId,
     ) -> Result<Option<BlockRecord>, IndexError> {
         ctx.authorize(Capability::Read)?;
-        self.engine.index().block(id)
+        let mut record = self.engine.index().block(id)?;
+        // The index doesn't persist `locked` (it lives in the file frontmatter); overlay the
+        // authoritative value from the parsed vault so clients see the true lock state.
+        if let Some(rec) = record.as_mut() {
+            rec.locked = self
+                .engine
+                .vault()
+                .block(id)
+                .map(|b| b.locked)
+                .unwrap_or(false);
+        }
+        Ok(record)
     }
 
     /// The raw Markdown body of a block (for editing).
@@ -262,6 +346,35 @@ impl<I: Index> Service<I> {
 
     // ----- writes -----
 
+    /// Guard a mutation against the human-only (`locked`) rule: a locked block is **immutable to
+    /// every caller** via the write path — there is no write-through. To change it, a human
+    /// unlocks it in the app first (see [`Service::set_lock`]), edits, then re-locks. Returns `Ok`
+    /// if the block is unlocked or absent. This is the single enforcement point reused by every
+    /// write that targets an existing block (update/set-tags/delete/carve-from/flatten/link-into).
+    fn ensure_writable(&self, id: &BlockId) -> Result<(), IndexError> {
+        if let Some(b) = self.engine.vault().block(id) {
+            if b.locked {
+                return Err(IndexError::new(format!(
+                    "block {id} is locked (human-only): unlock it in the desktop app first"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Lock or unlock a block (the human-only flag). Requires the [`Capability::ManageLocks`]
+    /// capability, which only the desktop app's scope holds — so lock state can only be toggled
+    /// from the app (or by a human editing the file's `locked:` frontmatter directly).
+    pub fn set_lock(
+        &mut self,
+        ctx: &RequestContext,
+        id: &BlockId,
+        locked: bool,
+    ) -> Result<(), IndexError> {
+        ctx.authorize(Capability::ManageLocks)?;
+        self.engine.set_lock(id, locked)
+    }
+
     /// Create a new block (optional title + body). Returns the new id.
     pub fn create_block(
         &mut self,
@@ -282,6 +395,7 @@ impl<I: Index> Service<I> {
         body: &str,
     ) -> Result<(), IndexError> {
         ctx.authorize(Capability::Write)?;
+        self.ensure_writable(id)?;
         self.engine.update_block(id, title, body)
     }
 
@@ -294,12 +408,14 @@ impl<I: Index> Service<I> {
         tags: &[String],
     ) -> Result<(), IndexError> {
         ctx.authorize(Capability::Write)?;
+        self.ensure_writable(id)?;
         self.engine.set_tags(id, tags)
     }
 
     /// Delete a block (file + index).
     pub fn delete_block(&mut self, ctx: &RequestContext, id: &BlockId) -> Result<(), IndexError> {
         ctx.authorize(Capability::Write)?;
+        self.ensure_writable(id)?;
         self.engine.delete_block(id)
     }
 
@@ -314,6 +430,7 @@ impl<I: Index> Service<I> {
         body: &str,
     ) -> Result<BlockId, IndexError> {
         ctx.authorize(Capability::Write)?;
+        self.ensure_writable(parent_id)?;
         if self.engine.vault().block(parent_id).is_none() {
             return Err(IndexError::new(format!("unknown block: {parent_id}")));
         }
@@ -336,6 +453,7 @@ impl<I: Index> Service<I> {
         end: usize,
     ) -> Result<BlockId, IndexError> {
         ctx.authorize(Capability::Write)?;
+        self.ensure_writable(parent_id)?;
         let parent = self
             .engine
             .vault()
@@ -386,6 +504,10 @@ impl<I: Index> Service<I> {
         child_id: &BlockId,
     ) -> Result<(), IndexError> {
         ctx.authorize(Capability::Write)?;
+        // Flatten mutates the parent (inlines the embed) and deletes the child, so both must be
+        // writable by this caller.
+        self.ensure_writable(parent_id)?;
+        self.ensure_writable(child_id)?;
 
         // Read phase: validate, count every directive occurrence targeting the child across the
         // vault, and capture the single occurrence's span (so the immutable borrow ends before we
@@ -470,6 +592,8 @@ impl<I: Index> Service<I> {
         embed: bool,
     ) -> Result<LinkOutcome, IndexError> {
         ctx.authorize(Capability::Write)?;
+        // Linking appends a directive to the source block, so the source must be writable.
+        self.ensure_writable(source_id)?;
         if self.engine.vault().block(source_id).is_none() {
             return Err(IndexError::new(format!(
                 "unknown source block: {source_id}"
@@ -801,5 +925,104 @@ mod tests {
         assert_eq!(svc.stats(&ctx).unwrap().blocks, 1);
         svc.delete_block(&ctx, &id).unwrap();
         assert_eq!(svc.stats(&ctx).unwrap().blocks, 0);
+    }
+
+    // ----- human-only (locked) blocks -----
+
+    /// The desktop-app context (full scope, incl. lock management). `RequestContext::local()` is
+    /// the *agent* scope (read + write, no lock management).
+    fn app() -> RequestContext {
+        RequestContext::local_app()
+    }
+
+    #[test]
+    fn set_lock_requires_manage_locks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let agent = RequestContext::local();
+        let id = svc.create_block(&agent, Some("Pinned"), "body").unwrap();
+        // An agent (CLI/MCP) lacks ManageLocks → cannot lock or unlock.
+        assert!(svc.set_lock(&agent, &id, true).is_err());
+        // The app can.
+        svc.set_lock(&app(), &id, true).unwrap();
+        assert!(svc.get_block(&agent, &id).unwrap().unwrap().locked);
+    }
+
+    #[test]
+    fn agent_can_read_but_not_write_locked_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let agent = RequestContext::local();
+        let id = svc
+            .create_block(&agent, Some("Pinned"), "the original")
+            .unwrap();
+        svc.set_lock(&app(), &id, true).unwrap();
+
+        // Reads are allowed for an agent, and report the lock state.
+        let rec = svc.get_block(&agent, &id).unwrap().unwrap();
+        assert!(rec.locked);
+        assert_eq!(rec.content, "the original");
+        assert!(svc.get_block_source(&agent, &id).unwrap().is_some());
+        assert!(svc.render_block(&agent, &id).unwrap().is_some());
+
+        // Every write path is denied for an agent.
+        assert!(svc.update_block(&agent, &id, None, "tampered").is_err());
+        assert!(svc.set_tags(&agent, &id, &["x".to_string()]).is_err());
+        assert!(svc.carve_block(&agent, &id, None, "chunk").is_err());
+        assert!(svc.delete_block(&agent, &id).is_err());
+
+        // The body is untouched after the denied writes.
+        assert_eq!(
+            svc.get_block_source(&agent, &id).unwrap().unwrap(),
+            "the original"
+        );
+    }
+
+    #[test]
+    fn locked_block_is_immutable_even_to_the_app() {
+        // Explicit-unlock model: a locked block has no write-through, not even for the app.
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let agent = RequestContext::local();
+        let id = svc.create_block(&agent, Some("Pinned"), "v1").unwrap();
+        svc.set_lock(&app(), &id, true).unwrap();
+        // The app holds Write + ManageLocks, but a direct write to a locked block still fails.
+        assert!(svc.update_block(&app(), &id, None, "v2").is_err());
+        assert_eq!(svc.get_block_source(&agent, &id).unwrap().unwrap(), "v1");
+    }
+
+    #[test]
+    fn unlock_then_edit_then_relock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let agent = RequestContext::local();
+        let id = svc.create_block(&agent, Some("Pinned"), "v1").unwrap();
+        svc.set_lock(&app(), &id, true).unwrap();
+        assert!(svc.update_block(&agent, &id, None, "nope").is_err());
+
+        // The honest flow: app unlocks → edit → re-lock. After unlock an agent can write too.
+        svc.set_lock(&app(), &id, false).unwrap();
+        svc.update_block(&agent, &id, None, "v2").unwrap();
+        assert_eq!(svc.get_block_source(&agent, &id).unwrap().unwrap(), "v2");
+        svc.set_lock(&app(), &id, true).unwrap();
+        let rec = svc.get_block(&agent, &id).unwrap().unwrap();
+        assert_eq!(rec.content, "v2");
+        assert!(rec.locked, "re-lock must persist");
+    }
+
+    #[test]
+    fn agent_cannot_carve_from_or_link_into_locked_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let agent = RequestContext::local();
+        let locked = svc.create_block(&agent, Some("Pinned"), "body").unwrap();
+        let other = svc.create_block(&agent, Some("Other"), "x").unwrap();
+        svc.set_lock(&app(), &locked, true).unwrap();
+
+        // Carve-from and link-into both mutate the locked block → denied.
+        assert!(svc.carve_selection(&agent, &locked, 0, 4).is_err());
+        assert!(svc.link_blocks(&agent, &locked, &other, true).is_err());
+        // But linking FROM an unlocked block TO the locked one is fine (target isn't mutated).
+        assert!(svc.link_blocks(&agent, &other, &locked, false).is_ok());
     }
 }

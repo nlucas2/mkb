@@ -18,9 +18,11 @@ use crate::id::BlockId;
 pub fn parse_block(id: BlockId, source: &str) -> Block {
     let (frontmatter, body) = split_frontmatter(source);
     let (mut title, mut tags) = (None, Vec::new());
+    let mut locked = false;
     if let Some(fm) = frontmatter {
         title = parse_title(fm);
         tags = parse_fm_tags(fm);
+        locked = parse_locked(fm);
     }
     // The frontmatter tags are the managed set; inline #tags are prose mentions merged into the
     // searchable union but not managed by the tag editor.
@@ -42,15 +44,17 @@ pub fn parse_block(id: BlockId, source: &str) -> Block {
         tags,
         fm_tags,
         langs,
+        locked,
         body: body.to_string(),
     }
 }
 
 /// Serialize a block's managed metadata + body back into file text. Frontmatter is emitted only
-/// when there is metadata mdkb manages: a `title:` and/or `tags:`. Inline `#hashtag` mentions
-/// live in the body and are not re-emitted as frontmatter (they round-trip as prose). `tags`
-/// are the managed (frontmatter) tags; pass an empty slice for none.
-pub fn write_block(title: Option<&str>, tags: &[String], body: &str) -> String {
+/// when there is metadata mdkb manages: a `title:`, `tags:`, and/or the `locked:` flag. Inline
+/// `#hashtag` mentions live in the body and are not re-emitted as frontmatter (they round-trip as
+/// prose). `tags` are the managed (frontmatter) tags; pass an empty slice for none. `locked` emits
+/// `locked: true` (and is omitted when false, so unlocked blocks stay clean).
+pub fn write_block(title: Option<&str>, tags: &[String], locked: bool, body: &str) -> String {
     let title = title.map(str::trim).filter(|t| !t.is_empty());
     let clean_tags: Vec<&str> = tags
         .iter()
@@ -58,7 +62,7 @@ pub fn write_block(title: Option<&str>, tags: &[String], body: &str) -> String {
         .filter(|t| !t.is_empty())
         .collect();
 
-    if title.is_none() && clean_tags.is_empty() {
+    if title.is_none() && clean_tags.is_empty() && !locked {
         return body.to_string();
     }
 
@@ -68,6 +72,9 @@ pub fn write_block(title: Option<&str>, tags: &[String], body: &str) -> String {
     }
     if !clean_tags.is_empty() {
         fm.push_str(&format!("tags: [{}]\n", clean_tags.join(", ")));
+    }
+    if locked {
+        fm.push_str("locked: true\n");
     }
     fm.push_str("---\n\n");
     fm.push_str(body.trim_start_matches('\n'));
@@ -113,6 +120,18 @@ fn parse_title(fm: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Parse the `locked:` frontmatter flag. Truthy values (`true`/`yes`/`on`/`1`, case-insensitive)
+/// mark the block human-only; anything else (or absent) is unlocked.
+fn parse_locked(fm: &str) -> bool {
+    for line in fm.lines() {
+        if let Some(rest) = line.trim().strip_prefix("locked:") {
+            let v = parse_scalar(rest).to_ascii_lowercase();
+            return matches!(v.as_str(), "true" | "yes" | "on" | "1");
+        }
+    }
+    false
 }
 
 /// Serialize a string as a YAML scalar that survives a standard YAML parser: a plain scalar
@@ -335,7 +354,7 @@ mod tests {
 
     #[test]
     fn write_block_round_trips_through_parse() {
-        let text = write_block(Some("My Title"), &[], "the body\n");
+        let text = write_block(Some("My Title"), &[], false, "the body\n");
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.title.as_deref(), Some("My Title"));
         assert_eq!(b.body, "the body\n");
@@ -343,13 +362,13 @@ mod tests {
 
     #[test]
     fn write_block_without_title_or_tags_is_pure_body() {
-        assert_eq!(write_block(None, &[], "hello\n"), "hello\n");
+        assert_eq!(write_block(None, &[], false, "hello\n"), "hello\n");
     }
 
     #[test]
     fn write_block_round_trips_frontmatter_tags() {
         let tags = vec!["k8s".to_string(), "ops".to_string()];
-        let text = write_block(Some("Deploy"), &tags, "body\n");
+        let text = write_block(Some("Deploy"), &tags, false, "body\n");
         assert!(text.contains("tags: [k8s, ops]"));
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.fm_tags, vec!["k8s", "ops"]);
@@ -360,7 +379,7 @@ mod tests {
     #[test]
     fn write_block_emits_tags_without_title() {
         let tags = vec!["solo".to_string()];
-        let text = write_block(None, &tags, "body\n");
+        let text = write_block(None, &tags, false, "body\n");
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.fm_tags, vec!["solo"]);
         assert_eq!(b.title, None);
@@ -369,7 +388,7 @@ mod tests {
     #[test]
     fn write_block_quotes_title_with_colon() {
         // A title containing `: ` would be invalid YAML unquoted; it must be double-quoted.
-        let text = write_block(Some("SPEC: A block file"), &[], "body\n");
+        let text = write_block(Some("SPEC: A block file"), &[], false, "body\n");
         assert!(
             text.contains("title: \"SPEC: A block file\"\n"),
             "title should be quoted: {text}"
@@ -381,14 +400,14 @@ mod tests {
     #[test]
     fn write_block_leaves_plain_title_unquoted() {
         // Common titles stay plain so existing vault files don't churn.
-        let text = write_block(Some("Deploying to k3s"), &[], "body\n");
+        let text = write_block(Some("Deploying to k3s"), &[], false, "body\n");
         assert!(text.contains("title: Deploying to k3s\n"), "{text}");
     }
 
     #[test]
     fn write_block_round_trips_title_with_quotes_and_backslash() {
         let title = "He said \"hi\" \\ bye";
-        let text = write_block(Some(title), &[], "body\n");
+        let text = write_block(Some(title), &[], false, "body\n");
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.title.as_deref(), Some(title));
     }
@@ -397,5 +416,38 @@ mod tests {
     fn parse_title_unescapes_double_quoted() {
         let b = p("---\ntitle: \"a: b \\\"c\\\"\"\n---\n\nbody\n");
         assert_eq!(b.title.as_deref(), Some("a: b \"c\""));
+    }
+
+    #[test]
+    fn parses_locked_flag() {
+        let b = p("---\ntitle: Pinned\nlocked: true\n---\n\nbody\n");
+        assert!(b.locked);
+        let unlocked = p("---\ntitle: Free\n---\n\nbody\n");
+        assert!(!unlocked.locked);
+        // No frontmatter at all → unlocked.
+        assert!(!p("# plain\n").locked);
+    }
+
+    #[test]
+    fn write_block_round_trips_locked() {
+        let text = write_block(Some("Pinned"), &[], true, "body\n");
+        assert!(text.contains("locked: true\n"), "{text}");
+        let b = parse_block(BlockId::generate(), &text);
+        assert!(b.locked);
+        assert_eq!(b.title.as_deref(), Some("Pinned"));
+    }
+
+    #[test]
+    fn write_block_emits_locked_without_title_or_tags() {
+        // A locked block must still get frontmatter even with no title/tags.
+        let text = write_block(None, &[], true, "just body\n");
+        assert!(text.starts_with("---\nlocked: true\n---\n"), "{text}");
+        assert!(parse_block(BlockId::generate(), &text).locked);
+    }
+
+    #[test]
+    fn write_block_omits_locked_when_false() {
+        let text = write_block(Some("Free"), &[], false, "body\n");
+        assert!(!text.contains("locked"), "{text}");
     }
 }

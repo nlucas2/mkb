@@ -432,6 +432,8 @@ fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<BlockRecord> {
         contextual_text: r.get(4)?,
         tags: split_ws(&tags_text),
         child_count: r.get::<_, i64>(6)? as usize,
+        // `locked` is not persisted in the index; the service overlays it from the vault.
+        locked: false,
     })
 }
 

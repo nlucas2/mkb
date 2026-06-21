@@ -202,7 +202,7 @@ impl<I: Index> SyncEngine<I> {
     /// the new block id. Frontmatter tags start empty; inline `#tags` in the body still apply.
     pub fn create_block(&mut self, title: Option<&str>, body: &str) -> Result<BlockId, IndexError> {
         let id = BlockId::generate();
-        let source = write_block(title, &[], body);
+        let source = write_block(title, &[], false, body);
         self.write_file(&id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -212,8 +212,9 @@ impl<I: Index> SyncEngine<I> {
     }
 
     /// Overwrite a block's body (+ optional title), persisting to its file. The block's managed
-    /// frontmatter `tags:` are **preserved** across the edit (tags are changed via
-    /// [`SyncEngine::set_tags`], not by body edits — so editing prose never drops tags).
+    /// frontmatter `tags:` and its `locked:` flag are **preserved** across the edit (both are
+    /// changed via their own ops — [`SyncEngine::set_tags`] / [`SyncEngine::set_lock`] — not by a
+    /// body edit, so editing prose never drops tags or silently unlocks a block).
     pub fn update_block(
         &mut self,
         id: &BlockId,
@@ -225,7 +226,8 @@ impl<I: Index> SyncEngine<I> {
             .block(id)
             .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
         let fm_tags = existing.fm_tags.clone();
-        let source = write_block(title, &fm_tags, body);
+        let locked = existing.locked;
+        let source = write_block(title, &fm_tags, locked, body);
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -244,6 +246,7 @@ impl<I: Index> SyncEngine<I> {
             .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
         let title = existing.title.clone();
         let body = existing.body.clone();
+        let locked = existing.locked;
         let mut clean: Vec<String> = Vec::new();
         for t in tags {
             let t = t.trim();
@@ -251,7 +254,26 @@ impl<I: Index> SyncEngine<I> {
                 clean.push(t.to_string());
             }
         }
-        let source = write_block(title.as_deref(), &clean, &body);
+        let source = write_block(title.as_deref(), &clean, locked, &body);
+        self.write_file(id, &source)?;
+        self.ingest(id.clone(), &source)?;
+        self.hashes
+            .insert(id.clone(), hash_bytes(source.as_bytes()));
+        self.refresh_links()?;
+        Ok(())
+    }
+
+    /// Set a block's `locked:` flag to exactly `locked`, preserving its title, managed tags, and
+    /// body. This is the only writer that changes lock state; body/tag edits preserve it.
+    pub fn set_lock(&mut self, id: &BlockId, locked: bool) -> Result<(), IndexError> {
+        let existing = self
+            .vault
+            .block(id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
+        let title = existing.title.clone();
+        let tags = existing.fm_tags.clone();
+        let body = existing.body.clone();
+        let source = write_block(title.as_deref(), &tags, locked, &body);
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes

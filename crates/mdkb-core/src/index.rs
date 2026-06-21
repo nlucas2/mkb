@@ -31,6 +31,11 @@ pub struct BlockRecord {
     pub contextual_text: String,
     /// Number of resolved children (transclusions).
     pub child_count: usize,
+    /// **Human-only** flag (frontmatter `locked: true`). Not persisted in the index (it lives in
+    /// the file frontmatter, the source of truth); the service overlays the authoritative value
+    /// from the parsed vault when serving a record. Defaults to `false` on the index read path.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub locked: bool,
 }
 
 impl BlockRecord {
@@ -44,6 +49,7 @@ impl BlockRecord {
             content: block.body.clone(),
             contextual_text: block.contextual_text(),
             child_count,
+            locked: block.locked,
         }
     }
 

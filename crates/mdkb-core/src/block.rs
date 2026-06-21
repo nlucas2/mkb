@@ -25,6 +25,10 @@ pub struct Block {
     pub fm_tags: Vec<String>,
     /// Fenced-code languages appearing in the body (for language-filtered search).
     pub langs: Vec<String>,
+    /// **Human-only** flag (frontmatter `locked: true`). A locked block is fully readable by any
+    /// caller but may only be *written* (or unlocked) by a human principal — agent clients (MCP,
+    /// CLI) are denied mutations. Enforced at the service write gate; see `RequestContext`.
+    pub locked: bool,
     /// The Markdown body (everything after frontmatter), verbatim.
     pub body: String,
 }
@@ -133,6 +137,7 @@ mod tests {
             tags: vec![],
             fm_tags: vec![],
             langs: vec![],
+            locked: false,
             body: body.to_string(),
         }
     }
