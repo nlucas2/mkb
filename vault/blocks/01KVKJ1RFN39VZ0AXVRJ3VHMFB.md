@@ -31,8 +31,9 @@ connect either way — a **local** socket or a **remote** TCP daemon.
   (the outgoing links/embeds, each resolved to its target with a preview, click-to-open) and
   **hover previews** on rendered wikilink chips, **New / Add / Carve / Delete** block actions, a
   force-directed **knowledge graph** (nodes sized by link degree, computed in `mdkb-core`
-  `link_graph`), **linked references** per block, and **Settings** (choose a Local vault or a
-  Remote daemon `host:port` + token, no env vars). Point Settings → Local vault at your vault and
+  `link_graph`), **linked references** per block, a **lock toggle** that pins a block as
+  **human-only** (🔒 — AI clients can read it but not modify it), and **Settings** (choose a Local
+  vault or a Remote daemon `host:port` + token, no env vars; restart the daemon). Point Settings → Local vault at your vault and
   go; see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
 
 - **Local web UI** (`mdkb-web`) — the same views in a browser:

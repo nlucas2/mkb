@@ -26,6 +26,8 @@ clean, deduplicated, well-connected graph, not a pile of near-duplicate notes.
 
 ![[01KVJ1H7KNR0V62MBJBWPKMRQJ]]
 
+![[01KVP1DESF4ADH7XB1H2KY5GBC]]
+
 ![[01KVJ1H7MZB5BT8P87MK24WWSQ]]
 
 ![[01KVJ1H7MATVREF1KCPADX8BYD]]

@@ -27,7 +27,8 @@ Our cluster runs k3s on the Pi rack.
 Push to Forgejo and the pipeline applies the manifests.
 ```
 
-- **Frontmatter** (optional): `title:` (a human title) and `tags:` (flow `[a, b]` or a block
-  list). Unknown keys are ignored. A file with no frontmatter is just Markdown.
+- **Frontmatter** (optional): `title:` (a human title), `tags:` (flow `[a, b]` or a block
+  list), and `locked:` (`true` marks the block **human-only** — see below). Unknown keys are
+  ignored. A file with no frontmatter is just Markdown.
 - **Body**: arbitrary Markdown. Inline `#tags` are also collected (outside code fences).
   Fenced-code-block languages are recorded for language-filtered search.
