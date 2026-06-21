@@ -192,6 +192,11 @@ pub enum Request {
     /// security boundary: the local Unix socket is already trusted, and this just keeps machine
     /// clients (CLI/MCP) from toggling locks. On a token-gated remote transport it is rejected.
     AnnounceApp,
+    /// Ask the daemon to shut down cleanly: remove its socket and exit. **Local connections only**
+    /// — a remote/authenticated caller is refused, so a network client can't take down a shared
+    /// daemon. Used by the desktop app's "restart daemon" control (shut down, then reconnect,
+    /// which auto-starts a fresh daemon — e.g. to pick up an upgraded binary).
+    Shutdown,
 }
 
 /// A response from the daemon.
@@ -363,6 +368,9 @@ fn handle<I: Index>(
         },
         Request::AnnounceApp => Response::Error {
             message: "announce_app is handled by the daemon connection layer".to_string(),
+        },
+        Request::Shutdown => Response::Error {
+            message: "shutdown is handled by the daemon connection layer".to_string(),
         },
         Request::Heartbeat { .. } | Request::ReleaseLease { .. } => Response::Error {
             message: "lease ops are handled by the daemon lifecycle layer".to_string(),
@@ -592,6 +600,15 @@ impl Client {
     /// on a client built with [`Client::as_app`]; an agent client is rejected by the daemon.
     pub fn set_lock(&self, id: BlockId, locked: bool) -> io::Result<()> {
         match self.call(&Request::SetLock { id, locked })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: ask the daemon to shut down (local connections only). After this returns, the
+    /// next call reconnects and auto-starts a fresh daemon. Used by the app's "restart daemon".
+    pub fn shutdown(&self) -> io::Result<()> {
+        match self.call(&Request::Shutdown)? {
             Response::Ok => Ok(()),
             other => Err(unexpected(other)),
         }

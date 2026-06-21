@@ -211,12 +211,14 @@ pub fn serve(
         let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
     }
     eprintln!("mdkbd: listening on {}", socket.display());
+    let sock = socket.to_path_buf();
     for stream in listener {
         match stream {
             Ok(stream) => {
                 let svc = SharedService::clone(&service);
                 let act = activity.clone();
                 let lz = leases.clone();
+                let sock = sock.clone();
                 thread::spawn(move || {
                     // `&Stream` is both Read and Write, so one stream serves reader and writer.
                     if let Err(e) = handle(
@@ -227,6 +229,7 @@ pub fn serve(
                         svc,
                         act.as_ref(),
                         &lz,
+                        Some(sock.clone()),
                     ) {
                         eprintln!("mdkbd: connection error: {e}");
                     }
@@ -267,8 +270,16 @@ fn serve_tcp(
                         }
                     };
                     let ctx = RequestContext::remote(peer);
-                    if let Err(e) = handle(stream, writer, ctx, Some(token), svc, act.as_ref(), &lz)
-                    {
+                    if let Err(e) = handle(
+                        stream,
+                        writer,
+                        ctx,
+                        Some(token),
+                        svc,
+                        act.as_ref(),
+                        &lz,
+                        None,
+                    ) {
                         eprintln!("mdkbd: tcp connection error: {e}");
                     }
                 });
@@ -281,6 +292,9 @@ fn serve_tcp(
 /// Handle one connection. `token`, when `Some`, requires the client to authenticate before
 /// any data request is honoured; the connection context is upgraded on success. Each decoded
 /// request marks `activity` (when present) so the idle watchdog sees the daemon is in use.
+// One param per connection concern (transport identity, service, idle tracker, lease registry,
+// socket-for-shutdown); grouping them into a struct would add lifetime ceremony for no real gain.
+#[allow(clippy::too_many_arguments)]
 fn handle(
     reader: impl Read,
     mut writer: impl Write,
@@ -289,6 +303,7 @@ fn handle(
     service: SharedService,
     activity: Option<&Activity>,
     leases: &Leases,
+    socket: Option<PathBuf>,
 ) -> io::Result<()> {
     let mut reader = BufReader::new(reader);
     loop {
@@ -316,6 +331,7 @@ fn handle(
         if line.is_empty() {
             continue;
         }
+        let mut shutting_down = false;
         let response = match decode_request(line) {
             Ok(Request::Authenticate { token: presented }) => {
                 if let Some(a) = activity {
@@ -349,6 +365,18 @@ fn handle(
                 }
                 announce_app(&mut ctx)
             }
+            // Explicit shutdown: local connections only (a remote caller can't take down a shared
+            // daemon). We respond first, then remove the socket and exit after the flush below —
+            // the same cleanup the idle watchdog performs.
+            Ok(Request::Shutdown) => match ctx.caller {
+                Caller::Local => {
+                    shutting_down = true;
+                    Response::Ok
+                }
+                _ => Response::Error {
+                    message: "shutdown is available only to the local desktop app".to_string(),
+                },
+            },
             Ok(req) => {
                 // A real request — including a Ping liveness check — counts as use and defers
                 // idle shutdown.
@@ -364,6 +392,13 @@ fn handle(
         };
         writer.write_all(encode_response(&response)?.as_bytes())?;
         writer.flush()?;
+        if shutting_down {
+            eprintln!("mdkbd: shutdown requested; removing socket and exiting");
+            if let Some(s) = &socket {
+                let _ = std::fs::remove_file(s);
+            }
+            std::process::exit(0);
+        }
     }
     Ok(())
 }

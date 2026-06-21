@@ -1041,6 +1041,10 @@
               <label>Token</label><input type="text" id="token" value="${esc(!isLocal?(cfg.token||""):"")}" placeholder="shared token"/>
             </div>
             <div class="savebar"><button class="primary" id="savecfg">Save & connect</button><span class="muted" id="cfgmsg"></span></div>
+            <hr style="border:none;border-top:1px solid var(--border);margin:1.4rem 0"/>
+            <label>Daemon</label>
+            <p class="hint">Restart the background <code>mdkbd</code> — it shuts down and a fresh one starts on the next action. Use this after updating the app so a still-running older daemon is replaced.</p>
+            <div class="row"><button id="restartd">Restart daemon</button><span class="muted" id="restartmsg"></span></div>
           </div>`;
         mainEl.querySelectorAll("input[name=mode]").forEach((r) => (r.onchange = () => {
           const local = mainEl.querySelector("input[name=mode]:checked").value === "local";
@@ -1061,6 +1065,17 @@
             msg.textContent = "Connected."; invalidate(); active = null;
             await refreshStatus(); await loadBlocks();
           } catch (e) { msg.textContent = String(e); await refreshStatus(); }
+        };
+        mainEl.querySelector("#restartd").onclick = async () => {
+          const ok = await confirmModal("Restart the daemon? In-flight work is unaffected; the index reloads from disk.", { confirmLabel: "Restart" });
+          if (!ok) return;
+          const msg = mainEl.querySelector("#restartmsg"); msg.textContent = "Restarting…";
+          try {
+            await invoke("restart_daemon");
+            msg.textContent = "Daemon restarted.";
+            invalidate(); await refreshStatus(); await loadBlocks();
+            toast("Daemon restarted.");
+          } catch (e) { msg.textContent = String(e); toast(String(e), "error"); }
         };
       }
 

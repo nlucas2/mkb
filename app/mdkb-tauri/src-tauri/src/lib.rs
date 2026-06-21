@@ -457,6 +457,29 @@ struct ConnStatus {
     connected: bool,
 }
 
+/// Restart the local daemon: ask it to shut down (remove its socket and exit), then reconnect —
+/// which transparently auto-starts a fresh detached daemon. Useful after upgrading the app to
+/// replace a still-running older daemon. Only meaningful for a local vault; on a remote
+/// connection the shutdown is refused by the daemon and we surface that.
+#[tauri::command]
+fn restart_daemon(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    // Best-effort shutdown of the current daemon (ignore "not reachable" — we'll respawn anyway).
+    {
+        let client = state.client.lock().map_err(|_| "state poisoned")?;
+        if let Err(e) = client.shutdown() {
+            log_line!("mdkb: shutdown before restart returned: {e}");
+        }
+    }
+    // Give the daemon a moment to release its socket and lock before respawning.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let cfg = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
+    let fresh = connect(&cfg, state.mdkbd.as_deref())?;
+    let mut guard = state.client.lock().map_err(|_| "state poisoned")?;
+    *guard = fresh.as_app();
+    log_line!("mdkb: daemon restarted ({})", guard.endpoint());
+    Ok(())
+}
+
 /// Open a native folder picker and return the chosen path (for local-vault selection).
 #[tauri::command]
 fn pick_vault(app: tauri::AppHandle) -> Result<Option<String>, String> {
@@ -525,6 +548,7 @@ pub fn run() {
             get_settings,
             save_settings,
             connection_status,
+            restart_daemon,
             pick_vault,
         ])
         .run(tauri::generate_context!())
