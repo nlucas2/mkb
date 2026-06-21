@@ -5,16 +5,63 @@ tags: [skill, surface, cli]
 
 ## The CLI surface
 
-Every command takes a vault dir and goes through the daemon (auto-started). `<id>` is a
-ULID; bodies come from stdin where noted.
+This is your tool surface: there is no auto-injected schema, so invoke these commands exactly
+as shown. **Every command is `mdkb <command> <vault-dir> [args]`** — the vault directory is always
+the first positional after the command, and you repeat it on every call. The CLI auto-starts (and
+reuses) that vault's daemon. `<id>` is a ULID. Bodies are read from **stdin**, so pipe them in
+(`echo`, a heredoc, or `<file`). To target a remote daemon instead of a local socket, set
+`MDKB_REMOTE=host:port` (and `MDKB_TOKEN`) in the environment.
 
-**Read:** `list`, `render <id>` (`--flat` for the published form), `get <id>` (raw body),
-`search <query>` (operators, or `--tag=`/`--lang=`/`--limit=`), `tags`, `backlinks <id>`,
-`links <id>`, `stats`, `conflicts`, `ping`.
+Two commands **print an id on stdout you must capture** — `create` (new block id) and `carve`
+(child id) — because every later command needs that id.
 
-**Write:** `create [--title=T] < body` (prints the id), `update <id> [--title=T] < body`,
-`set-tags <id> [tag...]`, `link <src> <dst> [--embed]`, `carve <parent> [--title=T] < body`
-(prints the child id), `flatten <parent> <child>` (inline a single-use embed back and delete the
-child - the inverse of carve; errors unless the child is referenced exactly once), `delete <id>`.
+### Reads
 
-The safe edit is read-modify-write: `mdkb get vault <id>` -> edit -> `mdkb update vault <id> < body`.
+```sh
+mdkb list <vault>                          # root blocks, "id  title" per line
+mdkb get <vault> <id>                       # raw Markdown body (use before any update)
+mdkb render <vault> <id>                     # body with embeds resolved
+mdkb render <vault> <id> --flat              # published form: embeds dissolved, refs as titles
+mdkb search <vault> "how do I restart nginx" # hybrid keyword+semantic; prefer a natural phrase
+mdkb search <vault> "ingress" --tag=ops --lang=yaml --limit=10   # filters (--tag repeatable)
+mdkb search <vault> "tag:ops #k8s lang:rust deploy"              # same filters as inline operators
+mdkb tags <vault>                            # every tag with its block count
+mdkb backlinks <vault> <id>                  # blocks that reference/embed <id> (check before edits)
+mdkb links <vault> <id>                      # outgoing links/embeds from <id>
+mdkb stats <vault>                           # index statistics
+mdkb conflicts <vault>                       # cloud-sync conflict files, if any
+mdkb ping <vault>                            # confirm the daemon is reachable
+```
+
+### Writes (body via stdin where shown)
+
+```sh
+# create — prints the new id; CAPTURE it
+id=$(printf '# Title\n\nbody…\n' | mdkb create <vault> --title="Title")
+
+# update — overwrites the WHOLE body+title; read-modify-write (see write safety)
+mdkb get <vault> "$id" > /tmp/b.md      # 1. read
+#   …edit /tmp/b.md, preserving everything you want to keep…
+mdkb update <vault> "$id" --title="Title" < /tmp/b.md   # 2. write the complete new body
+
+mdkb set-tags <vault> <id> ops k8s      # set managed (frontmatter) tags; no args clears them
+mdkb link <vault> <src> <dst>           # add a reference  [[dst]] in src
+mdkb link <vault> <src> <dst> --embed   # add a live embed ![[dst]] in src
+
+# carve a reusable chunk out of <parent> into its own child block — prints the child id
+child=$(printf 'shared chunk…\n' | mdkb carve <vault> <parent> --title="Shared chunk")
+
+mdkb flatten <vault> <parent> <child>   # inverse of carve: inline parent's one ![[child]] and
+                                        # delete child (errors unless child is referenced once)
+mdkb delete <vault> <id>                # delete a block
+```
+
+### Maintenance
+
+```sh
+mdkb rebuild <vault>                     # rebuild the index from blocks/ (after external edits)
+```
+
+When a command needs an id, get it from a prior `search`/`list` (or the id `create`/`carve`
+printed) — never guess. Titles also resolve (case-insensitively), but prefer the ULID: it is
+stable and unambiguous.

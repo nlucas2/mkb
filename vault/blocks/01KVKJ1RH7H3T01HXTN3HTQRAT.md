@@ -42,3 +42,6 @@ tags: [doc, readme]
   Tag each edge with its kind in `mdkb-core` (`link_graph`) so the two are distinguishable in
   the data, then render them differently in the UI (e.g. solid edges for `![[transclusions]]`,
   dashed for `[[refs]]`) so a reused/embedded block reads visibly different from a plain link.
+- **Desktop app — light theme** *(planned)*: the app currently ships a single dark theme. Add a
+  light theme and a theme toggle (follow the OS appearance by default), so the editor, graph, and
+  block cards read well on a light background. Until then, the README screenshots are dark-only.
