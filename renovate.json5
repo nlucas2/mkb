@@ -1,0 +1,48 @@
+{
+  // Renovate config for mdkb. Self-hosted Renovate (Forgejo Actions, weekly) opens
+  // dependency-update PRs; the CI gate (cargo test + cargo-deny advisories/licenses) validates
+  // each before merge. See .forgejo/workflows/renovate.yml. "When" is driven by the workflow
+  // cron, so no in-config schedule is set here.
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+  labels: ["dependencies"],
+  // Don't auto-merge: each PR is reviewed and gated by CI. Also avoids platform-automerge
+  // errors on Forgejo older than v10.0.0.
+  platformAutomerge: false,
+  // Refresh both Cargo.lock files periodically so the locked transitive graph that cargo-deny
+  // audits doesn't drift far from upstream, even when no version bump is otherwise due.
+  lockFileMaintenance: { enabled: true },
+  packageRules: [
+    {
+      // Rust: two cargo workspaces (root + app/mdkb-tauri/src-tauri) are auto-detected. Group
+      // non-major bumps into one PR; majors stay separate for careful review.
+      matchManagers: ["cargo"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "rust dependencies (non-major)",
+    },
+    {
+      // Tauri (and wry) drive the desktop app and are delicate — review on their own.
+      matchManagers: ["cargo"],
+      matchPackageNames: ["/^tauri/", "/^wry$/"],
+      groupName: "tauri",
+    },
+    {
+      // CI plumbing: Action versions, Dockerfile base images, the Renovate image itself, and the
+      // pinned cargo-deny release. Low-risk, grouped together.
+      matchManagers: ["github-actions", "dockerfile", "custom.regex"],
+      groupName: "ci tooling",
+    },
+  ],
+  // Keep the pinned cargo-deny version in the Dockerfile current (annotated there with a
+  // `# renovate:` comment; datasource = GitHub releases for EmbarkStudios/cargo-deny).
+  customManagers: [
+    {
+      customType: "regex",
+      description: "Bump pinned tool versions in the Dockerfile (# renovate: annotated)",
+      managerFilePatterns: ["/^Dockerfile$/"],
+      matchStrings: [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+ARG CARGO_DENY_VERSION=(?<currentValue>\\S+)",
+      ],
+    },
+  ],
+}

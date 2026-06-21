@@ -1,0 +1,39 @@
+name: Renovate
+
+# Self-hosted Renovate for this Forgejo repo. Runs weekly and opens dependency-update PRs; the
+# normal CI gate (cargo test + cargo-deny in the Dockerfile `tester` stage) validates each PR.
+#
+# One-time setup — create two Forgejo Actions secrets (Settings → Actions → Secrets):
+#   RENOVATE_TOKEN    A Forgejo Personal Access Token for the account Renovate acts as.
+#                     Scopes: repository (read+write), user (read), issue (read+write, for the
+#                     Dependency Dashboard issue), organization (read).
+#   GITHUB_COM_TOKEN  A github.com PAT with NO scopes (public read-only). Renovate fetches
+#                     changelogs/release notes from github.com for many crates; without this it
+#                     hits the 60 req/hr anonymous rate limit and changelogs degrade.
+#
+# Do NOT use the auto-injected FORGEJO_TOKEN/GITHUB_TOKEN here — it can't push the way Renovate
+# needs. Trigger a first run manually via "Run workflow" to verify before relying on the cron.
+
+on:
+  schedule:
+    - cron: "23 6 * * 1" # Mondays 06:23 UTC
+  workflow_dispatch: {}
+
+jobs:
+  renovate:
+    runs-on: docker
+    container:
+      # Pinned; Renovate self-updates this tag via its own PRs (the "ci tooling" group).
+      image: ghcr.io/renovatebot/renovate:43.234.0
+    steps:
+      - name: Run Renovate
+        run: renovate
+        env:
+          # Forgejo has a dedicated platform now; the legacy `gitea` platform is being deprecated.
+          RENOVATE_PLATFORM: forgejo
+          RENOVATE_ENDPOINT: ${{ github.server_url }}/api/v1
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+          GITHUB_COM_TOKEN: ${{ secrets.GITHUB_COM_TOKEN }}
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_GIT_AUTHOR: "Renovate Bot <renovate-bot@users.noreply.github.com>"
+          LOG_LEVEL: info

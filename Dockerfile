@@ -102,6 +102,7 @@ RUN cargo build -p mdkbd -p mdkb-cli \
 # separate desktop-app workspace from the one shared config. A pinned prebuilt (static musl)
 # binary keeps this fast — no from-source compile. `cargo fetch` for the app populates the index
 # so its check resolves offline.
+# renovate: datasource=github-releases depName=EmbarkStudios/cargo-deny
 ARG CARGO_DENY_VERSION=0.19.9
 RUN curl -sSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
       | tar -xz -C /usr/local/bin --strip-components=1 \
