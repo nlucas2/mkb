@@ -10,6 +10,10 @@ block you open at the top. It serves two equal consumers — **you**, through a 
 and **AI clients**, through an MCP server — and works fully with all AI turned off. The
 Markdown files are the single source of truth; the index is a rebuildable cache.
 
+<p align="center">
+  <img src="docs/images/app-read.png" alt="mdkb desktop app in Read mode — a block with its embeds dissolved into one clean Markdown document" width="820">
+</p>
+
 > Status: core re-architected to the file-per-block model (parser, transclusion, index,
 > semantic search, daemon, MCP, web + desktop UIs). Versioned `0.0.0` / pre-release. See
 > **[`docs/architecture.md`](./docs/architecture.md)** for the design and
@@ -139,6 +143,19 @@ for adding knowledge, and effective search patterns — see the example skill at
 
 Two front-ends share the same `mdkb-view` rendering layer (so they can't drift apart), and both
 connect either way — a **local** socket or a **remote** TCP daemon.
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/app-block-static.png" alt="Blocks view — each embedded block is a live, self-contained card" width="300"><br><sub>Blocks — embeds become live cards…</sub></td>
+    <td align="center"><img src="docs/images/app-block-edit.png" alt="Editing an embedded block inline as a card, in place" width="300"><br><sub>…click any card to edit it inline</sub></td>
+    <td align="center"><img src="docs/images/app-edit-picker.png" alt="Edit mode — raw Markdown with the [[ link/embed picker open" width="300"><br><sub>Edit — Markdown + the <code>[[</code> picker</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/app-graph.png" alt="Force-directed knowledge graph; node size reflects link degree" width="300"><br><sub>Graph — nodes sized by link degree</sub></td>
+    <td align="center"><img src="docs/images/app-codeblocks.png" alt="Syntax-highlighted fenced code blocks across languages" width="300"><br><sub>Code — syntax-highlighted blocks</sub></td>
+    <td align="center"><img src="docs/images/app-tag-search.png" alt="Search results filtered by tag and language" width="300"><br><sub>Search — tag &amp; language filters</sub></td>
+  </tr>
+</table>
 
 - **Desktop app** (`app/mdkb-tauri`) — a Tauri app over the same crates, and a full **editor and
   graph browser**, not just a viewer. It exposes the same three block modes as the rest of mdkb —

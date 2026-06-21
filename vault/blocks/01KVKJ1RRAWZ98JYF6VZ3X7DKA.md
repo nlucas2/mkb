@@ -7,6 +7,10 @@ tags: [doc, doc-page, user]
 
 ![[01KVHJ76YA04MEM71HNDB7RT8G]]
 
+<p align="center">
+  <img src="docs/images/app-read.png" alt="mdkb desktop app in Read mode — a block with its embeds dissolved into one clean Markdown document" width="820">
+</p>
+
 > Status: core re-architected to the file-per-block model (parser, transclusion, index,
 > semantic search, daemon, MCP, web + desktop UIs). Versioned `0.0.0` / pre-release. See
 > **[`docs/architecture.md`](./docs/architecture.md)** for the design and
