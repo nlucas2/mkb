@@ -12,6 +12,8 @@ reuses) that vault's daemon. `<id>` is a ULID. Bodies are read from **stdin**, s
 (`echo`, a heredoc, or `<file`). To target a remote daemon instead of a local socket, set
 `MDKB_REMOTE=host:port` (and `MDKB_TOKEN`) in the environment.
 
+*FYI: if you only have the source tree (no installed `mdkb`), run any command as `cargo run -p mdkb-cli -- <command> <vault> …` — same arguments after the `--`.*
+
 Two commands **print an id on stdout you must capture** — `create` (new block id) and `carve`
 (child id) — because every later command needs that id.
 
