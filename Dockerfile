@@ -57,7 +57,7 @@ RUN set -eux; \
 # -- Test stage ---------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM rust:slim-trixie AS tester
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential pkg-config ca-certificates \
+    build-essential pkg-config ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
@@ -95,6 +95,20 @@ RUN cargo test --workspace
 # the build. The CLI is a thin client, so it auto-starts the co-located mdkbd against vault/.
 RUN cargo build -p mdkbd -p mdkb-cli \
     && ./target/debug/mdkb export vault --check
+
+# Supply-chain gate: cargo-deny enforces deny.toml — RustSec advisories (real vulnerabilities
+# fail; known unmaintained transitive crates are acknowledged with reasons), a permissive-only
+# license allowlist, and a crates.io-only source policy. Checked for the workspace AND the
+# separate desktop-app workspace from the one shared config. A pinned prebuilt (static musl)
+# binary keeps this fast — no from-source compile. `cargo fetch` for the app populates the index
+# so its check resolves offline.
+ARG CARGO_DENY_VERSION=0.19.9
+RUN curl -sSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+      | tar -xz -C /usr/local/bin --strip-components=1 \
+        "cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny" \
+    && cargo deny check \
+    && cargo fetch --manifest-path app/mdkb-tauri/src-tauri/Cargo.toml \
+    && cargo deny --manifest-path app/mdkb-tauri/src-tauri/Cargo.toml check --config deny.toml
 
 
 # -- amd64 builder (native on the runner) -------------------------------------

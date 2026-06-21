@@ -1,0 +1,77 @@
+# cargo-deny policy for mdkb — supply-chain + license + advisory gate.
+#
+# Run locally / in CI for BOTH workspaces (the desktop app is a separate workspace):
+#   cargo deny check
+#   cargo deny --manifest-path app/mdkb-tauri/src-tauri/Cargo.toml check --config deny.toml
+#
+# This single config is shared by both so the policy can't drift between them.
+
+[graph]
+# Check every target. The app pulls a Linux GTK stack that is irrelevant on
+# macOS/Windows, but we still want a consistent verdict regardless of host.
+all-features = false
+
+[advisories]
+# Real vulnerabilities fail the check (the default). The entries below are
+# *unmaintained*/*unsound* advisories on transitive crates we don't control —
+# almost all from Tauri's Linux GTK3 stack, which isn't even compiled on
+# macOS/Windows. They're acknowledged here (not silenced globally) so a NEW
+# advisory on anything else still trips the gate.
+ignore = [
+    # --- workspace ---
+    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained; transitive proc-macro, no replacement yet" },
+
+    # --- desktop app: Tauri's Linux GTK3 bindings (unmaintained upstream; Linux-only) ---
+    { id = "RUSTSEC-2024-0411", reason = "gdkwayland-sys: unmaintained gtk3 binding (Tauri, Linux-only)" },
+    { id = "RUSTSEC-2024-0412", reason = "gdk: unmaintained gtk3 binding (Tauri, Linux-only)" },
+    { id = "RUSTSEC-2024-0413", reason = "atk: unmaintained gtk3 binding (Tauri, Linux-only)" },
+    { id = "RUSTSEC-2024-0414", reason = "gdkx11-sys: unmaintained gtk3 binding (Tauri, Linux-only)" },
+    { id = "RUSTSEC-2024-0415", reason = "gtk: unmaintained gtk3 binding (Tauri, Linux-only)" },
+    { id = "RUSTSEC-2024-0416", reason = "atk-sys: unmaintained gtk3 binding (Tauri, Linux-only)" },
+    { id = "RUSTSEC-2024-0417", reason = "gdkx11: unmaintained gtk3 binding (Tauri, Linux-only)" },
+    { id = "RUSTSEC-2024-0418", reason = "gdk-sys: unmaintained gtk3 binding (Tauri, Linux-only)" },
+    { id = "RUSTSEC-2024-0419", reason = "gtk3-macros: unmaintained gtk3 binding (Tauri, Linux-only)" },
+    { id = "RUSTSEC-2024-0420", reason = "gtk-sys: unmaintained gtk3 binding (Tauri, Linux-only)" },
+    { id = "RUSTSEC-2024-0429", reason = "glib: unsound VariantStrIter iterator impl (Tauri/Linux path we don't hit)" },
+
+    # --- desktop app: other unmaintained transitive crates ---
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: unmaintained; build-time transitive" },
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range: unmaintained; transitive Unicode crate" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common: unmaintained; transitive Unicode crate" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property: unmaintained; transitive Unicode crate" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: unmaintained; transitive Unicode crate" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: unmaintained; transitive Unicode crate" },
+]
+
+[licenses]
+# Every dependency in both trees is a standard permissive license (verified).
+# A copyleft/unknown license sneaking in will fail the check.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "0BSD",
+    "Unlicense",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Zlib",
+    "MPL-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Duplicate versions are informational (a large GUI tree always has some), not a
+# failure. Flip to "deny" later if you want to actively prune them.
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+# Only crates.io — no git or alternate registries are used today, so anything
+# else is a supply-chain red flag.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
