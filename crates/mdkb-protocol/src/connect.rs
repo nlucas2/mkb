@@ -160,8 +160,27 @@ pub fn ensure_daemon(paths: &DaemonPaths, mdkbd_path: Option<&Path>) -> Result<C
         .ensure_dirs()
         .map_err(|e| format!("preparing {}: {e}", paths.vault.display()))?;
     spawn_detached(paths, mdkbd_path)?;
-    wait_until_ready(&client, Duration::from_secs(30))?;
+    wait_until_ready(&client, ready_timeout())?;
     Ok(client)
+}
+
+/// How long [`ensure_daemon`] waits for a freshly spawned daemon to answer its first ping.
+///
+/// Defaults to 30s — instant on healthy storage, since a daemon binds its socket in well under a
+/// second. The initial reconcile (parse every block + write the index) can be far slower on slow
+/// or network-backed storage, though: a cold CI runner on NFS has been seen to take ~20–30s, right
+/// at the edge of the default. `MDKB_READY_TIMEOUT_SECS` lets such environments (e.g. the export
+/// gate in CI) grant more headroom without affecting interactive clients. A missing/invalid/zero
+/// value falls back to the default.
+const DEFAULT_READY_TIMEOUT_SECS: u64 = 30;
+
+fn ready_timeout() -> Duration {
+    let secs = std::env::var("MDKB_READY_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(DEFAULT_READY_TIMEOUT_SECS);
+    Duration::from_secs(secs)
 }
 
 /// Spawn `mdkbd` for `paths`, fully detached so it outlives the spawning process.
@@ -327,5 +346,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.endpoint(), "tcp:h:7820");
+    }
+
+    #[test]
+    fn ready_timeout_honors_env_with_safe_fallback() {
+        // Default when unset.
+        std::env::remove_var("MDKB_READY_TIMEOUT_SECS");
+        assert_eq!(
+            ready_timeout(),
+            Duration::from_secs(DEFAULT_READY_TIMEOUT_SECS)
+        );
+        // A valid positive override wins.
+        std::env::set_var("MDKB_READY_TIMEOUT_SECS", "120");
+        assert_eq!(ready_timeout(), Duration::from_secs(120));
+        // Zero and garbage fall back to the default (never an instant-timeout footgun).
+        std::env::set_var("MDKB_READY_TIMEOUT_SECS", "0");
+        assert_eq!(
+            ready_timeout(),
+            Duration::from_secs(DEFAULT_READY_TIMEOUT_SECS)
+        );
+        std::env::set_var("MDKB_READY_TIMEOUT_SECS", "not-a-number");
+        assert_eq!(
+            ready_timeout(),
+            Duration::from_secs(DEFAULT_READY_TIMEOUT_SECS)
+        );
+        std::env::remove_var("MDKB_READY_TIMEOUT_SECS");
     }
 }
