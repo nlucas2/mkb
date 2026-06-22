@@ -738,7 +738,7 @@
         div.style.position = "absolute"; div.style.visibility = "hidden"; div.style.whiteSpace = "pre-wrap"; div.style.wordWrap = "break-word";
         const before = ta.value.slice(0, ta.selectionStart);
         div.textContent = before;
-        const span = document.createElement("span"); span.textContent = "​"; div.appendChild(span);
+        const span = document.createElement("span"); span.textContent = "\u200b"; div.appendChild(span);
         document.body.appendChild(div);
         const r = ta.getBoundingClientRect();
         const x = r.left + (span.offsetLeft % r.width);
