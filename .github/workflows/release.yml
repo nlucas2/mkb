@@ -41,10 +41,32 @@ jobs:
       # https://huggingface.co/<you>/bge-small-en-v1.5-int8/resolve/main). Set this as a
       # GitHub repo/org Actions *variable* named MODEL_REPO. Falls back to the upstream repo.
       MODEL_REPO: ${{ vars.MODEL_REPO || 'https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main' }}
+      # ── macOS code signing + notarization (OPTIONAL) ───────────────────────────────
+      # Without these, the macOS app is ad-hoc signed and NOT notarized, so a browser
+      # download triggers Gatekeeper's misleading "mdkb.app is damaged and can't be opened"
+      # on Apple Silicon (the only workaround is `xattr -dr com.apple.quarantine mdkb.app`).
+      # To ship a cleanly-openable app, enroll in the Apple Developer Program ($99/yr),
+      # create a "Developer ID Application" certificate, and add these GitHub Actions secrets
+      # (Settings → Secrets and variables → Actions):
+      #   APPLE_CERTIFICATE           base64 of the exported .p12 (Developer ID Application)
+      #   APPLE_CERTIFICATE_PASSWORD  the password set when exporting the .p12
+      #   KEYCHAIN_PASSWORD           any throwaway password for the temp CI keychain
+      #   APPLE_ID                    your Apple account email
+      #   APPLE_PASSWORD              an app-specific password (appleid.apple.com)
+      #   APPLE_TEAM_ID               your 10-char Apple Team ID
+      # When all are present the macOS job signs with the Developer ID identity and notarizes
+      # via Tauri; when absent it falls back to the current ad-hoc behavior (build still works,
+      # other platforms unaffected). These are read by `cargo tauri build` on macOS only.
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -52,7 +74,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -141,6 +163,27 @@ jobs:
         shell: bash
         run: cargo install --locked tauri-cli --version '^2'
 
+      # Import the Developer ID cert into a temporary keychain so `cargo tauri build` can sign
+      # with it. Runs only on macOS AND only when the cert secret is configured; otherwise the
+      # app is ad-hoc signed (current behavior). Sets APPLE_SIGNING_IDENTITY for later steps,
+      # which (together with APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID) makes Tauri notarize too.
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        shell: bash
+        run: |
+          set -eu
+          CERT="$RUNNER_TEMP/certificate.p12"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import "$CERT" -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          rm -f "$CERT"
+
       - name: Build desktop app (Tauri)
         shell: bash
         env:
@@ -183,7 +226,7 @@ jobs:
           esac
 
       - name: Publish to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             mdkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
