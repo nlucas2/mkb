@@ -481,8 +481,10 @@ the **same blocks** embedded below — so editing a rule once updates both.
   `vault/` (via the app, the `mdkb` CLI, or MCP), then run `mdkb export vault` and commit the
   regenerated file(s) in the **same** change.
 - `mdkb export vault --check` must pass before every commit — it writes nothing and exits
-  non-zero on drift. CI runs it (the Docker `tester` stage), so a block edited without
-  re-exporting, or a generated file edited by hand, fails the build.
+  non-zero on drift. CI runs it inside the Docker `tester` stage — on **every push to `main`**
+  (the `Build and Release` workflow) **and every pull request** (the `PR Check` workflow, which
+  invokes the same `--target tester` stage so the two gates can't drift) — so a block edited
+  without re-exporting, or a generated file edited by hand, fails the build.
 - Docs **not yet** migrated into the vault remain hand-maintained and must reflect the current
   state at commit time; when one is promoted into `vault/`, it becomes generated and this rule
   applies to it.

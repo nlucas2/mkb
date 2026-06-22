@@ -1,0 +1,61 @@
+name: PR Check
+
+# Pre-merge gate for pull requests (including Renovate's dependency-update PRs). It runs the exact
+# same validation as the release pipeline by invoking the Dockerfile `tester` stage via
+# `--target tester` — the single source of truth for "does this pass": `cargo test --workspace`,
+# the docs-as-data export drift check (`mdkb export vault --check`), and `cargo deny` over both
+# the main workspace and the desktop-app workspace. `Build and Release` calls the very same stage
+# (see build.yaml's "Run tests" step), so the PR gate and the release gate cannot drift apart — to
+# change what "passing" means, edit the `tester` stage once and both pick it up.
+#
+# This builds ONLY the standalone `tester` stage — not the multi-arch image, the embedding model,
+# or the Windows artifacts — so it is the fast portion of the build. Renovate's branches live in
+# this repo (no forks), so secrets/vars are available.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  REGISTRY: ${{ vars.REGISTRY }}
+  IMAGE: ${{ vars.REGISTRY }}/${{ vars.REGISTRY_ORG }}/mdkb
+
+jobs:
+  test:
+    runs-on: docker
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Docker CLI and buildx plugin
+        run: |
+          apt-get update -qq && apt-get install -y -qq docker.io
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -sL https://github.com/docker/buildx/releases/download/v0.19.3/buildx-v0.19.3.linux-amd64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-buildx
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+          docker buildx create --use --name multiarch --buildkitd-config .forgejo/buildkitd.toml
+          docker buildx inspect --bootstrap
+
+      # Best-effort: a successful login only enables the warm `cache-tester` layer that the release
+      # build populates. If it fails (e.g. a bot actor whose name doesn't match the token), the
+      # gate still runs — it just builds cold. The pass/fail verdict must never depend on the cache.
+      - name: Log in to Forgejo registry (best-effort — enables the warm cache only)
+        continue-on-error: true
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+
+      # Read the shared cache but never write it — a PR branch must not overwrite the `cache-tester`
+      # ref that main's pipeline owns. A missing/unauthorized cache import is non-fatal in buildx.
+      - name: Run tests (Dockerfile `tester` stage)
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --target tester \
+            --cache-from type=registry,ref=${IMAGE}:cache-tester \
+            .
