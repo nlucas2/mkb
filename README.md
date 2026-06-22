@@ -15,7 +15,7 @@ Markdown files are the single source of truth; the index is a rebuildable cache.
 </p>
 
 > Status: core re-architected to the file-per-block model (parser, transclusion, index,
-> semantic search, daemon, MCP, web + desktop UIs). Versioned `0.0.0` / pre-release. See
+> semantic search, daemon, MCP, web + desktop UIs). Versioned `0.1.0` / pre-release. See
 > **[`docs/architecture.md`](./docs/architecture.md)** for the design and
 > **[`docs/SPEC.md`](./docs/SPEC.md)** for the exact on-disk format.
 

@@ -750,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mdkb-core",
  "mdkb-protocol",
@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "regex",
  "serde",
@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-embed"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fastembed",
  "mdkb-core",
@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-index"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mdkb-core",
  "rusqlite",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-mcp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mdkb-core",
  "mdkb-protocol",
@@ -801,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-protocol"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "interprocess",
  "mdkb-core",
@@ -813,7 +813,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-view"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mdkb-core",
  "pulldown-cmark",
@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-web"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mdkb-core",
  "mdkb-protocol",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "mdkbd"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "libc",
  "mdkb-core",
