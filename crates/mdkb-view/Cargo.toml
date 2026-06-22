@@ -9,4 +9,4 @@ rust-version.workspace = true
 
 [dependencies]
 mdkb-core.workspace = true
-pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

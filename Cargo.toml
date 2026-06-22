@@ -32,8 +32,8 @@ mdkb-protocol = { path = "crates/mdkb-protocol" }
 mdkb-view = { path = "crates/mdkb-view" }
 regex = "1"
 ulid = "1"
-rusqlite = "0.32"
+rusqlite = "0.40"
 tempfile = "3"
 serde = "1"
 serde_json = "1"
-toml = "0.8"
+toml = "0.9"
