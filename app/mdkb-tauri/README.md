@@ -75,6 +75,25 @@ cargo tauri build
 (`src-tauri/bin/` and `src-tauri/icons/` are git-ignored — both are build inputs regenerated
 from the workspace: the daemon from `cargo build`, the icons from `app-icon.png`.)
 
+## macOS: Gatekeeper & the "damaged" prompt
+
+The CI-built app is **ad-hoc signed and not notarized** (no Apple Developer ID). macOS attaches a
+`com.apple.quarantine` flag to anything downloaded via a browser, and on Apple Silicon an
+un-notarized quarantined app is rejected with the misleading **"mdkb.app is damaged and can't be
+opened."** Two ways around it:
+
+- **Build from source** (recommended on macOS): `cargo tauri build` produces an app you compiled
+  locally, so it carries no quarantine flag and opens normally — no notarization needed.
+- **Use the downloaded `.dmg`**: clear the quarantine flag once after copying the app out, e.g.
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/mdkb.app
+  ```
+
+To ship a `.dmg` that opens cleanly with no workaround, the GitHub release workflow has optional
+Developer ID signing + notarization wired in (inert until the `APPLE_*` secrets are configured);
+see the comments in `.github/workflows/release.yml`.
+
 ## Run (development)
 
 ```sh
