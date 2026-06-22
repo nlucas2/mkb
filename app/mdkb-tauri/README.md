@@ -48,12 +48,15 @@ daemon / shared crates.
 ## Prerequisites
 
 - Rust (stable) + the Tauri CLI: `cargo install tauri-cli --version '^2'`
-- App icons under `src-tauri/icons/` (generate with `cargo tauri icon <png>`).
+- App icons: the whole `src-tauri/icons/` tree is **generated** from the single source
+  `app-icon.png` and is git-ignored. Generate it (once per checkout, or after editing the
+  source) with `cargo tauri icon app-icon.png` — the bundling builds do this automatically.
 
 ## Build a bundle
 
-The bundle ships the daemon binary as a resource so local-vault mode works out of the box.
-Stage it first, then build:
+The bundle ships the daemon binary as a resource so local-vault mode works out of the box, and
+its icons are generated from the single source. Generate icons + stage the daemon first, then
+build:
 
 ```sh
 # from the repo root: build the daemon and stage it into the app
@@ -61,12 +64,16 @@ cargo build --release -p mdkbd
 mkdir -p app/mdkb-tauri/src-tauri/bin
 cp target/release/mdkbd app/mdkb-tauri/src-tauri/bin/mdkbd
 
-# build the app (produces mdkb.app + a .dmg under src-tauri/target/release/bundle/)
+# generate the icon set from the single source (icons/ is git-ignored build output)
 cd app/mdkb-tauri
+cargo tauri icon app-icon.png
+
+# build the app (produces mdkb.app + a .dmg under src-tauri/target/release/bundle/)
 cargo tauri build
 ```
 
-(`src-tauri/bin/` is git-ignored — it is a build input, rebuilt from the workspace.)
+(`src-tauri/bin/` and `src-tauri/icons/` are git-ignored — both are build inputs regenerated
+from the workspace: the daemon from `cargo build`, the icons from `app-icon.png`.)
 
 ## Run (development)
 

@@ -12,6 +12,11 @@ src-tauri/target/
 # Staged daemon binary bundled into the desktop app at build time (rebuilt, never committed)
 app/mdkb-tauri/src-tauri/bin/
 
+# Desktop-app icons are GENERATED from the single source app/mdkb-tauri/app-icon.png via
+# `cargo tauri icon` (wired into the bundling builds). The whole icons/ tree is build output —
+# only the source (app-icon.png + assets/) is tracked.
+app/mdkb-tauri/src-tauri/icons/
+
 # OS
 .DS_Store
 Thumbs.db

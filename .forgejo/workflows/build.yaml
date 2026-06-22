@@ -263,6 +263,8 @@ jobs:
         run: |
           set -eux
           . "$HOME/.cargo/env"
+          # Generate the icon set from the single tracked source (icons/ is git-ignored build output).
+          ( cd app/mdkb-tauri && cargo tauri icon app-icon.png )
           # The app bundles the daemon as a resource for local-vault auto-start.
           mkdir -p app/mdkb-tauri/src-tauri/bin
           cp target/x86_64-pc-windows-msvc/release/mdkbd.exe app/mdkb-tauri/src-tauri/bin/mdkbd.exe
