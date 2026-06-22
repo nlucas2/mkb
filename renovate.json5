@@ -32,6 +32,19 @@
       matchManagers: ["github-actions", "dockerfile", "custom.regex"],
       groupName: "ci tooling",
     },
+    {
+      // Forgejo's Actions runner caps two of our actions, so never let Renovate major-bump them
+      // (it would re-break CI): actions/upload-artifact has no v4+ backend on Forgejo — commit
+      // 621158a deliberately pinned it to v3 — and actions/checkout v5+ needs a runtime the
+      // Forgejo runner doesn't provide (v4 is the safe max). These same actions are reused by the
+      // .github mirror, where v4/v3 also work fine, so freezing the major repo-wide is harmless.
+      // Minor/patch within the current major still flow. Lift this once the Forgejo runner gains
+      // support for the newer versions.
+      matchManagers: ["github-actions"],
+      matchPackageNames: ["actions/upload-artifact", "actions/checkout"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
   ],
   // Keep the pinned cargo-deny version in the Dockerfile current (annotated there with a
   // `# renovate:` comment; datasource = GitHub releases for EmbarkStudios/cargo-deny).
