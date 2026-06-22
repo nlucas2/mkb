@@ -56,8 +56,10 @@ RUN set -eux; \
 
 # -- Test stage ---------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM rust:slim-trixie AS tester
+# git is required by cargo-deny's advisories check: it clones the RustSec advisory-db (a git repo)
+# at check time. `rust:slim-trixie` ships without it, so install it alongside the build basics.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential pkg-config ca-certificates curl \
+    build-essential pkg-config ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
@@ -93,6 +95,10 @@ RUN cargo test --workspace
 # its source block in vault/. `mdkb export --check` writes nothing and exits non-zero on drift,
 # so a commit that edits a block (or hand-edits a generated file) without re-running export fails
 # the build. The CLI is a thin client, so it auto-starts the co-located mdkbd against vault/.
+# CI runners can sit on slow/network-backed storage where the daemon's first reconcile (parse all
+# blocks + write the index) approaches the default 30s readiness window; grant generous headroom
+# so the gate fails only on real drift, never on a cold-start I/O race.
+ENV MDKB_READY_TIMEOUT_SECS=180
 RUN cargo build -p mdkbd -p mdkb-cli \
     && ./target/debug/mdkb export vault --check
 

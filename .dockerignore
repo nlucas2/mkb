@@ -3,6 +3,10 @@ target/
 **/target/
 app/mdkb-tauri/src-tauri/target/
 
+# Local mdkb index/socket/lock — rebuildable cache, never part of the build (it would also drag a
+# stale Unix socket + sqlite WAL into the context and make the docs-as-data gate non-deterministic)
+**/.mdkb/
+
 # Git metadata
 .git/
 .gitignore
@@ -24,6 +28,3 @@ Dockerfile.trixie
 Dockerfile
 .dockerignore
 .forgejo/
-
-# The Tauri desktop shell is built separately, not in the daemon image
-app/mdkb-tauri/
