@@ -6,8 +6,9 @@ tags: [doc, doc-page, dev]
 # AGENTS.md — working rules for mdkb
 
 This file governs how any agent (or human) contributes to **mdkb**. These rules are
-**mandatory**, not suggestions. If a change cannot satisfy them, stop and fix the
-approach before continuing.
+**mandatory**, not suggestions; they exist to keep mdkb's promise intact — auditable,
+refactorable memory that a human and an AI co-manage. If a change cannot satisfy them, stop and
+fix the approach before continuing.
 
 ## What mdkb is
 

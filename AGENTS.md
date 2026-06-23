@@ -4,17 +4,23 @@
 # AGENTS.md — working rules for mdkb
 
 This file governs how any agent (or human) contributes to **mdkb**. These rules are
-**mandatory**, not suggestions. If a change cannot satisfy them, stop and fix the
-approach before continuing.
+**mandatory**, not suggestions; they exist to keep mdkb's promise intact — auditable,
+refactorable memory that a human and an AI co-manage. If a change cannot satisfy them, stop and
+fix the approach before continuing.
 
 ## What mdkb is
 
-mdkb is a **personal Markdown knowledge base** — **a tool, not an agent**. The unit of
-knowledge is a **block**, and every block is a single Markdown file: a block can *embed*
-other blocks (`![[id]]`, a live copy) or *link* to them (`[[id]]`), and a "page" is just a
-block you open at the top. It serves two equal consumers — **you**, through a desktop app,
-and **AI clients**, through an MCP server — and works fully with all AI turned off. The
-Markdown files are the single source of truth; the index is a rebuildable cache.
+mdkb is a **personal Markdown knowledge base — a tool, not an agent** — that a human and an
+AI use as equal partners. The inspiration: give an AI agent **auditable, refactorable
+memory** — knowledge it stores and recalls that **you** can look up and manage too, in the
+app, instead of an opaque store you can't see into.
+
+Knowledge is a **block**: one Markdown file. Blocks *embed* others (`![[id]]`, a live copy) or
+*link* to them (`[[id]]`), so a fact is written once, reused everywhere, and edited in one
+place — memory that stays organized and refactorable as it grows, not a pile of near-duplicates.
+Two equal consumers share one vault: **you**, through the desktop app, and **AI clients**,
+through an MCP server; it works fully with AI turned off. The Markdown files are the single
+source of truth; the index is a rebuildable cache.
 
 See `README.md` for the full overview and `docs/` for details.
 

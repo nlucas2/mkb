@@ -1,11 +1,15 @@
 # mdkb desktop shell (Tauri)
 
-A [Tauri](https://tauri.app) desktop app for mdkb. It is a **full editor and knowledge-graph
-browser**, not just a viewer — but it stays a **thin client**: all knowledge-base behavior
-(block parsing, transclusion, indexing, the link graph, writes) lives in `mdkb-core` and is
-reached over the wire through `mdkb-protocol`; HTML rendering goes through `mdkb-view`. There
-is no second copy of engine behavior here, so the desktop UI can never drift from the web UI
-or the MCP server (see the repo `AGENTS.md`).
+The desktop app is **the human's window into the vault** — where you read, review, edit, and
+reorganize the knowledge mdkb holds, including whatever an AI client has written over MCP. It is
+a **full editor and knowledge-graph browser**, not just a viewer; mdkb is a tool you and the AI
+co-manage as equals, and this is your side of it (the AI's side is the MCP server).
+
+Architecturally it stays a **thin client**: all knowledge-base behavior (block parsing,
+transclusion, indexing, the link graph, writes) lives in `mdkb-core` and is reached over the
+wire through `mdkb-protocol`; HTML rendering goes through `mdkb-view`. There is no second copy of
+engine behavior here, so the desktop UI can never drift from the web UI or the MCP server (see
+the repo `AGENTS.md`).
 
 It is **not** part of the main cargo workspace (it needs the Tauri toolchain and a system
 webview, which the core product doesn't require).
