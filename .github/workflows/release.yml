@@ -26,10 +26,11 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  name: linux-amd64 }
-          # linux-arm64: free GitHub hosted arm64 runners are public-repo only; on a private
-          # repo `ubuntu-24.04-arm` needs paid larger runners. Re-enable if the repo goes public
-          # (Linux arm64 is already covered by the Forgejo cross-compile pipeline + image).
-          # - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, name: linux-arm64 }
+          # Linux arm64 — HEADLESS only (daemon + CLIs + model, no desktop GUI). Cross-compiled
+          # on the amd64 runner (a webkit-linked GUI doesn't cross-compile cleanly, and free
+          # hosted arm64 runners are public-repo only), matching the Forgejo pipeline. The app
+          # for arm64 Linux is build-from-source only.
+          - { os: ubuntu-latest,    target: aarch64-unknown-linux-gnu, name: linux-arm64, headless: true }
           # macos-amd64 (Intel): dropped on private repos — macOS runners bill at 10x minutes,
           # so we ship only Apple Silicon. Re-enable for Intel-mac coverage if desired.
           # - { os: macos-13,         target: x86_64-apple-darwin,       name: macos-amd64 }
@@ -103,6 +104,20 @@ jobs:
           verify 9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3 tokenizer_config.json
           verify b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3 special_tokens_map.json
 
+      # Cross linker for the headless arm64 build (the Rust target itself is added by the
+      # toolchain action above). ort downloads a prebuilt aarch64 onnxruntime and fastembed uses
+      # rustls, so no arm64 system C libraries are needed — same approach as the Forgejo image.
+      - name: Install aarch64 cross toolchain (headless arm64)
+        if: matrix.headless == true
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+          } >> "$GITHUB_ENV"
+
       # Daemon with the local ONNX embedder (ort downloads the platform's prebuilt onnxruntime
       # at build time); clients are thin.
       - name: Build (native, onnx)
@@ -119,7 +134,7 @@ jobs:
       # local-vault auto-start works from the installed app. The frontend is static (../ui), so
       # no Node toolchain is needed.
       - name: Install Linux desktop bundling deps
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.headless != true
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
@@ -127,6 +142,7 @@ jobs:
             librsvg2-dev patchelf file libxdo-dev libssl-dev
 
       - name: Install Tauri CLI
+        if: matrix.headless != true
         shell: bash
         run: cargo install --locked tauri-cli --version '^2'
 
@@ -152,6 +168,7 @@ jobs:
           rm -f "$CERT"
 
       - name: Build desktop app (Tauri)
+        if: matrix.headless != true
         shell: bash
         env:
           # Build the AppImage without requiring FUSE on the CI runner.
@@ -186,6 +203,7 @@ jobs:
             cargo tauri build --target ${{ matrix.target }} --bundles "$BUNDLES" )
 
       - name: Collect desktop installer(s)
+        if: matrix.headless != true
         shell: bash
         run: |
           set -eux
@@ -212,7 +230,7 @@ jobs:
       # macOS ships the .app; Linux ships the runnable .AppImage (a bare mdkb-tauri binary needs
       # system webkit, the AppImage bundles it); Windows ships mdkb-tauri.exe.
       - name: Assemble complete archive (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.headless != true
         shell: bash
         run: |
           set -eux
@@ -231,6 +249,25 @@ jobs:
             cp "$B"/appimage/*.AppImage "dist/mdkb.AppImage"
           fi
           A="mdkb-$V-$N.tar.gz"
+          tar -C dist -czf "$A" .
+          ( sha256sum "$A" 2>/dev/null || shasum -a 256 "$A" ) > "$A.sha256"
+
+      # Headless archive (Linux arm64): daemon + CLIs + model, no desktop app. Named `-headless`
+      # so it never reads as the complete product — matching the Forgejo arm64 tarball.
+      - name: Assemble headless archive
+        if: matrix.headless == true
+        shell: bash
+        run: |
+          set -eux
+          V="${{ github.ref_name }}"; N="${{ matrix.name }}"
+          D="target/${{ matrix.target }}/release"
+          rm -rf dist && mkdir -p dist
+          cp "$D/mdkbd" "$D/mdkb" "$D/mdkb-mcp" "$D/mdkb-web" dist/
+          for lib in "$D"/libonnxruntime*.so*; do
+            [ -e "$lib" ] && cp "$lib" dist/ || true
+          done
+          cp -r model dist/model
+          A="mdkb-$V-$N-headless.tar.gz"
           tar -C dist -czf "$A" .
           ( sha256sum "$A" 2>/dev/null || shasum -a 256 "$A" ) > "$A.sha256"
 
@@ -260,6 +297,8 @@ jobs:
           files: |
             mdkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
             mdkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz.sha256
+            mdkb-${{ github.ref_name }}-${{ matrix.name }}-headless.tar.gz
+            mdkb-${{ github.ref_name }}-${{ matrix.name }}-headless.tar.gz.sha256
             mdkb-${{ github.ref_name }}-${{ matrix.name }}.zip
             mdkb-${{ github.ref_name }}-${{ matrix.name }}.zip.sha256
             mdkb-${{ github.ref_name }}-${{ matrix.name }}-setup.exe
