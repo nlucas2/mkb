@@ -41,10 +41,10 @@ Follow this in order:
 
 ## Audit is human-driven — collect, itemize, act
 
-Deduplication **deletes and rewrites knowledge**, so it is **human-in-the-loop by default**. But
-don't hold the human hostage to one-at-a-time approvals — work in three phases: **collect** every
-candidate in a full sweep, **itemize** them as one batch of proposals, then **act** on what the
-human approves. Review once, in bulk; execute without re-prompting per item.
+Deduplication **deletes and rewrites knowledge**, so it is **human-in-the-loop by default** — you
+audit and propose; the human approves. Work in three phases so you don't stop for approval after
+every find: **collect** every candidate in a full sweep, **itemize** them as one batch of
+proposals, then **act** on what the human approves.
 
 **Ask up front.** When you begin, ask one question: *"May I autonomously consolidate **exact**
 duplicates (verbatim-identical content in two places), or should I confirm every change?"* Respect
@@ -52,23 +52,15 @@ the answer for the rest of the session.
 
 - **Exact duplicates** — content **byte-for-byte identical** in two blocks (e.g. the same section
   copy-pasted into a README and a Welcome page). Mechanical, not a judgment call, so it is **safe
-  to consolidate autonomously *if* the human granted that up front** — no need to make them
-  re-approve work they could trivially rubber-stamp. Even then: repoint by ULID, keep one
-  canonical block, never alter the wording.
+  to consolidate autonomously *if* the human granted that up front**. Even then: repoint by ULID,
+  keep one canonical block, never alter the wording.
 - **Everything else is confirmation-gated.** Near-duplicates (the same fact in different words),
   drifted blocks, or any merge where you'd choose which nuance to keep need the human's approval in
   the itemized review — these take judgment, and judgment is the human's.
 
-Always-true guardrails, regardless of the up-front answer:
-
-- **Default to read-only.** Searching, listing, reading blocks, and checking backlinks are always
-  safe — do those freely, and exhaustively, during the collect phase.
-- **Itemize before acting** (for anything beyond pre-approved exact-dedup). Present the full list
-  of candidates with a proposed canonical + action for each, and let the human approve all, a
-  subset, or none — in one pass.
-- **Never drop information to "tidy up".** If two blocks each hold a nuance, that is content to
-  **preserve**, not a reason to delete one. When unsure whether two blocks are the same fact, or
-  whether a duplicate is truly exact, **ask** — don't merge on a guess.
+One rule holds regardless of the up-front answer: **never drop information to "tidy up".** If two
+blocks each hold a nuance, that is content to **preserve**, not a reason to delete one. When unsure
+whether two blocks are the same fact — or whether a duplicate is truly exact — **ask**.
 
 ## Auditing a vault for duplicates
 
@@ -114,8 +106,7 @@ one-at-a-time. For each item give:
 - **proposed action** — e.g. "repoint 2 embedders to `<id>`, delete the dup", or "no safe action,
   needs a decision".
 
-Then let the human approve in bulk — all of them, a subset ("do 1, 3, 4"), or none. Don't ask
-about each one separately.
+Then let the human approve in bulk — all of them, a subset ("do 1, 3, 4"), or none.
 
 ## Act — execute the approved batch
 
@@ -168,13 +159,3 @@ link.
 - **Don't autonomously merge anything but exact (verbatim) duplicates, and only with up-front
   permission.** Near-duplicates and any judgment merge need explicit human approval; when in doubt
   whether two blocks are the same fact — or whether a duplicate is truly exact — ask.
-
-## Anti-patterns - don't
-
-- Writing a new block without searching first (duplicates the graph).
-- Copy-pasting the same procedure into two blocks instead of embedding one.
-- Leaving a new block orphaned (no links in or out) - unfindable by graph.
-- Over-splitting trivial one-liners, or under-splitting a reusable chunk into a giant block.
-- Replacing a large block's body with a short one to "simplify" - that destroys content.
-- Editing a block without checking its backlinks first.
-- Hand-editing a generated file instead of its source block (drift; clobbered on next export).

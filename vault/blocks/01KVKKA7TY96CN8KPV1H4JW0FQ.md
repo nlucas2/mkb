@@ -36,5 +36,3 @@ own** (see the rule below). Audit instruments: `search` (find near-dupes in 2-3 
 ![[01KVJ1H7J1B5J2PQTZ8XPQAF93]]
 
 ![[01KVKKA7PGPARG7CP6CRZWDDK1]]
-
-![[01KVJ1H7MATVREF1KCPADX8BYD]]

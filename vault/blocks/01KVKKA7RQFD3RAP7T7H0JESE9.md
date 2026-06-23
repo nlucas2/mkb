@@ -36,5 +36,3 @@ remove the dup — **only once approved**), `export --check` (verify generated d
 ![[01KVJ1H7J1B5J2PQTZ8XPQAF93]]
 
 ![[01KVKKA7PGPARG7CP6CRZWDDK1]]
-
-![[01KVJ1H7MATVREF1KCPADX8BYD]]

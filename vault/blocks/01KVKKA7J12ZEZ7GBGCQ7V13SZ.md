@@ -31,5 +31,4 @@ one-at-a-time. For each item give:
 - **proposed action** — e.g. "repoint 2 embedders to `<id>`, delete the dup", or "no safe action,
   needs a decision".
 
-Then let the human approve in bulk — all of them, a subset ("do 1, 3, 4"), or none. Don't ask
-about each one separately.
+Then let the human approve in bulk — all of them, a subset ("do 1, 3, 4"), or none.
