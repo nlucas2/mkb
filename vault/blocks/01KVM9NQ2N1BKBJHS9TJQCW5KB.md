@@ -1,26 +1,34 @@
 ---
-title: "README: Install — release binary"
+title: "README: Install — prebuilt"
 ---
 
-### Install: release binary
+### Install: prebuilt (recommended)
 
-Download the latest archive for your platform from the **Releases** page and unpack it. Each
-archive is the **complete product** — the desktop app, `mdkb` (CLI), `mdkbd` (daemon),
-`mdkb-mcp` (MCP server), `mdkb-web` (web UI), and a `model/` directory beside them, so offline
-semantic search works out of the box. Or run the native installer (`.dmg` / `…-setup.exe` /
-`.deb` / `.AppImage`), which bundles the app together with the CLI tools.
+**The installer — easiest.** Download the installer for your OS from the **Releases** page and run
+it: `.dmg` (macOS), `…-setup.exe` (Windows), `.deb` or `.AppImage` (Linux). It installs the
+desktop app together with the `mdkb` CLI and the `mdkb-mcp` server.
+
+**Portable binaries — no installer, or for servers.** Each platform also ships one archive that is
+the **complete product**: the desktop app plus every binary — `mdkb` (CLI), `mdkbd` (daemon),
+`mdkb-mcp` (MCP server), `mdkb-web` (web UI) — and a `model/` directory, so offline semantic
+search works out of the box. Extract it wherever you keep apps and put that folder on your `PATH`:
 
 ```sh
-# Linux / macOS (example: macos-arm64 — also published: linux-amd64)
-mkdir -p ~/.local/opt/mdkb
-tar -xzf mdkb-<version>-macos-arm64.tar.gz -C ~/.local/opt/mdkb
-export PATH="$HOME/.local/opt/mdkb:$PATH"     # keep the binaries beside model/
+# macOS / Linux (example: macos-arm64 — also: linux-amd64, linux-arm64-headless)
+mkdir -p ~/Applications/mdkb
+tar -xzf mdkb-<version>-macos-arm64.tar.gz -C ~/Applications/mdkb
+# add it to PATH permanently (pick your shell's rc file)
+echo 'export PATH="$HOME/Applications/mdkb:$PATH"' >> ~/.zprofile   # or ~/.bashrc / ~/.profile
+exec "$SHELL" -l        # reload, then:
 mdkb --help
 ```
 
-On Windows, download `mdkb-<version>-windows-amd64.zip` (the full product) or the `…-setup.exe`
-desktop installer. Keep the binaries together with the `model/` folder — the daemon looks for
-`model/` beside its own executable.
+On Windows, download `mdkb-<version>-windows-amd64.zip` and extract it; add that folder to your
+`PATH` (Settings → *Edit environment variables*) to run `mdkb` from any terminal.
+
+The daemon finds the embedding model in the `model/` folder **beside the binaries** — zero config,
+which is why they travel together. To keep the binaries somewhere already on `PATH` (e.g.
+`~/.local/bin`) and the model elsewhere, set `MDKB_BUNDLED_MODEL_DIR` to the model directory.
 
 **Prebuilt availability.** The complete archive (with the desktop app) is published for
 **Linux amd64**, **macOS** (Apple Silicon), and **Windows x64**. We don't currently publish a
