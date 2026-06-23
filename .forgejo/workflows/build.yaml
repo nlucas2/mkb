@@ -112,7 +112,11 @@ jobs:
             ${IMAGE}:${V}-amd64 \
             ${IMAGE}:${V}-arm64
 
-      # ── Release payload (daemon + clients + model) — extracted every build, attached to tags ──
+      # ── Headless Linux payload (daemon + CLIs + model) — extracted every build ──
+      # This Docker pipeline builds the headless tools only (no desktop GUI — the Tauri app needs
+      # webkit/GTK, which this image doesn't carry). Tarballs are named `-headless` so it's
+      # unambiguous: the complete desktop app for Linux ships from the GitHub release (amd64);
+      # Linux arm64 has no desktop build at all and is headless-only.
       - name: Extract release payload
         run: |
           for arch in amd64 arm64; do
@@ -125,29 +129,29 @@ jobs:
             # Bundle the daemon, the thin clients, and the vendored model together. The model/
             # dir sits beside the binaries so mdkbd and the standalone CLI find it via the
             # <exe_dir>/model lookup — semantic search works straight out of the tarball.
-            tar -C out/$arch -czf mdkb-${{ steps.ver.outputs.version }}-linux-$arch.tar.gz \
+            tar -C out/$arch -czf mdkb-${{ steps.ver.outputs.version }}-linux-$arch-headless.tar.gz \
               mdkbd mdkb mdkb-mcp mdkb-web model
           done
           # Per-arch checksum files so each arch artifact is self-contained.
-          sha256sum mdkb-${{ steps.ver.outputs.version }}-linux-amd64.tar.gz > SHA256SUMS-amd64.txt
-          sha256sum mdkb-${{ steps.ver.outputs.version }}-linux-arm64.tar.gz > SHA256SUMS-arm64.txt
+          sha256sum mdkb-${{ steps.ver.outputs.version }}-linux-amd64-headless.tar.gz > SHA256SUMS-amd64.txt
+          sha256sum mdkb-${{ steps.ver.outputs.version }}-linux-arm64-headless.tar.gz > SHA256SUMS-arm64.txt
 
       # One workflow artifact PER ARCH, so you download only the arch you need (not both).
       - name: Upload amd64 payload (workflow artifact)
         uses: actions/upload-artifact@v3
         with:
-          name: mdkb-${{ steps.ver.outputs.version }}-linux-amd64
+          name: mdkb-${{ steps.ver.outputs.version }}-linux-amd64-headless
           path: |
-            mdkb-${{ steps.ver.outputs.version }}-linux-amd64.tar.gz
+            mdkb-${{ steps.ver.outputs.version }}-linux-amd64-headless.tar.gz
             SHA256SUMS-amd64.txt
           if-no-files-found: error
 
       - name: Upload arm64 payload (workflow artifact)
         uses: actions/upload-artifact@v3
         with:
-          name: mdkb-${{ steps.ver.outputs.version }}-linux-arm64
+          name: mdkb-${{ steps.ver.outputs.version }}-linux-arm64-headless
           path: |
-            mdkb-${{ steps.ver.outputs.version }}-linux-arm64.tar.gz
+            mdkb-${{ steps.ver.outputs.version }}-linux-arm64-headless.tar.gz
             SHA256SUMS-arm64.txt
           if-no-files-found: error
 
@@ -161,7 +165,7 @@ jobs:
         run: |
           set -e
           apt-get install -y -qq jq
-          BODY="mdkb ${TAG}\n\nSelf-contained daemon + clients for Linux (amd64/arm64), with the embedding model bundled. Also available as the container image ${IMAGE}:${TAG}."
+          BODY="mdkb ${TAG}\n\nHeadless Linux payload (daemon + CLIs + embedding model) for amd64/arm64 — no desktop GUI. The complete desktop app (app + CLIs) ships for Linux amd64, macOS, and Windows from the GitHub release; Linux arm64 is headless-only. Also available as the container image ${IMAGE}:${TAG}."
           # Create the release; if the tag already has one, fall back to looking it up.
           REL_ID=$(curl -s -X POST "$API/releases" \
             -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
@@ -265,36 +269,39 @@ jobs:
           . "$HOME/.cargo/env"
           # Generate the icon set from the single tracked source (icons/ is git-ignored build output).
           ( cd app/mdkb-tauri && cargo tauri icon app-icon.png )
-          # The app bundles the daemon as a resource for local-vault auto-start.
+          # The app bundles the daemon (local-vault auto-start) and the CLI tools (mdkb + mdkb-mcp)
+          # as resources, so the in-app "Install command-line tools" action can expose them on PATH.
+          # The CLI is staged as `mdkb-cli` to keep the bundle glob unambiguous; it installs as `mdkb`.
           mkdir -p app/mdkb-tauri/src-tauri/bin
-          cp target/x86_64-pc-windows-msvc/release/mdkbd.exe app/mdkb-tauri/src-tauri/bin/mdkbd.exe
+          cp target/x86_64-pc-windows-msvc/release/mdkbd.exe   app/mdkb-tauri/src-tauri/bin/mdkbd.exe
+          cp target/x86_64-pc-windows-msvc/release/mdkb-mcp.exe app/mdkb-tauri/src-tauri/bin/mdkb-mcp.exe
+          cp target/x86_64-pc-windows-msvc/release/mdkb.exe     app/mdkb-tauri/src-tauri/bin/mdkb-cli.exe
           ( cd app/mdkb-tauri/src-tauri && \
             cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis )
 
-      - name: Package (headless zip + app zip + installer)
+      - name: Package (one complete zip + installer)
         run: |
           set -eux
           V="${{ steps.ver.outputs.version }}"
           REL=target/x86_64-pc-windows-msvc/release
           APPREL=app/mdkb-tauri/src-tauri/target/x86_64-pc-windows-msvc/release
 
-          # 1) Headless payload: daemon (onnx) + clients + vendored model (parity with Linux).
-          #    The model/ dir sits beside the binaries so mdkbd finds it via <exe_dir>/model.
-          rm -rf dist && mkdir -p dist
+          # ONE complete archive: the desktop app + every CLI (mdkb, mdkb-mcp, mdkb-web) + the
+          # daemon + the vendored model. The model/ dir sits beside the binaries so mdkbd finds
+          # it via <exe_dir>/model; bin/ mirrors the app's bundled-resource layout so launching
+          # mdkb-tauri.exe portably can auto-start its daemon. Every download is the full product.
+          rm -rf dist && mkdir -p dist/bin
+          cp "$APPREL/mdkb-tauri.exe" dist/
           cp "$REL/mdkbd.exe" "$REL/mdkb.exe" "$REL/mdkb-mcp.exe" "$REL/mdkb-web.exe" dist/
+          cp "$REL/mdkbd.exe" "$REL/mdkb-mcp.exe" dist/bin/
+          cp "$REL/mdkb.exe" dist/bin/mdkb-cli.exe
           cp -r model dist/model
           ( cd dist && zip -qr "../mdkb-$V-windows-x64.zip" . )
 
-          # 2) Desktop app — portable layout (the .exe + its bundled daemon under bin/).
-          rm -rf appdist && mkdir -p appdist/bin
-          cp "$APPREL/mdkb-tauri.exe" appdist/
-          cp "$REL/mdkbd.exe" appdist/bin/mdkbd.exe
-          ( cd appdist && zip -qr "../mdkb-$V-windows-x64-app.zip" . )
-
-          # 3) NSIS installer.
+          # The NSIS installer (which itself bundles app + cli + mcp + daemon as resources).
           cp "$APPREL/bundle/nsis/"*-setup.exe "mdkb-$V-windows-x64-setup.exe"
 
-          sha256sum mdkb-*-windows-x64*.zip mdkb-*-windows-x64-setup.exe > SHA256SUMS-windows.txt
+          sha256sum mdkb-*-windows-x64.zip mdkb-*-windows-x64-setup.exe > SHA256SUMS-windows.txt
 
       - name: Upload Windows payload (workflow artifact)
         uses: actions/upload-artifact@v3
@@ -302,7 +309,6 @@ jobs:
           name: mdkb-${{ steps.ver.outputs.version }}-windows
           path: |
             mdkb-*-windows-x64.zip
-            mdkb-*-windows-x64-app.zip
             mdkb-*-windows-x64-setup.exe
             SHA256SUMS-windows.txt
           if-no-files-found: error
@@ -325,7 +331,7 @@ jobs:
             REL_ID=$(curl -sf "$API/releases/tags/$TAG" -H "Authorization: token $TOKEN" | jq -r '.id')
           fi
           echo "release id: $REL_ID"
-          for f in mdkb-*-windows-x64.zip mdkb-*-windows-x64-app.zip mdkb-*-windows-x64-setup.exe SHA256SUMS-windows.txt; do
+          for f in mdkb-*-windows-x64.zip mdkb-*-windows-x64-setup.exe SHA256SUMS-windows.txt; do
             curl -sf -X POST "$API/releases/$REL_ID/assets?name=$f" \
               -H "Authorization: token $TOKEN" \
               -F "attachment=@$f" >/dev/null

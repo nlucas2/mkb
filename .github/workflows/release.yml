@@ -112,39 +112,6 @@ jobs:
           cargo build --release --target ${{ matrix.target }} -p mdkbd --features onnx
           cargo build --release --target ${{ matrix.target }} -p mdkb-cli -p mdkb-mcp -p mdkb-web
 
-      - name: Assemble (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -eux
-          D="target/${{ matrix.target }}/release"
-          mkdir -p dist
-          cp "$D/mdkbd" "$D/mdkb" "$D/mdkb-mcp" "$D/mdkb-web" dist/
-          # Ship any dynamically-linked onnxruntime next to the binaries (usually static, but
-          # be safe). The model dir sits beside the binaries for the <exe_dir>/model lookup.
-          for lib in "$D"/libonnxruntime*.so* "$D"/libonnxruntime*.dylib; do
-            [ -e "$lib" ] && cp "$lib" dist/ || true
-          done
-          cp -r model dist/model
-          A="mdkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz"
-          tar -C dist -czf "$A" .
-          ( sha256sum "$A" 2>/dev/null || shasum -a 256 "$A" ) > "$A.sha256"
-
-      - name: Assemble (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $D = "target/${{ matrix.target }}/release"
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "$D/mdkbd.exe","$D/mdkb.exe","$D/mdkb-mcp.exe","$D/mdkb-web.exe" dist/
-          # ort may produce onnxruntime.dll alongside the exe; ship it if present.
-          Get-ChildItem "$D" -Filter "onnxruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination dist/
-          Copy-Item -Recurse model dist/model
-          $A = "mdkb-${{ github.ref_name }}-${{ matrix.name }}.zip"
-          Compress-Archive -Path dist/* -DestinationPath $A -Force
-          (Get-FileHash $A -Algorithm SHA256).Hash.ToLower() + "  " + $A | Out-File -Encoding ascii "$A.sha256"
-
       # ── Desktop app (Tauri) ──────────────────────────────────────────────────────
       # Build the desktop app + its native installer on this same runner so the release for
       # this platform is complete on its own. The app bundles the onnx daemon built above as a
@@ -195,10 +162,25 @@ jobs:
           ( cd app/mdkb-tauri && cargo tauri icon app-icon.png )
           D="target/${{ matrix.target }}/release"
           mkdir -p app/mdkb-tauri/src-tauri/bin
+          # Stage the daemon (local-vault auto-start) + the CLI tools (mdkb + mdkb-mcp) as app
+          # resources, so the in-app "Install command-line tools" action can expose them on PATH.
+          # The CLI is staged as `mdkb-cli` to keep the bundle glob unambiguous; it installs as `mdkb`.
           case "${{ runner.os }}" in
-            Windows) cp "$D/mdkbd.exe" app/mdkb-tauri/src-tauri/bin/mdkbd.exe; BUNDLES=nsis ;;
-            macOS)   cp "$D/mdkbd"     app/mdkb-tauri/src-tauri/bin/mdkbd;     BUNDLES=app,dmg ;;
-            *)       cp "$D/mdkbd"     app/mdkb-tauri/src-tauri/bin/mdkbd;     BUNDLES=deb,appimage ;;
+            Windows)
+              cp "$D/mdkbd.exe"   app/mdkb-tauri/src-tauri/bin/mdkbd.exe
+              cp "$D/mdkb-mcp.exe" app/mdkb-tauri/src-tauri/bin/mdkb-mcp.exe
+              cp "$D/mdkb.exe"     app/mdkb-tauri/src-tauri/bin/mdkb-cli.exe
+              BUNDLES=nsis ;;
+            macOS)
+              cp "$D/mdkbd"   app/mdkb-tauri/src-tauri/bin/mdkbd
+              cp "$D/mdkb-mcp" app/mdkb-tauri/src-tauri/bin/mdkb-mcp
+              cp "$D/mdkb"     app/mdkb-tauri/src-tauri/bin/mdkb-cli
+              BUNDLES=app,dmg ;;
+            *)
+              cp "$D/mdkbd"   app/mdkb-tauri/src-tauri/bin/mdkbd
+              cp "$D/mdkb-mcp" app/mdkb-tauri/src-tauri/bin/mdkb-mcp
+              cp "$D/mdkb"     app/mdkb-tauri/src-tauri/bin/mdkb-cli
+              BUNDLES=deb,appimage ;;
           esac
           ( cd app/mdkb-tauri/src-tauri && \
             cargo tauri build --target ${{ matrix.target }} --bundles "$BUNDLES" )
@@ -224,6 +206,53 @@ jobs:
               sum "mdkb-$V-$N.AppImage"
               sum "mdkb-$V-$N.deb" ;;
           esac
+
+      # ONE complete archive per platform: the desktop app + every CLI (mdkb, mdkb-mcp, mdkb-web)
+      # + the daemon + the vendored model. Every download is the full product, never a split.
+      # macOS ships the .app; Linux ships the runnable .AppImage (a bare mdkb-tauri binary needs
+      # system webkit, the AppImage bundles it); Windows ships mdkb-tauri.exe.
+      - name: Assemble complete archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eux
+          V="${{ github.ref_name }}"; N="${{ matrix.name }}"
+          D="target/${{ matrix.target }}/release"
+          B="app/mdkb-tauri/src-tauri/target/${{ matrix.target }}/release/bundle"
+          rm -rf dist && mkdir -p dist
+          cp "$D/mdkbd" "$D/mdkb" "$D/mdkb-mcp" "$D/mdkb-web" dist/
+          for lib in "$D"/libonnxruntime*.so* "$D"/libonnxruntime*.dylib; do
+            [ -e "$lib" ] && cp "$lib" dist/ || true
+          done
+          cp -r model dist/model
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cp -R "$B"/macos/*.app dist/
+          else
+            cp "$B"/appimage/*.AppImage "dist/mdkb.AppImage"
+          fi
+          A="mdkb-$V-$N.tar.gz"
+          tar -C dist -czf "$A" .
+          ( sha256sum "$A" 2>/dev/null || shasum -a 256 "$A" ) > "$A.sha256"
+
+      - name: Assemble complete archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $V = "${{ github.ref_name }}"; $N = "${{ matrix.name }}"
+          $D = "target/${{ matrix.target }}/release"
+          $APPREL = "app/mdkb-tauri/src-tauri/target/${{ matrix.target }}/release"
+          Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path dist/bin | Out-Null
+          Copy-Item "$APPREL/mdkb-tauri.exe" dist/
+          Copy-Item "$D/mdkbd.exe","$D/mdkb.exe","$D/mdkb-mcp.exe","$D/mdkb-web.exe" dist/
+          Get-ChildItem "$D" -Filter "onnxruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination dist/
+          Copy-Item "$D/mdkbd.exe","$D/mdkb-mcp.exe" dist/bin/
+          Copy-Item "$D/mdkb.exe" dist/bin/mdkb-cli.exe
+          Copy-Item -Recurse model dist/model
+          $A = "mdkb-$V-$N.zip"
+          Compress-Archive -Path dist/* -DestinationPath $A -Force
+          (Get-FileHash $A -Algorithm SHA256).Hash.ToLower() + "  " + $A | Out-File -Encoding ascii "$A.sha256"
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v3
