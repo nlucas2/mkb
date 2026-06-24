@@ -16,6 +16,8 @@ A block file is clean Markdown with optional YAML frontmatter:
 ---
 title: Deploying to k3s
 tags: [k3s, ops]
+updated: 2026-06-24T02:30:00Z
+source: https://docs.k3s.io
 ---
 
 # Deploying to k3s
@@ -27,8 +29,12 @@ Our cluster runs k3s on the Pi rack.
 Push to Forgejo and the pipeline applies the manifests.
 ```
 
-- **Frontmatter** (optional): `title:` (a human title), `tags:` (flow `[a, b]` or a block
-  list), and `locked:` (`true` marks the block **human-only** — see below). Unknown keys are
-  ignored. A file with no frontmatter is just Markdown.
+- **Frontmatter** (optional): mdkb manages `title:` (a human title), `tags:` (flow `[a, b]` or a
+  block list), and `locked:` (`true` marks the block **human-only** — see below). It also stamps
+  `updated:` (RFC 3339 UTC last-modified) on every write; the matching **`created:` time is *not*
+  stored** — it is decoded from the block's ULID id, which embeds its creation timestamp. **Any
+  other `key: value` is a block *property*** — open-ended scalar metadata (e.g. `source:`,
+  `verified:`, `confidence:`) that round-trips and whose value is searchable. A file with no
+  frontmatter is just Markdown.
 - **Body**: arbitrary Markdown. Inline `#tags` are also collected (outside code fences).
   Fenced-code-block languages are recorded for language-filtered search.
