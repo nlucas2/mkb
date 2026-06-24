@@ -35,7 +35,9 @@ pub fn tool_definitions() -> Vec<ToolDef> {
                     "created_after": {"type": "string", "description": "Only blocks created on/after this date (YYYY-MM-DD or RFC 3339)"},
                     "created_before": {"type": "string", "description": "Only blocks created before this date"},
                     "updated_after": {"type": "string", "description": "Only blocks last-modified on/after this date"},
-                    "updated_before": {"type": "string", "description": "Only blocks last-modified before this date (find stale blocks)"}
+                    "updated_before": {"type": "string", "description": "Only blocks last-modified before this date (find stale blocks)"},
+                    "has": {"type": "array", "items": {"type": "string"}, "description": "Only blocks that HAVE a property with each of these keys (metadata-completeness)"},
+                    "missing": {"type": "array", "items": {"type": "string"}, "description": "Only blocks that LACK a property with each of these keys (find metadata gaps, e.g. atoms missing 'source')"}
                 }
             }),
         },
@@ -290,6 +292,29 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             if let Some(d) = date("updated_before")? {
                 q.updated_before = Some(d);
             }
+            // Property presence/absence keys (merge with any has:/missing: operators from the query).
+            let prop_keys = |key: &str| -> Vec<String> {
+                args.get(key)
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str())
+                            .map(|s| s.trim().to_lowercase())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            for k in prop_keys("has") {
+                if !q.has_prop.contains(&k) {
+                    q.has_prop.push(k);
+                }
+            }
+            for k in prop_keys("missing") {
+                if !q.lacks_prop.contains(&k) {
+                    q.lacks_prop.push(k);
+                }
+            }
             Request::Search { query: q }
         }
         "get_block" => Request::GetBlock { id: req_id("id")? },
@@ -528,6 +553,19 @@ mod tests {
     fn search_rejects_bad_date_arg() {
         let args = json!({"query": "x", "updated_before": "last tuesday"});
         assert!(build_request("search", &args).is_err());
+    }
+
+    #[test]
+    fn search_maps_has_missing_from_args_and_operators() {
+        // `has:` operator in the query + a `missing` array arg both land on the query.
+        let args = json!({"query": "has:Source", "missing": ["verified", "Confidence"]});
+        match build_request("search", &args).unwrap() {
+            Request::Search { query } => {
+                assert_eq!(query.has_prop, vec!["source"]); // operator, lowercased
+                assert_eq!(query.lacks_prop, vec!["verified", "confidence"]);
+            }
+            _ => panic!("expected search"),
+        }
     }
 
     #[test]

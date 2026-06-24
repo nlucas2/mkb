@@ -221,23 +221,24 @@ impl<I: Index> Service<I> {
         query: SearchQuery,
     ) -> Result<Vec<SearchHit>, IndexError> {
         ctx.authorize(Capability::Read)?;
-        // Date filters (created from the id, updated overlaid from the vault) are applied here, not
-        // in the index. So when one is present, fetch *all* candidates from the engine — bounded by
-        // the vault's block count, since it can't return more than that — then date-filter and
-        // re-apply the real limit. Using `0` would not work: the engine maps it to the default 50
-        // via `effective_limit`, which would silently drop stale blocks ranked past the 50th.
-        let has_date = query.has_date_filter();
+        // Date and property (has/missing) filters are applied here, not in the index — created from
+        // the id, updated/props overlaid from the vault. So when one is present, fetch *all*
+        // candidates from the engine (bounded by the vault block count, since it can't return more
+        // than that), then filter and re-apply the real limit. `0` would not work: the engine maps
+        // it to the default 50 via `effective_limit`, which would silently drop matches past the
+        // 50th — exactly the "blocks missing X across the whole vault" audit.
+        let post_filter = query.has_date_filter() || query.has_prop_filter();
         let limit = query.effective_limit();
         let mut engine_query = query.clone();
-        if has_date {
+        if post_filter {
             engine_query.limit = self.engine.vault().len().max(1);
         }
         let mut hits = self.engine.search(engine_query)?;
         for hit in &mut hits {
             self.overlay_metadata(&mut hit.block);
         }
-        if has_date {
-            hits.retain(|h| query.matches_dates(&h.block));
+        if post_filter {
+            hits.retain(|h| query.matches_dates(&h.block) && query.matches_props(&h.block));
             hits.truncate(limit);
         }
         Ok(hits)
@@ -1252,7 +1253,6 @@ mod tests {
 
     #[test]
     fn date_filter_scans_beyond_the_default_limit() {
-        // Regression: a date filter must consider ALL blocks, not just the engine's default 50.
         let dir = tempfile::tempdir().unwrap();
         let mut svc = service(dir.path());
         let ctx = RequestContext::local();
@@ -1260,11 +1260,89 @@ mod tests {
             svc.create_block(&ctx, Some("Doc"), "findable content")
                 .unwrap();
         }
+        // Regression: a metadata filter must consider ALL blocks, not just the engine's default 50.
         // All 60 were just written, so all are updated before a far-future date. With a generous
         // limit, every one comes back — proving the candidate set wasn't pre-capped at 50.
         let mut q = SearchQuery::text("findable");
         q.updated_before = crate::clock::parse_query_date("2999-01-01");
         q.limit = 100;
+        assert_eq!(svc.search(&ctx, q).unwrap().len(), 60);
+    }
+
+    #[test]
+    fn has_and_missing_property_audit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        // Two atoms with provenance, one without — the metadata-gap the audit must surface.
+        let a = svc.create_block(&ctx, Some("A"), "alpha body").unwrap();
+        let b = svc.create_block(&ctx, Some("B"), "beta body").unwrap();
+        let c = svc.create_block(&ctx, Some("C"), "gamma body").unwrap();
+        svc.set_props(&ctx, &a, &[("source".into(), "git".into())])
+            .unwrap();
+        svc.set_props(&ctx, &b, &[("source".into(), "doc".into())])
+            .unwrap();
+
+        // Pure presence query (no free text) — an audit over the whole vault.
+        let q = SearchQuery {
+            has_prop: vec!["source".into()],
+            ..Default::default()
+        };
+        let got: Vec<_> = svc
+            .search(&ctx, q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.block.id)
+            .collect();
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&a) && got.contains(&b) && !got.contains(&c));
+
+        // Absence query — the part FTS cannot express.
+        let q = SearchQuery {
+            lacks_prop: vec!["source".into()],
+            ..Default::default()
+        };
+        let got: Vec<_> = svc
+            .search(&ctx, q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.block.id)
+            .collect();
+        assert_eq!(got, vec![c.clone()], "only the atom missing source");
+
+        // Compose: has source AND missing verified → only `a`.
+        svc.set_props(&ctx, &b, &[("verified".into(), "2026-01-01".into())])
+            .unwrap();
+        let q = SearchQuery {
+            has_prop: vec!["source".into()],
+            lacks_prop: vec!["verified".into()],
+            ..Default::default()
+        };
+        let got: Vec<_> = svc
+            .search(&ctx, q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.block.id)
+            .collect();
+        assert_eq!(got, vec![a]);
+    }
+
+    #[test]
+    fn pure_missing_audit_scans_whole_vault_via_filter_only_path() {
+        // The feature's headline path: a pure `missing:` query with NO free text routes through the
+        // engine's filter-only (None, None) candidate path. Over a >50-block vault it must still
+        // consider every block (not the default 50), so all gap-blocks come back with a high limit.
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        for _ in 0..60 {
+            svc.create_block(&ctx, Some("Doc"), "body").unwrap();
+        }
+        let q = SearchQuery {
+            lacks_prop: vec!["source".into()],
+            limit: 100,
+            ..Default::default()
+        };
         assert_eq!(svc.search(&ctx, q).unwrap().len(), 60);
     }
 

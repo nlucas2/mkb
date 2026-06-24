@@ -116,6 +116,8 @@ mdkb search <vault> "ingress" --tag=ops --lang=yaml --limit=10   # filters (--ta
 mdkb search <vault> "tag:ops #k8s lang:rust deploy"              # same filters as inline operators
 mdkb search <vault> "updated:before:2026-01-01"  # stale blocks (also --updated-before=DATE, and
                                                  # created/updated :after:/:before:, YYYY-MM-DD)
+mdkb search <vault> "missing:source"             # metadata-gap audit: blocks lacking a property
+                                                 # (also has:<key>, and --has=/--missing= flags)
 mdkb tags <vault>                            # every tag with its block count
 mdkb props <vault> <id>                      # a block's properties, "key<TAB>value" per line
 mdkb info <vault> <id>                       # a block's metadata: created, updated, locked, tags, props

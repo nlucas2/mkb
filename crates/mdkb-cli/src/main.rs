@@ -81,8 +81,10 @@ reads:
        flags: --lang=<l> --tag=<t> (repeatable) --limit=<n>
               --created-after=<date> --created-before=<date>
               --updated-after=<date> --updated-before=<date>   (date = YYYY-MM-DD or RFC3339)
+              --has=<key> --missing=<key> (repeatable)          property present / absent
        query also accepts operators: tag:<t>  #<t>  lang:<l>  code:<l>
                                      created:before:<date>  updated:before:<date>  (and :after:)
+                                     has:<key>  missing:<key>
   tags <vault>                      all tags with block counts
   props <vault> <id>                a block's properties (key<TAB>value per line)
   info <vault> <id>                 a block's metadata (created, updated, locked, tags, props)
@@ -262,6 +264,10 @@ fn cmd_search(args: &[String]) -> Result<(), String> {
             q.updated_after = Some(parse_date_flag(d)?);
         } else if let Some(d) = flag.strip_prefix("--updated-before=") {
             q.updated_before = Some(parse_date_flag(d)?);
+        } else if let Some(k) = flag.strip_prefix("--has=") {
+            push_prop_key(&mut q.has_prop, k);
+        } else if let Some(k) = flag.strip_prefix("--missing=") {
+            push_prop_key(&mut q.lacks_prop, k);
         } else {
             return Err(format!("unknown flag: {flag}"));
         }
@@ -281,6 +287,13 @@ fn cmd_search(args: &[String]) -> Result<(), String> {
 fn parse_date_flag(d: &str) -> Result<String, String> {
     mdkb_core::clock::parse_query_date(d)
         .ok_or_else(|| format!("bad date {d:?}: use YYYY-MM-DD or an RFC 3339 timestamp"))
+}
+
+fn push_prop_key(keys: &mut Vec<String>, key: &str) {
+    let k = key.trim().to_lowercase();
+    if !k.is_empty() && !keys.contains(&k) {
+        keys.push(k);
+    }
 }
 
 fn cmd_info(args: &[String]) -> Result<(), String> {

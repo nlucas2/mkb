@@ -170,6 +170,13 @@ pub struct SearchQuery {
     /// Keep only blocks **updated** strictly before this RFC 3339 UTC instant (the staleness
     /// filter). A block with no `updated:` time does not match an updated bound.
     pub updated_before: Option<String>,
+    /// Keep only blocks that **have** a property with each of these keys (case-insensitive, AND).
+    /// Key presence only — no value comparison. The metadata-completeness filter.
+    pub has_prop: Vec<String>,
+    /// Keep only blocks that **lack** a property with each of these keys (case-insensitive). The
+    /// metadata-gap filter — e.g. atoms missing a `source`. Unambiguous because mdkb never stores
+    /// an empty-valued property: a key is either present with a real value, or absent.
+    pub lacks_prop: Vec<String>,
     /// Max results. `0` is treated as the default (50).
     pub limit: usize,
 }
@@ -194,6 +201,10 @@ impl SearchQuery {
     /// - `created:after:DATE` / `created:before:DATE` — bound by creation time.
     /// - `updated:after:DATE` / `updated:before:DATE` — bound by last-modified time. `DATE` is a
     ///   `YYYY-MM-DD` date or a full RFC 3339 timestamp; an unparsable value is ignored.
+    /// - `has:KEY` / `missing:KEY` — require a *property* named `KEY` to be present / absent.
+    ///   Operates on open-ended properties only, not managed fields (`title`/`tags`/`locked`/
+    ///   `created`/`updated`), which have their own filters; `has:tags` matches nothing and
+    ///   `missing:tags` matches everything.
     ///
     /// Everything else becomes the free-text (FTS) part. A leading `#` is treated as a tag only
     /// when it looks like a tag token (`#word`), so Markdown headings pasted into the box still
@@ -219,6 +230,10 @@ impl SearchQuery {
                 q.updated_after = crate::clock::parse_query_date(rest);
             } else if let Some(rest) = strip_ci_prefix(token, "updated:before:") {
                 q.updated_before = crate::clock::parse_query_date(rest);
+            } else if let Some(rest) = strip_ci_prefix(token, "has:") {
+                push_unique(&mut q.has_prop, rest);
+            } else if let Some(rest) = strip_ci_prefix(token, "missing:") {
+                push_unique(&mut q.lacks_prop, rest);
             } else if let Some(rest) = token.strip_prefix('#') {
                 // `#tag` shorthand — only when it's a real tag token (not a bare `#`).
                 if !rest.is_empty() && rest.chars().all(is_tag_char) {
@@ -280,12 +295,34 @@ impl SearchQuery {
             && lower(&self.updated_after, &rec.updated)
             && upper(&self.updated_before, &rec.updated)
     }
+
+    /// Whether any property presence/absence (`has`/`missing`) filter is set.
+    pub fn has_prop_filter(&self) -> bool {
+        !self.has_prop.is_empty() || !self.lacks_prop.is_empty()
+    }
+
+    /// Whether `rec` satisfies the property presence/absence filters: it must carry every `has_prop`
+    /// key and none of the `lacks_prop` keys (case-insensitive, AND). Key presence only — value is
+    /// not considered. Operates on arbitrary properties, not the managed fields
+    /// (`title`/`tags`/`locked`/`created`/`updated`).
+    pub fn matches_props(&self, rec: &BlockRecord) -> bool {
+        self.has_prop.iter().all(|k| rec.prop(k).is_some())
+            && self.lacks_prop.iter().all(|k| rec.prop(k).is_none())
+    }
 }
 
-/// Strip a case-insensitive prefix, returning the remainder when it matched and is non-empty.
+/// Strip a case-insensitive ASCII prefix, returning the remainder when it matched and is non-empty.
+///
+/// Compares on **bytes**, never slicing the `str` at a possibly-mid-character boundary: a query
+/// token containing a multi-byte UTF-8 char whose bytes happen to land on `prefix.len()` (e.g.
+/// `missing:` is 8 bytes) must not panic. The remainder slice is safe because a successful match
+/// means the first `prefix.len()` bytes equal the ASCII prefix and are therefore all single-byte
+/// (so `prefix.len()` is a valid char boundary).
 fn strip_ci_prefix<'a>(token: &'a str, prefix: &str) -> Option<&'a str> {
-    if token.len() >= prefix.len() && token[..prefix.len()].eq_ignore_ascii_case(prefix) {
-        let rest = &token[prefix.len()..];
+    let pb = prefix.as_bytes();
+    let tb = token.as_bytes();
+    if tb.len() >= pb.len() && tb[..pb.len()].eq_ignore_ascii_case(pb) {
+        let rest = &token[pb.len()..];
         if rest.is_empty() {
             None
         } else {
@@ -820,5 +857,85 @@ mod tests {
         assert_eq!(q.tags, Vec::<String>::new());
         assert_eq!(q.lang, None);
         assert_eq!(q.text.as_deref(), Some("# tag: heading"));
+    }
+
+    #[test]
+    fn parse_has_and_missing_operators() {
+        let q = SearchQuery::parse("provenance has:Source missing:verified");
+        assert_eq!(q.text.as_deref(), Some("provenance"));
+        assert_eq!(q.has_prop, vec!["source"]); // lowercased
+        assert_eq!(q.lacks_prop, vec!["verified"]);
+        assert!(q.has_prop_filter());
+        // A pure presence/absence query has no free text.
+        let q = SearchQuery::parse("missing:source");
+        assert_eq!(q.text, None);
+        assert_eq!(q.lacks_prop, vec!["source"]);
+    }
+
+    #[test]
+    fn parse_multibyte_tokens_do_not_panic() {
+        // Regression: an operator prefix length landing mid-UTF-8-character must not panic the
+        // parser (it would crash the MCP server). These tokens just stay as free text.
+        for t in [
+            "abcdex€",
+            "ha€llo",
+            "missing€",
+            "updated:before€",
+            "naïve café query",
+        ] {
+            let q = SearchQuery::parse(t);
+            // No operator matched; the token survives as text (the point is: it didn't panic).
+            assert!(
+                q.text.is_some() || q.has_prop_filter() || !q.tags.is_empty() || q.lang.is_some()
+            );
+        }
+        // A genuine operator with a trailing multibyte value still parses without panicking.
+        let q = SearchQuery::parse("has:café");
+        assert_eq!(q.has_prop, vec!["café"]);
+    }
+
+    fn rec_with_props(props: &[(&str, &str)]) -> BlockRecord {
+        let mut rec = BlockRecord::from_block(
+            &crate::blockfile::parse_block(BlockId::generate(), "body\n"),
+            0,
+        );
+        rec.props = props
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        rec
+    }
+
+    #[test]
+    fn matches_props_presence_absence_and_anding() {
+        let rec = rec_with_props(&[("source", "git"), ("confidence", "0.9")]);
+        let has = |k: &str| {
+            SearchQuery {
+                has_prop: vec![k.to_string()],
+                ..Default::default()
+            }
+            .matches_props(&rec)
+        };
+        let missing = |k: &str| {
+            SearchQuery {
+                lacks_prop: vec![k.to_string()],
+                ..Default::default()
+            }
+            .matches_props(&rec)
+        };
+        assert!(has("source"));
+        assert!(has("SOURCE")); // case-insensitive
+        assert!(!has("verified"));
+        assert!(missing("verified"));
+        assert!(!missing("source"));
+        // AND across has + missing.
+        let mut q = SearchQuery {
+            has_prop: vec!["source".into()],
+            lacks_prop: vec!["verified".into()],
+            ..Default::default()
+        };
+        assert!(q.matches_props(&rec));
+        q.has_prop.push("missing-one".into());
+        assert!(!q.matches_props(&rec));
     }
 }
