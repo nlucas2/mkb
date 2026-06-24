@@ -91,7 +91,8 @@ pub enum Request {
         /// Markdown body.
         body: String,
     },
-    /// Overwrite a block's title + body.
+    /// Overwrite a block's title + body. `force` overrides the destructive-update guard (which
+    /// refuses an edit that would empty a block or strip most of its content).
     UpdateBlock {
         /// Block id.
         id: BlockId,
@@ -99,6 +100,9 @@ pub enum Request {
         title: Option<String>,
         /// Markdown body.
         body: String,
+        /// Bypass the destructive-update guard for an intentional rewrite. Defaults to `false`.
+        #[serde(default)]
+        force: bool,
     },
     /// Delete a block.
     DeleteBlock {
@@ -316,9 +320,14 @@ fn handle<I: Index>(
                 .create_block(ctx, title.as_deref(), &body)
                 .map_err(to_str)?,
         ),
-        Request::UpdateBlock { id, title, body } => {
+        Request::UpdateBlock {
+            id,
+            title,
+            body,
+            force,
+        } => {
             service
-                .update_block(ctx, &id, title.as_deref(), &body)
+                .update_block(ctx, &id, title.as_deref(), &body, force)
                 .map_err(to_str)?;
             Response::Ok
         }
@@ -754,12 +763,20 @@ impl Client {
         }
     }
 
-    /// Convenience: update a block.
-    pub fn update_block(&self, id: BlockId, title: Option<&str>, body: &str) -> io::Result<()> {
+    /// Convenience: update a block. `force` bypasses the destructive-update guard (an edit that
+    /// would empty the block or strip most of its content); pass `false` for ordinary edits.
+    pub fn update_block(
+        &self,
+        id: BlockId,
+        title: Option<&str>,
+        body: &str,
+        force: bool,
+    ) -> io::Result<()> {
         match self.call(&Request::UpdateBlock {
             id,
             title: title.map(str::to_string),
             body: body.to_string(),
+            force,
         })? {
             Response::Ok => Ok(()),
             other => Err(unexpected(other)),

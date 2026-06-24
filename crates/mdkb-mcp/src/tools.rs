@@ -105,13 +105,14 @@ pub fn tool_definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "update_block",
-            description: "Overwrite a block's title + Markdown body, by id.",
+            description: "Overwrite a block's title + Markdown body, by id. This replaces the ENTIRE body, so read the current body first (get_block) and send the full revised text — don't send a fragment. An edit that would empty the block or strip most of its content is refused unless force=true (use that only for a deliberate rewrite).",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
                     "title": {"type": "string"},
-                    "body": {"type": "string"}
+                    "body": {"type": "string"},
+                    "force": {"type": "boolean", "description": "Bypass the destructive-update guard for an intentional rewrite (default false)"}
                 },
                 "required": ["id", "body"]
             }),
@@ -279,6 +280,7 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             id: req_id("id")?,
             title: s("title"),
             body: req_s("body")?,
+            force: args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
         },
         "delete_block" => Request::DeleteBlock { id: req_id("id")? },
         "set_tags" => Request::SetTags {

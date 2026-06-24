@@ -276,7 +276,9 @@ fn save_block(
     let client = state.connected()?;
     let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
     client
-        .update_block(bid, title.as_deref(), &body)
+        // The desktop app is the human surface — the editor shows the full body being saved, so
+        // the destructive-update guard (which protects against blind agent truncation) is bypassed.
+        .update_block(bid, title.as_deref(), &body, true)
         .map_err(|e| e.to_string())
 }
 

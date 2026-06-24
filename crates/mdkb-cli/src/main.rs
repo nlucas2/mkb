@@ -89,7 +89,9 @@ reads:
 
 writes (body is read from stdin where noted):
   create <vault> [--title=T] < body          create a block; prints the new id
-  update <vault> <id> [--title=T] < body     overwrite a block's title + body
+  update <vault> <id> [--title=T] [--force] < body
+                                             overwrite a block's title + body (--force overrides
+                                             the guard that refuses an emptying/truncating edit)
   set-tags <vault> <id> [tag ...]            set managed (frontmatter) tags ([] clears)
   set-props <vault> <id> [key=value ...]     add/update block properties (preserves the rest)
   unset-props <vault> <id> <key ...>         remove the named block properties (preserves the rest)
@@ -342,11 +344,15 @@ fn cmd_update(args: &[String]) -> Result<(), String> {
     let c = client(req(args, 0, "<vault-dir>")?)?;
     let id = parse_id(req(args, 1, "<block-id>")?)?;
     let (title, rest) = take_title(&args[2..]);
-    if let Some(f) = rest.first() {
-        return Err(format!("unknown flag: {f}"));
+    let mut force = false;
+    for f in rest {
+        match f.as_str() {
+            "--force" => force = true,
+            other => return Err(format!("unknown flag: {other}")),
+        }
     }
     let body = read_stdin()?;
-    c.update_block(id, title.as_deref(), &body)
+    c.update_block(id, title.as_deref(), &body, force)
         .map_err(|e| e.to_string())?;
     println!("ok");
     Ok(())

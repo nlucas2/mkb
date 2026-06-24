@@ -22,6 +22,40 @@ use crate::render::{
 };
 use crate::sync::{SyncEngine, SyncReport};
 
+/// A block is at least this many characters before the "drastic shrink" guard applies, so trimming
+/// a small note is never blocked — only substantial blocks are protected from mass deletion.
+const UPDATE_GUARD_MIN_CHARS: usize = 200;
+/// An update that removes more than this fraction of a substantial block's content is treated as
+/// destructive and refused unless forced.
+const UPDATE_GUARD_MAX_LOSS: f64 = 0.75;
+
+/// Whether replacing `old` body with `new` would destroy content an agent likely didn't mean to
+/// lose, returning a human-readable reason if so. Two cases: emptying a non-empty block, or
+/// stripping more than [`UPDATE_GUARD_MAX_LOSS`] of a block of at least [`UPDATE_GUARD_MIN_CHARS`].
+/// Comparison is on trimmed character counts, so reformatting (similar length) never trips it; only
+/// truncation does. This is the heuristic behind [`Service::update_block`]'s force gate.
+pub fn destructive_update_reason(old: &str, new: &str) -> Option<String> {
+    let old_t = old.trim();
+    if old_t.is_empty() {
+        return None;
+    }
+    if new.trim().is_empty() {
+        return Some("the new body is empty but the block is not".to_string());
+    }
+    let old_len = old_t.chars().count();
+    let new_len = new.trim().chars().count();
+    if old_len >= UPDATE_GUARD_MIN_CHARS && new_len < old_len {
+        let lost = (old_len - new_len) as f64 / old_len as f64;
+        if lost > UPDATE_GUARD_MAX_LOSS {
+            return Some(format!(
+                "it removes about {:.0}% of the block's content ({old_len} → {new_len} chars)",
+                lost * 100.0
+            ));
+        }
+    }
+    None
+}
+
 /// Who is making a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caller {
@@ -397,15 +431,34 @@ impl<I: Index> Service<I> {
     }
 
     /// Overwrite a block's title + body.
+    ///
+    /// `update_block` replaces the **entire** body, so a caller that sends a truncated or empty
+    /// body silently destroys the block's content. To make that hard to do by accident, the update
+    /// is **refused** when it would empty a block or strip most of its content (see
+    /// [`destructive_update_reason`]) — unless `force` is set, which an intentional rewrite passes.
+    /// The guard lives here, at the user-facing op; the internal structural rewrites
+    /// (`carve_selection`/`flatten_block`) go straight to the engine and are never guarded.
     pub fn update_block(
         &mut self,
         ctx: &RequestContext,
         id: &BlockId,
         title: Option<&str>,
         body: &str,
+        force: bool,
     ) -> Result<(), IndexError> {
         ctx.authorize(Capability::Write)?;
         self.ensure_writable(id)?;
+        if !force {
+            if let Some(old) = self.engine.vault().block(id) {
+                if let Some(reason) = destructive_update_reason(&old.body, body) {
+                    return Err(IndexError::new(format!(
+                        "refusing to update {id}: {reason}. If this is an intentional rewrite, \
+                         retry with force; otherwise read the current body first (get) and send \
+                         the full revised text — update replaces the whole body."
+                    )));
+                }
+            }
+        }
         self.engine.update_block(id, title, body)
     }
 
@@ -695,6 +748,43 @@ mod tests {
     }
 
     #[test]
+    fn destructive_update_reason_flags_emptying_and_mass_deletion() {
+        // Emptying a non-empty block is always flagged.
+        assert!(destructive_update_reason("some real content", "   ").is_some());
+        // Emptying an already-empty block is fine.
+        assert!(destructive_update_reason("  ", "").is_none());
+        // A normal edit on a substantial block is fine.
+        let big = "x".repeat(400);
+        assert!(destructive_update_reason(&big, &"x".repeat(380)).is_none());
+        // Stripping most of a substantial block is flagged.
+        assert!(destructive_update_reason(&big, "tiny").is_some());
+        // A small block can be trimmed freely (below the guard's size floor).
+        assert!(destructive_update_reason("short note", "s").is_none());
+    }
+
+    #[test]
+    fn update_block_guard_blocks_truncation_unless_forced() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let big = "paragraph of real content. ".repeat(20); // ~540 chars
+        let id = svc.create_block(&ctx, Some("Doc"), &big).unwrap();
+
+        // An accidental truncation is refused and changes nothing.
+        let err = svc.update_block(&ctx, &id, Some("Doc"), "oops", false);
+        assert!(err.is_err(), "truncating update should be refused");
+        assert_eq!(svc.get_block_source(&ctx, &id).unwrap().unwrap(), big);
+
+        // Emptying is refused too.
+        assert!(svc.update_block(&ctx, &id, Some("Doc"), "", false).is_err());
+
+        // The same edit goes through when explicitly forced (a deliberate rewrite).
+        svc.update_block(&ctx, &id, Some("Doc"), "oops", true)
+            .unwrap();
+        assert_eq!(svc.get_block_source(&ctx, &id).unwrap().unwrap(), "oops");
+    }
+
+    #[test]
     fn create_update_render_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let mut svc = service(dir.path());
@@ -707,7 +797,7 @@ mod tests {
             svc.get_block(&ctx, &id).unwrap().unwrap().content,
             "original body"
         );
-        svc.update_block(&ctx, &id, Some("Note"), "updated body")
+        svc.update_block(&ctx, &id, Some("Note"), "updated body", false)
             .unwrap();
         assert_eq!(
             svc.get_block_source(&ctx, &id).unwrap().unwrap(),
@@ -1004,7 +1094,9 @@ mod tests {
         assert!(svc.render_block(&agent, &id).unwrap().is_some());
 
         // Every write path is denied for an agent.
-        assert!(svc.update_block(&agent, &id, None, "tampered").is_err());
+        assert!(svc
+            .update_block(&agent, &id, None, "tampered", false)
+            .is_err());
         assert!(svc.set_tags(&agent, &id, &["x".to_string()]).is_err());
         assert!(svc
             .set_props(&agent, &id, &[("k".to_string(), "v".to_string())])
@@ -1048,7 +1140,7 @@ mod tests {
         );
 
         // A plain body edit must not drop the properties.
-        svc.update_block(&ctx, &id, Some("Atom"), "body v2")
+        svc.update_block(&ctx, &id, Some("Atom"), "body v2", false)
             .unwrap();
         let rec = svc.get_block(&ctx, &id).unwrap().unwrap();
         assert_eq!(rec.content, "body v2");
@@ -1088,7 +1180,7 @@ mod tests {
         let id = svc.create_block(&agent, Some("Pinned"), "v1").unwrap();
         svc.set_lock(&app(), &id, true).unwrap();
         // The app holds Write + ManageLocks, but a direct write to a locked block still fails.
-        assert!(svc.update_block(&app(), &id, None, "v2").is_err());
+        assert!(svc.update_block(&app(), &id, None, "v2", false).is_err());
         assert_eq!(svc.get_block_source(&agent, &id).unwrap().unwrap(), "v1");
     }
 
@@ -1099,11 +1191,11 @@ mod tests {
         let agent = RequestContext::local();
         let id = svc.create_block(&agent, Some("Pinned"), "v1").unwrap();
         svc.set_lock(&app(), &id, true).unwrap();
-        assert!(svc.update_block(&agent, &id, None, "nope").is_err());
+        assert!(svc.update_block(&agent, &id, None, "nope", false).is_err());
 
         // The honest flow: app unlocks → edit → re-lock. After unlock an agent can write too.
         svc.set_lock(&app(), &id, false).unwrap();
-        svc.update_block(&agent, &id, None, "v2").unwrap();
+        svc.update_block(&agent, &id, None, "v2", false).unwrap();
         assert_eq!(svc.get_block_source(&agent, &id).unwrap().unwrap(), "v2");
         svc.set_lock(&app(), &id, true).unwrap();
         let rec = svc.get_block(&agent, &id).unwrap().unwrap();
