@@ -58,10 +58,9 @@ mod tests {
     #[test]
     fn paths_from_args_defaults_and_overrides() {
         let p = paths_from_args(&["--vault".into(), "/tmp/v".into()]).unwrap();
-        assert_eq!(
-            p.socket,
-            std::path::PathBuf::from("/tmp/v/.mdkb/mdkbd.sock")
-        );
+        // Default socket lands in the machine-local per-vault dir (resolved by DaemonPaths), not in
+        // the vault; an explicit --socket overrides it.
+        assert_eq!(p.socket.file_name().unwrap(), "mdkbd.sock");
         let p2 =
             paths_from_args(&["--vault=/tmp/v".into(), "--socket=/run/x.sock".into()]).unwrap();
         assert_eq!(p2.socket, std::path::PathBuf::from("/run/x.sock"));

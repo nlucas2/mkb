@@ -35,16 +35,18 @@ usage:
 
 options:
   --vault <dir>     vault directory (default: $MDKB_VAULT or ~/mdkb-vault)
-  --db <path>       index database (default: <vault>/.mdkb/index.db)
-  --socket <path>   local socket: Unix socket / Windows named pipe (default: <vault>/.mdkb/mdkbd.sock)
+  --db <path>       index database (default: a machine-local per-vault dir, see below)
+  --socket <path>   local socket: Unix socket / Windows named pipe (default: beside --db)
   --listen <addr>   ALSO serve over TCP at <addr> (e.g. 0.0.0.0:7820); requires a token
   --token <tok>     shared token network clients must present ($MDKB_TOKEN also accepted)
   --idle-timeout <secs>  self-shutdown after <secs> with no requests AND no interactive lease
                          (0 = never; default: never when run manually)
   --help            show this help
 
-The index and socket directory (<vault>/.mdkb) is local-only and must be excluded
-from cloud sync; only the Markdown files are meant to sync.
+The index/socket/lock/log are machine-local and live OUTSIDE the vault by default — under the OS
+local-data dir (e.g. %LOCALAPPDATA%\\mdkb\\<id>, ~/Library/Application Support/mdkb/<id>,
+~/.local/state/mdkb/<id>), keyed by a hash of the vault path. Set $MDKB_INDEX_DIR to override the
+base. This means a cloud-synced vault never syncs the live index — only the Markdown should sync.
 
 The network listener is opt-in and fails closed: without a valid token, remote callers
 are rejected. The Unix socket remains local-only and trusted."
@@ -169,8 +171,11 @@ mod tests {
     fn defaults_derive_from_vault() {
         let cfg = Config::from_args(["--vault".into(), "/tmp/v".into()].into_iter()).unwrap();
         assert_eq!(cfg.vault(), Path::new("/tmp/v"));
-        assert_eq!(cfg.db(), Path::new("/tmp/v/.mdkb/index.db"));
-        assert_eq!(cfg.socket(), Path::new("/tmp/v/.mdkb/mdkbd.sock"));
+        // db/socket default to a machine-local per-vault dir (resolved by DaemonPaths) — exact
+        // location depends on the environment, but they're named consistently and share a dir.
+        assert_eq!(cfg.db().file_name().unwrap(), "index.db");
+        assert_eq!(cfg.socket().file_name().unwrap(), "mdkbd.sock");
+        assert_eq!(cfg.db().parent(), cfg.socket().parent());
     }
 
     #[test]

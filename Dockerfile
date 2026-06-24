@@ -98,7 +98,10 @@ RUN cargo test --workspace
 # CI runners can sit on slow/network-backed storage where the daemon's first reconcile (parse all
 # blocks + write the index) approaches the default 30s readiness window; grant generous headroom
 # so the gate fails only on real drift, never on a cold-start I/O race.
+# Pin the machine-local index to a known writable path so the gate doesn't depend on the build
+# container's $HOME (the index/socket/lock now live outside the vault by default).
 ENV MDKB_READY_TIMEOUT_SECS=180
+ENV MDKB_INDEX_DIR=/tmp/mdkb-index
 RUN cargo build -p mdkbd -p mdkb-cli \
     && ./target/debug/mdkb export vault --check
 
