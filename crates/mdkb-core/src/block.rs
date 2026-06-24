@@ -29,6 +29,16 @@ pub struct Block {
     /// caller but may only be *written* (or unlocked) by a human principal — agent clients (MCP,
     /// CLI) are denied mutations. Enforced at the service write gate; see `RequestContext`.
     pub locked: bool,
+    /// **Arbitrary block properties** — every frontmatter `key: value` that isn't one mdkb manages
+    /// (`title`/`tags`/`locked`), as ordered **scalar** key/value pairs (e.g. `source:`,
+    /// `verified:`, `confidence:`): the open-ended metadata primitive. Scalar properties are stored
+    /// and round-tripped exactly, and folded into [`Block::contextual_text`] so values are
+    /// full-text searchable. The model is deliberately flat — only scalar values are captured;
+    /// non-scalar frontmatter (nested maps, block lists, block scalars) under an unmanaged key is
+    /// not represented here, and `set_props` can only write scalars. mdkb imposes no schema on
+    /// these — they are not typed or range-queryable (that is a separate, opt-in concern). Keys are
+    /// unique (first occurrence wins on parse); order is first-seen.
+    pub props: Vec<(String, String)>,
     /// The Markdown body (everything after frontmatter), verbatim.
     pub body: String,
 }
@@ -77,14 +87,31 @@ impl Block {
     }
 
     /// The text used for embedding/search: the title (context) prepended to the plain-text
-    /// body, with directives reduced to their labels. Mirrors the old "lineage-prepended"
-    /// contextual text — a bare block is meaningless without its title/context.
+    /// body, with directives reduced to their labels, and any block properties' keys + values
+    /// appended so open-ended metadata (e.g. a `source:` URL) is full-text searchable too.
+    /// Mirrors the old "lineage-prepended" contextual text — a bare block is meaningless without
+    /// its title/context.
     pub fn contextual_text(&self) -> String {
         let plain = directives_to_text(&self.body);
-        match &self.title {
+        let mut out = match &self.title {
             Some(t) if !t.trim().is_empty() => format!("{}\n\n{}", t.trim(), plain),
             _ => plain,
+        };
+        for (k, v) in &self.props {
+            out.push('\n');
+            out.push_str(k);
+            out.push(' ');
+            out.push_str(v);
         }
+        out
+    }
+
+    /// The value of property `key`, if present (case-insensitive on the key).
+    pub fn prop(&self, key: &str) -> Option<&str> {
+        self.props
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
     }
 
     /// All tag names (deduplicated, order-preserving).
@@ -138,6 +165,7 @@ mod tests {
             fm_tags: vec![],
             langs: vec![],
             locked: false,
+            props: vec![],
             body: body.to_string(),
         }
     }
@@ -165,5 +193,25 @@ mod tests {
         assert_eq!(b.display_title(), "Heading One");
         b.title = Some("Explicit".into());
         assert_eq!(b.display_title(), "Explicit");
+    }
+
+    #[test]
+    fn contextual_text_includes_prop_keys_and_values() {
+        let mut b = block("the body");
+        b.props = vec![
+            ("source".into(), "https://example.com/x".into()),
+            ("verified".into(), "2026-06-01".into()),
+        ];
+        let ctx = b.contextual_text();
+        assert!(ctx.contains("source https://example.com/x"));
+        assert!(ctx.contains("verified 2026-06-01"));
+    }
+
+    #[test]
+    fn prop_lookup_is_case_insensitive_on_key() {
+        let mut b = block("body");
+        b.props = vec![("Source".into(), "git".into())];
+        assert_eq!(b.prop("source"), Some("git"));
+        assert_eq!(b.prop("missing"), None);
     }
 }

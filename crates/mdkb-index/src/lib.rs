@@ -432,8 +432,10 @@ fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<BlockRecord> {
         contextual_text: r.get(4)?,
         tags: split_ws(&tags_text),
         child_count: r.get::<_, i64>(6)? as usize,
-        // `locked` is not persisted in the index; the service overlays it from the vault.
+        // `locked` and `props` are not persisted in the index; the service overlays them from the
+        // vault (the source of truth).
         locked: false,
+        props: Vec::new(),
     })
 }
 
@@ -584,6 +586,17 @@ mod tests {
             })
             .unwrap();
         assert_eq!(by_lang.len(), 1);
+    }
+
+    #[test]
+    fn prop_values_are_full_text_searchable() {
+        // A block's arbitrary property value is folded into contextual_text, so FTS finds it
+        // even though it appears in frontmatter, not the body.
+        let (idx, _v, ids) =
+            indexed(&["---\ntitle: Atom\nsource: quokkaprovenance\n---\nan unremarkable body\n"]);
+        let hits = idx.search(&SearchQuery::text("quokkaprovenance")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].block.id, ids[0]);
     }
 
     #[test]

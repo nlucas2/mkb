@@ -36,6 +36,12 @@ pub struct BlockRecord {
     /// from the parsed vault when serving a record. Defaults to `false` on the index read path.
     #[cfg_attr(feature = "serde", serde(default))]
     pub locked: bool,
+    /// Arbitrary block **properties** — open-ended `key: value` metadata (e.g. `source`,
+    /// `verified`, `confidence`). Like `locked`, not persisted as structured rows in the index
+    /// (their text is folded into `contextual_text` for full-text search); the service overlays the
+    /// authoritative pairs from the parsed vault when serving a record. Empty on the index read path.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub props: Vec<(String, String)>,
 }
 
 impl BlockRecord {
@@ -50,6 +56,7 @@ impl BlockRecord {
             contextual_text: block.contextual_text(),
             child_count,
             locked: block.locked,
+            props: block.props.clone(),
         }
     }
 
@@ -68,6 +75,14 @@ impl BlockRecord {
             }
         }
         self.id.to_string()
+    }
+
+    /// The value of property `key`, if present (case-insensitive on the key).
+    pub fn prop(&self, key: &str) -> Option<&str> {
+        self.props
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
     }
 }
 

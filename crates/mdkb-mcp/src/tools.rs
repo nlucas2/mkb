@@ -37,7 +37,7 @@ pub fn tool_definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_block",
-            description: "Fetch a single block (its title, tags, and Markdown body) by id.",
+            description: "Fetch a single block (its title, tags, properties, and Markdown body) by id.",
             schema: json!({
                 "type": "object",
                 "properties": {"id": {"type": "string"}},
@@ -135,6 +135,41 @@ pub fn tool_definitions() -> Vec<ToolDef> {
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "The full desired tag set"}
                 },
                 "required": ["id", "tags"]
+            }),
+        },
+        ToolDef {
+            name: "set_props",
+            description: "Add or update a block's properties (open-ended key: value metadata, e.g. source/verified/confidence). Each given key is added or updated; ALL OTHER PROPERTIES ARE PRESERVED — this never replaces the whole set, so you can't accidentally drop a property you didn't name. Title, tags, lock state, and body are preserved. Property values are full-text searchable. Use unset_props to remove a property.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "props": {
+                        "type": "array",
+                        "description": "The properties to add or update (other properties are kept)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {"type": "string"},
+                                "value": {"type": "string"}
+                            },
+                            "required": ["key", "value"]
+                        }
+                    }
+                },
+                "required": ["id", "props"]
+            }),
+        },
+        ToolDef {
+            name: "unset_props",
+            description: "Remove the named properties from a block, preserving all other properties (and title, tags, lock state, body). Keys not present are ignored. This is the only way to remove a property.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "keys": {"type": "array", "items": {"type": "string"}, "description": "The property keys to remove"}
+                },
+                "required": ["id", "keys"]
             }),
         },
         ToolDef {
@@ -258,6 +293,42 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
                 })
                 .ok_or_else(|| "missing required argument: tags".to_string())?,
         },
+        "set_props" => Request::SetProps {
+            id: req_id("id")?,
+            props: {
+                let arr = args
+                    .get("props")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| "missing required argument: props".to_string())?;
+                let mut out = Vec::with_capacity(arr.len());
+                for (i, item) in arr.iter().enumerate() {
+                    // Error (don't silently drop) on a malformed item: set_props REPLACES the whole
+                    // set, so dropping one would quietly delete that property instead of failing.
+                    let key = item
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| format!("props[{i}] is missing a string \"key\""))?;
+                    let value = item
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| format!("props[{i}] is missing a string \"value\""))?;
+                    out.push((key.to_string(), value.to_string()));
+                }
+                out
+            },
+        },
+        "unset_props" => Request::UnsetProps {
+            id: req_id("id")?,
+            keys: args
+                .get("keys")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .ok_or_else(|| "missing required argument: keys".to_string())?,
+        },
         "carve_block" => Request::CarveBlock {
             parent_id: req_id("parent_id")?,
             title: s("title"),
@@ -336,12 +407,48 @@ mod tests {
         let id = BlockId::generate().to_string();
         let args = json!({
             "query": "q", "id": id, "source_id": id, "target_id": id, "parent_id": id,
-            "child_id": id, "title": "T", "body": "b", "embed": true, "tags": ["x"]
+            "child_id": id, "title": "T", "body": "b", "embed": true, "tags": ["x"],
+            "props": [{"key": "source", "value": "git"}], "keys": ["source"]
         });
         for d in tool_definitions() {
             build_request(d.name, &args)
                 .unwrap_or_else(|e| panic!("tool {} failed to build: {e}", d.name));
         }
+    }
+
+    #[test]
+    fn set_props_maps_key_value_objects() {
+        let id = BlockId::generate().to_string();
+        let args = json!({
+            "id": id,
+            "props": [
+                {"key": "source", "value": "https://example.com/x"},
+                {"key": "verified", "value": "2026-06-01"}
+            ]
+        });
+        match build_request("set_props", &args).unwrap() {
+            Request::SetProps { props, .. } => {
+                assert_eq!(
+                    props,
+                    vec![
+                        ("source".to_string(), "https://example.com/x".to_string()),
+                        ("verified".to_string(), "2026-06-01".to_string()),
+                    ]
+                );
+            }
+            _ => panic!("expected set_props"),
+        }
+    }
+
+    #[test]
+    fn set_props_errors_on_malformed_item() {
+        // Because set_props replaces the whole set, a malformed item must error, not be dropped
+        // (silently shrinking the set would delete a property the caller meant to keep).
+        let id = BlockId::generate().to_string();
+        let args = json!({"id": id, "props": [{"key": "source"}]});
+        assert!(build_request("set_props", &args).is_err());
+        let args = json!({"id": id, "props": [{"value": "git"}]});
+        assert!(build_request("set_props", &args).is_err());
     }
 
     #[test]

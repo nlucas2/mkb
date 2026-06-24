@@ -187,7 +187,18 @@ impl<I: Index> Service<I> {
         query: SearchQuery,
     ) -> Result<Vec<SearchHit>, IndexError> {
         ctx.authorize(Capability::Read)?;
-        self.engine.search(query)
+        let mut hits = self.engine.search(query)?;
+        // The index doesn't persist `locked`/`props`; overlay the authoritative values from the
+        // parsed vault so a hit found *by* a property value also carries that property, matching
+        // what `get_block` returns (no second round-trip needed to see a block's metadata).
+        let vault = self.engine.vault();
+        for hit in &mut hits {
+            if let Some(b) = vault.block(&hit.block.id) {
+                hit.block.locked = b.locked;
+                hit.block.props = b.props.clone();
+            }
+        }
+        Ok(hits)
     }
 
     /// Fetch a single block record by id.
@@ -198,15 +209,14 @@ impl<I: Index> Service<I> {
     ) -> Result<Option<BlockRecord>, IndexError> {
         ctx.authorize(Capability::Read)?;
         let mut record = self.engine.index().block(id)?;
-        // The index doesn't persist `locked` (it lives in the file frontmatter); overlay the
-        // authoritative value from the parsed vault so clients see the true lock state.
+        // The index doesn't persist `locked` or `props` (they live in the file frontmatter);
+        // overlay the authoritative values from the parsed vault so clients see true lock state
+        // and the block's open-ended metadata.
         if let Some(rec) = record.as_mut() {
-            rec.locked = self
-                .engine
-                .vault()
-                .block(id)
-                .map(|b| b.locked)
-                .unwrap_or(false);
+            if let Some(b) = self.engine.vault().block(id) {
+                rec.locked = b.locked;
+                rec.props = b.props.clone();
+            }
         }
         Ok(record)
     }
@@ -410,6 +420,34 @@ impl<I: Index> Service<I> {
         ctx.authorize(Capability::Write)?;
         self.ensure_writable(id)?;
         self.engine.set_tags(id, tags)
+    }
+
+    /// **Merge** properties into a block: each `(key, value)` is added or updates that key, and
+    /// every other property is preserved (add/update-only — no operation replaces the whole set).
+    /// Open-ended `key: value` metadata; title, tags, lock state, and body are untouched. Requires
+    /// `Write` and the block must be unlocked.
+    pub fn set_props(
+        &mut self,
+        ctx: &RequestContext,
+        id: &BlockId,
+        props: &[(String, String)],
+    ) -> Result<(), IndexError> {
+        ctx.authorize(Capability::Write)?;
+        self.ensure_writable(id)?;
+        self.engine.set_props(id, props)
+    }
+
+    /// Remove the named properties from a block, preserving all other properties (and title, tags,
+    /// lock state, body). Unknown keys are ignored. Requires `Write` and the block must be unlocked.
+    pub fn unset_props(
+        &mut self,
+        ctx: &RequestContext,
+        id: &BlockId,
+        keys: &[String],
+    ) -> Result<(), IndexError> {
+        ctx.authorize(Capability::Write)?;
+        self.ensure_writable(id)?;
+        self.engine.unset_props(id, keys)
     }
 
     /// Delete a block (file + index).
@@ -968,6 +1006,9 @@ mod tests {
         // Every write path is denied for an agent.
         assert!(svc.update_block(&agent, &id, None, "tampered").is_err());
         assert!(svc.set_tags(&agent, &id, &["x".to_string()]).is_err());
+        assert!(svc
+            .set_props(&agent, &id, &[("k".to_string(), "v".to_string())])
+            .is_err());
         assert!(svc.carve_block(&agent, &id, None, "chunk").is_err());
         assert!(svc.delete_block(&agent, &id).is_err());
 
@@ -976,6 +1017,66 @@ mod tests {
             svc.get_block_source(&agent, &id).unwrap().unwrap(),
             "the original"
         );
+    }
+
+    #[test]
+    fn set_props_round_trips_and_survives_body_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let id = svc.create_block(&ctx, Some("Atom"), "body v1").unwrap();
+
+        // An agent can set arbitrary properties on an unlocked block.
+        svc.set_props(
+            &ctx,
+            &id,
+            &[
+                ("source".to_string(), "https://example.com/x".to_string()),
+                ("verified".to_string(), "2026-06-01".to_string()),
+            ],
+        )
+        .unwrap();
+
+        // get_block overlays the authoritative props from the vault.
+        let rec = svc.get_block(&ctx, &id).unwrap().unwrap();
+        assert_eq!(
+            rec.props,
+            vec![
+                ("source".to_string(), "https://example.com/x".to_string()),
+                ("verified".to_string(), "2026-06-01".to_string()),
+            ]
+        );
+
+        // A plain body edit must not drop the properties.
+        svc.update_block(&ctx, &id, Some("Atom"), "body v2")
+            .unwrap();
+        let rec = svc.get_block(&ctx, &id).unwrap().unwrap();
+        assert_eq!(rec.content, "body v2");
+        assert_eq!(
+            rec.props,
+            vec![
+                ("source".to_string(), "https://example.com/x".to_string()),
+                ("verified".to_string(), "2026-06-01".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn search_hits_carry_overlaid_props() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let id = svc
+            .create_block(&ctx, Some("Atom"), "findable body text")
+            .unwrap();
+        svc.set_props(&ctx, &id, &[("source".to_string(), "git".to_string())])
+            .unwrap();
+        let hits = svc.search(&ctx, SearchQuery::text("findable")).unwrap();
+        let hit = hits
+            .iter()
+            .find(|h| h.block.id == id)
+            .expect("block should be found");
+        assert_eq!(hit.block.prop("source"), Some("git"));
     }
 
     #[test]

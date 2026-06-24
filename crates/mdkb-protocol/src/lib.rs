@@ -112,6 +112,22 @@ pub enum Request {
         /// The full desired tag set (replaces existing frontmatter tags).
         tags: Vec<String>,
     },
+    /// **Merge** properties into a block: add or update each given `key`, preserving all other
+    /// properties. Open-ended `key: value` metadata in frontmatter. Add/update-only — there is no
+    /// replace-the-whole-set op; use [`Request::UnsetProps`] to remove.
+    SetProps {
+        /// Block id.
+        id: BlockId,
+        /// The properties to add or update, as ordered `(key, value)` pairs.
+        props: Vec<(String, String)>,
+    },
+    /// Remove the named properties from a block, preserving all others. Unknown keys are ignored.
+    UnsetProps {
+        /// Block id.
+        id: BlockId,
+        /// The property keys to remove (case-insensitive).
+        keys: Vec<String>,
+    },
     /// Carve a new child block out of an existing block. Returns the new child id.
     CarveBlock {
         /// Parent block id.
@@ -312,6 +328,14 @@ fn handle<I: Index>(
         }
         Request::SetTags { id, tags } => {
             service.set_tags(ctx, &id, &tags).map_err(to_str)?;
+            Response::Ok
+        }
+        Request::SetProps { id, props } => {
+            service.set_props(ctx, &id, &props).map_err(to_str)?;
+            Response::Ok
+        }
+        Request::UnsetProps { id, keys } => {
+            service.unset_props(ctx, &id, &keys).map_err(to_str)?;
             Response::Ok
         }
         Request::CarveBlock {
@@ -591,6 +615,23 @@ impl Client {
     /// Convenience: set a block's managed (frontmatter) tags to exactly `tags`.
     pub fn set_tags(&self, id: BlockId, tags: Vec<String>) -> io::Result<()> {
         match self.call(&Request::SetTags { id, tags })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: merge properties into a block (add or update each given key; preserves the
+    /// rest).
+    pub fn set_props(&self, id: BlockId, props: Vec<(String, String)>) -> io::Result<()> {
+        match self.call(&Request::SetProps { id, props })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: remove the named properties from a block (preserves all others).
+    pub fn unset_props(&self, id: BlockId, keys: Vec<String>) -> io::Result<()> {
+        match self.call(&Request::UnsetProps { id, keys })? {
             Response::Ok => Ok(()),
             other => Err(unexpected(other)),
         }

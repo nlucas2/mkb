@@ -202,7 +202,7 @@ impl<I: Index> SyncEngine<I> {
     /// the new block id. Frontmatter tags start empty; inline `#tags` in the body still apply.
     pub fn create_block(&mut self, title: Option<&str>, body: &str) -> Result<BlockId, IndexError> {
         let id = BlockId::generate();
-        let source = write_block(title, &[], false, body);
+        let source = write_block(title, &[], false, &[], body);
         self.write_file(&id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -212,9 +212,10 @@ impl<I: Index> SyncEngine<I> {
     }
 
     /// Overwrite a block's body (+ optional title), persisting to its file. The block's managed
-    /// frontmatter `tags:` and its `locked:` flag are **preserved** across the edit (both are
-    /// changed via their own ops — [`SyncEngine::set_tags`] / [`SyncEngine::set_lock`] — not by a
-    /// body edit, so editing prose never drops tags or silently unlocks a block).
+    /// frontmatter `tags:`, its `locked:` flag, and its arbitrary `props` are **preserved** across
+    /// the edit (each is changed via its own op — [`SyncEngine::set_tags`] / [`SyncEngine::set_lock`]
+    /// / [`SyncEngine::set_props`] — not by a body edit, so editing prose never drops tags, silently
+    /// unlocks a block, or strips its metadata).
     pub fn update_block(
         &mut self,
         id: &BlockId,
@@ -227,7 +228,8 @@ impl<I: Index> SyncEngine<I> {
             .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
         let fm_tags = existing.fm_tags.clone();
         let locked = existing.locked;
-        let source = write_block(title, &fm_tags, locked, body);
+        let props = existing.props.clone();
+        let source = write_block(title, &fm_tags, locked, &props, body);
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -247,6 +249,7 @@ impl<I: Index> SyncEngine<I> {
         let title = existing.title.clone();
         let body = existing.body.clone();
         let locked = existing.locked;
+        let props = existing.props.clone();
         let mut clean: Vec<String> = Vec::new();
         for t in tags {
             let t = t.trim();
@@ -254,7 +257,7 @@ impl<I: Index> SyncEngine<I> {
                 clean.push(t.to_string());
             }
         }
-        let source = write_block(title.as_deref(), &clean, locked, &body);
+        let source = write_block(title.as_deref(), &clean, locked, &props, &body);
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -263,8 +266,8 @@ impl<I: Index> SyncEngine<I> {
         Ok(())
     }
 
-    /// Set a block's `locked:` flag to exactly `locked`, preserving its title, managed tags, and
-    /// body. This is the only writer that changes lock state; body/tag edits preserve it.
+    /// Set a block's `locked:` flag to exactly `locked`, preserving its title, managed tags, props,
+    /// and body. This is the only writer that changes lock state; body/tag edits preserve it.
     pub fn set_lock(&mut self, id: &BlockId, locked: bool) -> Result<(), IndexError> {
         let existing = self
             .vault
@@ -273,7 +276,109 @@ impl<I: Index> SyncEngine<I> {
         let title = existing.title.clone();
         let tags = existing.fm_tags.clone();
         let body = existing.body.clone();
-        let source = write_block(title.as_deref(), &tags, locked, &body);
+        let props = existing.props.clone();
+        let source = write_block(title.as_deref(), &tags, locked, &props, &body);
+        self.write_file(id, &source)?;
+        self.ingest(id.clone(), &source)?;
+        self.hashes
+            .insert(id.clone(), hash_bytes(source.as_bytes()));
+        self.refresh_links()?;
+        Ok(())
+    }
+
+    /// **Merge** properties into a block: each `(key, value)` in `props` is added (or updates the
+    /// existing value for that key, case-insensitively); **every other property is preserved**.
+    /// Title, managed tags, the `locked:` flag, and the body are untouched. This is deliberately
+    /// add/update-only — there is no replace-the-whole-set operation, so a caller (especially an
+    /// agent) can never silently drop a property it didn't name; use [`SyncEngine::unset_props`] to
+    /// remove. Keys are trimmed and validated (rejecting managed names, malformed keys, and empty
+    /// values); within `props`, the first value for a duplicated key wins.
+    pub fn set_props(
+        &mut self,
+        id: &BlockId,
+        props: &[(String, String)],
+    ) -> Result<(), IndexError> {
+        let existing = self
+            .vault
+            .block(id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
+        let title = existing.title.clone();
+        let tags = existing.fm_tags.clone();
+        let locked = existing.locked;
+        let body = existing.body.clone();
+        // Start from the block's current properties and upsert — never replace the whole set.
+        let mut merged: Vec<(String, String)> = existing.props.clone();
+        let mut seen: Vec<String> = Vec::new();
+        for (k, v) in props {
+            let k = k.trim();
+            if k.is_empty() {
+                continue;
+            }
+            // Reject malformed keys before writing anything: a key with a newline, `:`, or
+            // whitespace would inject extra frontmatter lines (e.g. a smuggled `locked: true`).
+            if !crate::blockfile::is_prop_key(k) {
+                return Err(IndexError::new(format!(
+                    "invalid property key {k:?}: keys must start with a letter and contain only \
+                     letters, digits, '_' or '-'"
+                )));
+            }
+            // Reject keys mdkb manages itself — properties must not shadow title/tags/locked
+            // (locked is a human-only flag agents cannot set via the property path).
+            if crate::blockfile::is_managed_key(k) {
+                return Err(IndexError::new(format!(
+                    "reserved property key {k:?}: title, tags, and locked are managed by mdkb and \
+                     cannot be set as properties"
+                )));
+            }
+            // Reject empty values: an empty scalar is dropped on re-parse, so accepting it would
+            // break the parse/write symmetry. To remove a property, use unset_props.
+            if v.trim().is_empty() {
+                return Err(IndexError::new(format!(
+                    "empty value for property {k:?}: use unset to remove a property, don't set it empty"
+                )));
+            }
+            // First value wins for a key duplicated within this call.
+            if seen.iter().any(|x| x.eq_ignore_ascii_case(k)) {
+                continue;
+            }
+            seen.push(k.to_string());
+            // Upsert: update in place if the key already exists, else append (preserving order).
+            if let Some(slot) = merged.iter_mut().find(|(x, _)| x.eq_ignore_ascii_case(k)) {
+                slot.1 = v.clone();
+            } else {
+                merged.push((k.to_string(), v.clone()));
+            }
+        }
+        let source = write_block(title.as_deref(), &tags, locked, &merged, &body);
+        self.write_file(id, &source)?;
+        self.ingest(id.clone(), &source)?;
+        self.hashes
+            .insert(id.clone(), hash_bytes(source.as_bytes()));
+        self.refresh_links()?;
+        Ok(())
+    }
+
+    /// Remove the named properties from a block, preserving every other property as well as the
+    /// title, managed tags, `locked:` flag, and body. Keys are matched case-insensitively; keys
+    /// that aren't present are ignored (the call is idempotent). This is the only way to drop a
+    /// property — there is no replace-the-whole-set operation.
+    pub fn unset_props(&mut self, id: &BlockId, keys: &[String]) -> Result<(), IndexError> {
+        let existing = self
+            .vault
+            .block(id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
+        let title = existing.title.clone();
+        let tags = existing.fm_tags.clone();
+        let locked = existing.locked;
+        let body = existing.body.clone();
+        let drop: Vec<&str> = keys.iter().map(|k| k.trim()).collect();
+        let kept: Vec<(String, String)> = existing
+            .props
+            .iter()
+            .filter(|(k, _)| !drop.iter().any(|d| d.eq_ignore_ascii_case(k)))
+            .cloned()
+            .collect();
+        let source = write_block(title.as_deref(), &tags, locked, &kept, &body);
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -438,5 +543,176 @@ mod tests {
             !on_disk.contains("tags:"),
             "tags should be gone:\n{on_disk}"
         );
+    }
+
+    #[test]
+    fn set_props_persists_and_body_edits_preserve_them() {
+        let (dir, mut e) = engine();
+        let id = e.create_block(Some("Atom"), "body\n").unwrap();
+        e.set_props(
+            &id,
+            &[
+                ("source".to_string(), "https://example.com/x".to_string()),
+                ("verified".to_string(), "2026-06-01".to_string()),
+            ],
+        )
+        .unwrap();
+        let on_disk = std::fs::read_to_string(dir.path().join(format!("blocks/{id}.md"))).unwrap();
+        assert!(
+            on_disk.contains("source: https://example.com/x"),
+            "got:\n{on_disk}"
+        );
+        assert_eq!(
+            e.vault().block(&id).unwrap().prop("verified"),
+            Some("2026-06-01")
+        );
+
+        // The historical bug class: a plain body edit must NOT drop the properties.
+        e.update_block(&id, Some("Atom"), "edited body\n").unwrap();
+        let after = std::fs::read_to_string(dir.path().join(format!("blocks/{id}.md"))).unwrap();
+        assert!(
+            after.contains("source: https://example.com/x"),
+            "props dropped:\n{after}"
+        );
+        assert_eq!(
+            e.vault().block(&id).unwrap().prop("source"),
+            Some("https://example.com/x")
+        );
+        assert_eq!(e.vault().block(&id).unwrap().body, "edited body\n");
+
+        // A tag edit must also preserve the properties (and vice-versa).
+        e.set_tags(&id, &["mem".to_string()]).unwrap();
+        let b = e.vault().block(&id).unwrap();
+        assert_eq!(b.fm_tags, vec!["mem"]);
+        assert_eq!(b.prop("verified"), Some("2026-06-01"));
+    }
+
+    #[test]
+    fn set_props_merges_and_dedupes_within_call() {
+        let (_dir, mut e) = engine();
+        let id = e.create_block(None, "b\n").unwrap();
+        e.set_props(
+            &id,
+            &[
+                ("k".into(), "1".into()),
+                ("K".into(), "2".into()), // duplicate key (case-insensitive) -> first wins
+                ("other".into(), "3".into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            e.vault().block(&id).unwrap().props.clone(),
+            vec![
+                ("k".to_string(), "1".to_string()),
+                ("other".to_string(), "3".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn set_props_is_merge_not_replace() {
+        // The whole point: setting one key must NOT drop the others (no clobber).
+        let (_dir, mut e) = engine();
+        let id = e.create_block(None, "b\n").unwrap();
+        e.set_props(
+            &id,
+            &[
+                ("source".into(), "git".into()),
+                ("verified".into(), "2026-01-01".into()),
+            ],
+        )
+        .unwrap();
+        // A later call naming only `verified` updates it and PRESERVES `source`.
+        e.set_props(&id, &[("verified".into(), "2026-06-01".into())])
+            .unwrap();
+        let b = e.vault().block(&id).unwrap();
+        assert_eq!(
+            b.prop("source"),
+            Some("git"),
+            "other prop must be preserved"
+        );
+        assert_eq!(b.prop("verified"), Some("2026-06-01"), "named prop updated");
+        // Adding a brand-new key keeps the existing two.
+        e.set_props(&id, &[("confidence".into(), "0.9".into())])
+            .unwrap();
+        assert_eq!(e.vault().block(&id).unwrap().props.len(), 3);
+    }
+
+    #[test]
+    fn unset_props_removes_only_named_keys() {
+        let (dir, mut e) = engine();
+        let id = e.create_block(None, "b\n").unwrap();
+        e.set_props(
+            &id,
+            &[
+                ("source".into(), "git".into()),
+                ("verified".into(), "2026-06-01".into()),
+                ("confidence".into(), "0.9".into()),
+            ],
+        )
+        .unwrap();
+        // Remove one (case-insensitively); the others stay.
+        e.unset_props(&id, &["Verified".into()]).unwrap();
+        let b = e.vault().block(&id).unwrap();
+        assert_eq!(b.prop("verified"), None);
+        assert_eq!(b.prop("source"), Some("git"));
+        assert_eq!(b.prop("confidence"), Some("0.9"));
+        // Removing an unknown key is a no-op (idempotent).
+        e.unset_props(&id, &["nope".into()]).unwrap();
+        assert_eq!(e.vault().block(&id).unwrap().props.len(), 2);
+        // Removing the rest clears the frontmatter back to a pure body.
+        e.unset_props(&id, &["source".into(), "confidence".into()])
+            .unwrap();
+        assert!(e.vault().block(&id).unwrap().props.is_empty());
+        let on_disk = std::fs::read_to_string(dir.path().join(format!("blocks/{id}.md"))).unwrap();
+        assert!(
+            !on_disk.contains("source:"),
+            "props should be gone:\n{on_disk}"
+        );
+    }
+
+    #[test]
+    fn set_props_rejects_injection_key_and_writes_nothing() {
+        let (dir, mut e) = engine();
+        let id = e.create_block(Some("Victim"), "body\n").unwrap();
+        // A key smuggling a newline + `locked: true` must be refused — agents cannot set the
+        // human-only lock flag (that needs the app-only ManageLocks capability).
+        let err = e.set_props(&id, &[("evil\nlocked".to_string(), "true".to_string())]);
+        assert!(err.is_err(), "injection key must be rejected");
+        let b = e.vault().block(&id).unwrap();
+        assert!(!b.locked, "block must remain unlocked");
+        assert!(b.props.is_empty(), "no property should have been written");
+        let on_disk = std::fs::read_to_string(dir.path().join(format!("blocks/{id}.md"))).unwrap();
+        assert!(!on_disk.contains("locked"), "lock flag leaked:\n{on_disk}");
+    }
+
+    #[test]
+    fn set_props_rejects_managed_key_names() {
+        // Even a syntactically-clean key must be refused if it shadows a managed key — otherwise
+        // `set-props locked=true` would lock a block, bypassing the app-only ManageLocks gate.
+        let (dir, mut e) = engine();
+        let id = e.create_block(Some("Victim"), "body\n").unwrap();
+        for key in ["locked", "Locked", "title", "tags"] {
+            let err = e.set_props(&id, &[(key.to_string(), "true".to_string())]);
+            assert!(err.is_err(), "managed key {key:?} must be rejected");
+        }
+        let b = e.vault().block(&id).unwrap();
+        assert!(!b.locked, "block must remain unlocked");
+        assert!(b.props.is_empty());
+        let on_disk = std::fs::read_to_string(dir.path().join(format!("blocks/{id}.md"))).unwrap();
+        assert!(!on_disk.contains("locked"), "lock flag leaked:\n{on_disk}");
+        // The original title is intact (no injected override).
+        assert_eq!(b.title.as_deref(), Some("Victim"));
+    }
+
+    #[test]
+    fn set_props_rejects_empty_value() {
+        let (_dir, mut e) = engine();
+        let id = e.create_block(None, "body\n").unwrap();
+        // An empty value would be dropped on re-parse; reject it to keep parse/write symmetric.
+        assert!(e
+            .set_props(&id, &[("note".to_string(), "  ".to_string())])
+            .is_err());
+        assert!(e.vault().block(&id).unwrap().props.is_empty());
     }
 }

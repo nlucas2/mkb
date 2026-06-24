@@ -34,6 +34,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("get") => cmd_get(&args[1..]),
         Some("search") => cmd_search(&args[1..]),
         Some("tags") => cmd_tags(&args[1..]),
+        Some("props") => cmd_props(&args[1..]),
         Some("backlinks") => cmd_links(&args[1..], true),
         Some("links") => cmd_links(&args[1..], false),
         Some("stats") => cmd_stats(&args[1..]),
@@ -42,6 +43,8 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("create") => cmd_create(&args[1..]),
         Some("update") => cmd_update(&args[1..]),
         Some("set-tags") => cmd_set_tags(&args[1..]),
+        Some("set-props") => cmd_set_props(&args[1..]),
+        Some("unset-props") => cmd_unset_props(&args[1..]),
         Some("link") => cmd_link(&args[1..]),
         Some("carve") => cmd_carve(&args[1..]),
         Some("flatten") => cmd_flatten(&args[1..]),
@@ -77,6 +80,7 @@ reads:
        flags: --lang=<l> --tag=<t> (repeatable) --limit=<n>
        query also accepts operators: tag:<t>  #<t>  lang:<l>  code:<l>
   tags <vault>                      all tags with block counts
+  props <vault> <id>                a block's properties (key<TAB>value per line)
   backlinks <vault> <id>            blocks that reference/embed <id>
   links <vault> <id>                outgoing links/embeds from <id>
   stats <vault>                     index statistics
@@ -87,6 +91,8 @@ writes (body is read from stdin where noted):
   create <vault> [--title=T] < body          create a block; prints the new id
   update <vault> <id> [--title=T] < body     overwrite a block's title + body
   set-tags <vault> <id> [tag ...]            set managed (frontmatter) tags ([] clears)
+  set-props <vault> <id> [key=value ...]     add/update block properties (preserves the rest)
+  unset-props <vault> <id> <key ...>         remove the named block properties (preserves the rest)
   link <vault> <src> <dst> [--embed]         reference (or --embed: transclude) dst from src
   carve <vault> <parent> [--title=T] < body  carve a new child block; prints the child id
   flatten <vault> <parent> <child>           inline parent's single ![[child]] embed and delete it
@@ -351,6 +357,47 @@ fn cmd_set_tags(args: &[String]) -> Result<(), String> {
     let id = parse_id(req(args, 1, "<block-id>")?)?;
     let tags: Vec<String> = args[2..].to_vec();
     c.set_tags(id, tags).map_err(|e| e.to_string())?;
+    println!("ok");
+    Ok(())
+}
+
+fn cmd_props(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let id = parse_id(req(args, 1, "<block-id>")?)?;
+    match c.get_block(id).map_err(|e| e.to_string())? {
+        Some(rec) => {
+            for (k, v) in &rec.props {
+                println!("{k}\t{v}");
+            }
+            Ok(())
+        }
+        None => Err("block not found".to_string()),
+    }
+}
+
+fn cmd_set_props(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let id = parse_id(req(args, 1, "<block-id>")?)?;
+    let mut props: Vec<(String, String)> = Vec::new();
+    for pair in &args[2..] {
+        let (k, v) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("expected key=value, got: {pair}"))?;
+        props.push((k.to_string(), v.to_string()));
+    }
+    c.set_props(id, props).map_err(|e| e.to_string())?;
+    println!("ok");
+    Ok(())
+}
+
+fn cmd_unset_props(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let id = parse_id(req(args, 1, "<block-id>")?)?;
+    let keys: Vec<String> = args[2..].to_vec();
+    if keys.is_empty() {
+        return Err("expected at least one property key to remove".to_string());
+    }
+    c.unset_props(id, keys).map_err(|e| e.to_string())?;
     println!("ok");
     Ok(())
 }

@@ -112,6 +112,7 @@ mdkb search <vault> "how do I restart nginx" # hybrid keyword+semantic; prefer a
 mdkb search <vault> "ingress" --tag=ops --lang=yaml --limit=10   # filters (--tag repeatable)
 mdkb search <vault> "tag:ops #k8s lang:rust deploy"              # same filters as inline operators
 mdkb tags <vault>                            # every tag with its block count
+mdkb props <vault> <id>                      # a block's properties, "key<TAB>value" per line
 mdkb backlinks <vault> <id>                  # blocks that reference/embed <id> (check before edits)
 mdkb links <vault> <id>                      # outgoing links/embeds from <id>
 mdkb stats <vault>                           # index statistics
@@ -131,6 +132,10 @@ mdkb get <vault> "$id" > /tmp/b.md      # 1. read
 mdkb update <vault> "$id" --title="Title" < /tmp/b.md   # 2. write the complete new body
 
 mdkb set-tags <vault> <id> ops k8s      # set managed (frontmatter) tags; no args clears them
+mdkb set-props <vault> <id> source=https://x verified=2026-06-01   # add/update key=value
+                                        # properties (open-ended metadata; preserves other props);
+                                        # values are searchable
+mdkb unset-props <vault> <id> verified  # remove the named properties (preserves the rest)
 mdkb link <vault> <src> <dst>           # add a reference  [[dst]] in src
 mdkb link <vault> <src> <dst> --embed   # add a live embed ![[dst]] in src
 
