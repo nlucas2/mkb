@@ -6,12 +6,13 @@ tags: [doc, readme]
 ## Configuration: choosing an embedder (`config.json`)
 
 The embedder backend is configurable per vault via an optional `<vault>/.mdkb/config.json`.
-The model is **never downloaded at runtime** — local models are loaded from disk, and the
-shipped container image bakes the model in. The `embedder` block selects the source:
+The model is **never downloaded at runtime** — the default neural model is compiled into the
+daemon, and any other local model is loaded from disk. The `embedder` block selects the source:
 
 ```jsonc
-// 1. default / file absent → bundled vendored model (the container ships one); falls back
-//    to the offline hash embedder if no bundled model is present (e.g. a plain `cargo run`).
+// 1. default / file absent → the model compiled into the daemon (real neural semantic search,
+//    offline, zero config); falls back to the offline hash embedder only when the daemon was
+//    built without the embedded model (`--no-default-features`).
 { "embedder": { "kind": "bundled" } }
 
 // 2. a different ONNX model directory on disk (ONNX weights + tokenizer files)
@@ -27,8 +28,9 @@ shipped container image bakes the model in. The `embedder` block selects the sou
 { "embedder": { "kind": "hash" } }
 ```
 
-The bundled model directory is resolved from `$MDKB_BUNDLED_MODEL_DIR`, else a `model/`
-directory beside the binary. Any misconfiguration (missing model, unreachable endpoint)
-logs a warning and falls back to the hash embedder, so the tool always keeps working.
-The `onnx` (local models) and `remote` (HTTP endpoint) backends are opt-in cargo features;
-default builds pull neither and stay fully offline.
+For `bundled`, a model directory on disk **overrides** the compiled-in one: set
+`$MDKB_BUNDLED_MODEL_DIR` (or place a `model/` directory beside the binary) to point at a
+different/newer model. Any misconfiguration (missing model, unreachable endpoint) logs a warning
+and falls back to the hash embedder, so the tool always keeps working. The local neural model
+(ONNX engine + vendored weights) is built in by default; the `remote` (HTTP endpoint) backend is
+an opt-in cargo feature that adds a TLS client.

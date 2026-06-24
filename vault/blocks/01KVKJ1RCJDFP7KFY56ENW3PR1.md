@@ -17,11 +17,8 @@ mdkb stats ~/my-vault
 mdkb search ~/my-vault "restart the web server"
 ```
 
-By default the offline hash embedder is used (deterministic, no downloads). For real semantic
-embeddings from a local ONNX model, the **daemon** owns embedding (clients are thin and need no
-embedder). Release builds already include the `onnx` backend and a bundled model; from source,
-enable the feature:
-
-```sh
-cargo run -p mdkbd --features onnx -- --vault ~/my-vault
-```
+The **daemon** owns embedding (clients are thin and need no embedder), and semantic search works
+out of the box: the neural model is compiled into `mdkbd` by default, so a plain
+`cargo run -p mdkbd` — or any release build — does real semantic embeddings with no model files
+and no download. The offline hash embedder is only a fallback, used when the daemon was built
+without the embedded model (`--no-default-features`).

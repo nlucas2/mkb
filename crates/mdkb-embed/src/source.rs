@@ -21,9 +21,10 @@ use crate::FALLBACK_DIM;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EmbedderSource {
-    /// Use the model vendored with the build (default). Resolved from
-    /// `$MDKB_BUNDLED_MODEL_DIR`, else a `model/` directory beside the executable. Falls back
-    /// to the hash embedder if no bundled model is present (e.g. a `cargo run` dev build).
+    /// Use the model that ships with the build (default). Resolved in order: a model directory
+    /// on disk (`$MDKB_BUNDLED_MODEL_DIR`, else a `model/` dir beside the executable), then the
+    /// compiled-in vendored model (the `vendored-model` feature), then the offline hash embedder
+    /// as a last resort.
     #[default]
     Bundled,
 
@@ -89,16 +90,7 @@ impl FileConfig {
 pub fn from_source(source: &EmbedderSource) -> Box<dyn Embedder> {
     match source {
         EmbedderSource::Hash => Box::new(HashEmbedder::new(FALLBACK_DIM)),
-        EmbedderSource::Bundled => match bundled_model_dir() {
-            Some(dir) => load_local(&dir, FALLBACK_DIM, "bundled"),
-            None => {
-                eprintln!(
-                    "mdkb-embed: no bundled model found (set MDKB_BUNDLED_MODEL_DIR or place a \
-                     `model/` dir beside the binary); using offline hash embedder"
-                );
-                Box::new(HashEmbedder::new(FALLBACK_DIM))
-            }
-        },
+        EmbedderSource::Bundled => bundled_embedder(),
         EmbedderSource::Local { path, dim } => {
             load_local(path, dim.unwrap_or(FALLBACK_DIM), "local")
         }
@@ -111,7 +103,33 @@ pub fn from_source(source: &EmbedderSource) -> Box<dyn Embedder> {
     }
 }
 
-/// Resolve the bundled model directory: `$MDKB_BUNDLED_MODEL_DIR`, then `<exe_dir>/model`.
+/// Resolve the default ("bundled") embedder, in priority order:
+///
+/// 1. A model **directory on disk** — `$MDKB_BUNDLED_MODEL_DIR`, else a `model/` dir beside the
+///    executable (the release layout). This lets an operator point at a newer/different model.
+/// 2. The **compiled-in** model (the `vendored-model` feature), loaded straight from the binary
+///    with no disk or network access — the default for a normal build.
+/// 3. The offline **hash embedder** — when neither is available (e.g. a build that opted out of
+///    the vendored model and has no model on disk).
+fn bundled_embedder() -> Box<dyn Embedder> {
+    if let Some(dir) = bundled_model_dir() {
+        return load_local(&dir, FALLBACK_DIM, "bundled");
+    }
+    #[cfg(feature = "vendored-model")]
+    if let Some(e) = crate::embedded::load() {
+        return e;
+    }
+    eprintln!(
+        "mdkb-embed: no embedding model available; semantic search is degraded to the offline \
+         hash embedder. Point MDKB_BUNDLED_MODEL_DIR at a model directory, or build with the \
+         (default) `vendored-model` feature."
+    );
+    Box::new(HashEmbedder::new(FALLBACK_DIM))
+}
+
+/// Resolve a model **directory** placed on disk: `$MDKB_BUNDLED_MODEL_DIR`, else `<exe_dir>/model`
+/// (the vendored release layout). `None` when neither exists — callers then fall back to the
+/// compiled-in model or the hash embedder.
 fn bundled_model_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("MDKB_BUNDLED_MODEL_DIR") {
         let p = PathBuf::from(dir);
@@ -119,9 +137,15 @@ fn bundled_model_dir() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let exe = std::env::current_exe().ok()?;
-    let candidate = exe.parent()?.join("model");
-    candidate.is_dir().then_some(candidate)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join("model");
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(feature = "onnx")]

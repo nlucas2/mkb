@@ -59,6 +59,41 @@ impl FastEmbedder {
             special_tokens_map_file: read("special_tokens_map.json")?,
             tokenizer_config_file: read("tokenizer_config.json")?,
         };
+        Self::from_bytes(onnx, tokenizer_files, dim, name)
+    }
+
+    /// Load a model from in-memory bytes (the ONNX weights and the four tokenizer files), with
+    /// **zero network and zero filesystem access**. This is how the vendored, compile-time
+    /// embedded model is loaded (see the `vendored-model` feature): the bytes come straight from
+    /// the binary's read-only data, never touching disk. Same pooling/quantization contract as
+    /// [`Self::from_model_dir`].
+    pub fn from_model_bytes(
+        onnx: Vec<u8>,
+        tokenizer: Vec<u8>,
+        config: Vec<u8>,
+        special_tokens_map: Vec<u8>,
+        tokenizer_config: Vec<u8>,
+        dim: usize,
+        name: &str,
+    ) -> Result<Self, EmbedError> {
+        let tokenizer_files = TokenizerFiles {
+            tokenizer_file: tokenizer,
+            config_file: config,
+            special_tokens_map_file: special_tokens_map,
+            tokenizer_config_file: tokenizer_config,
+        };
+        Self::from_bytes(onnx, tokenizer_files, dim, name)
+    }
+
+    /// Shared constructor for [`Self::from_model_dir`] and [`Self::from_model_bytes`]: build the
+    /// `fastembed` model from already-loaded bytes. Pooling is CLS and quantization is dynamic,
+    /// matching the int8 BGE-small export.
+    fn from_bytes(
+        onnx: Vec<u8>,
+        tokenizer_files: TokenizerFiles,
+        dim: usize,
+        name: &str,
+    ) -> Result<Self, EmbedError> {
         let model = UserDefinedEmbeddingModel::new(onnx, tokenizer_files)
             .with_pooling(Pooling::Cls)
             .with_quantization(QuantizationMode::Dynamic);

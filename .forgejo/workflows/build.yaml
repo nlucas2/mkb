@@ -1,6 +1,6 @@
 name: Build and Release
 
-# Build the multi-arch mdkbd image + native Linux tarballs (daemon + clients + model) on every
+# Build the multi-arch mdkbd image + native Linux tarballs (daemon + clients) on every
 # push to main, and a Windows x64 zip via a separate cross-compile job. All are published as
 # downloadable workflow artifacts. On a version tag (v*), they are also attached to a release.
 on:
@@ -17,10 +17,6 @@ on:
 env:
   REGISTRY: ${{ vars.REGISTRY }}
   IMAGE: ${{ vars.REGISTRY }}/${{ vars.REGISTRY_ORG }}/mdkb
-  # Source for the vendored embedding model. Set the `MODEL_REPO` Actions variable to a
-  # base URL you control (e.g. your own HF mirror's .../resolve/main); when unset, the
-  # Dockerfile's default is used. The files are SHA-256-pinned regardless of source.
-  MODEL_REPO: ${{ vars.MODEL_REPO }}
 
 jobs:
   build:
@@ -75,7 +71,6 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --target final-amd64 \
-            ${MODEL_REPO:+--build-arg MODEL_REPO="$MODEL_REPO"} \
             --tag ${IMAGE}:latest-amd64 \
             --tag ${IMAGE}:${{ steps.ver.outputs.version }}-amd64 \
             --cache-from type=registry,ref=${IMAGE}:cache-amd64 \
@@ -90,7 +85,6 @@ jobs:
           docker buildx build \
             --platform linux/arm64 \
             --target final-arm64 \
-            ${MODEL_REPO:+--build-arg MODEL_REPO="$MODEL_REPO"} \
             --tag ${IMAGE}:latest-arm64 \
             --tag ${IMAGE}:${{ steps.ver.outputs.version }}-arm64 \
             --cache-from type=registry,ref=${IMAGE}:cache-arm64 \
@@ -112,7 +106,7 @@ jobs:
             ${IMAGE}:${V}-amd64 \
             ${IMAGE}:${V}-arm64
 
-      # ── Headless Linux payload (daemon + CLIs + model) — extracted every build ──
+      # ── Headless Linux payload (daemon + CLIs) — extracted every build ──
       # This Docker pipeline builds the headless tools only (no desktop GUI — the Tauri app needs
       # webkit/GTK, which this image doesn't carry). Tarballs are named `-headless` so it's
       # unambiguous: the complete desktop app for Linux ships from the GitHub release (amd64);
@@ -122,15 +116,14 @@ jobs:
           for arch in amd64 arm64; do
             docker buildx build \
               --target artifacts-$arch \
-              ${MODEL_REPO:+--build-arg MODEL_REPO="$MODEL_REPO"} \
               --cache-from type=registry,ref=${IMAGE}:cache-$arch \
               --output type=local,dest=out/$arch \
               .
-            # Bundle the daemon, the thin clients, and the vendored model together. The model/
-            # dir sits beside the binaries so mdkbd and the standalone CLI find it via the
-            # <exe_dir>/model lookup — semantic search works straight out of the tarball.
+            # Bundle the daemon and the thin clients. The daemon is self-contained — the embedding
+            # model is compiled into the binary — so semantic search works straight out of the
+            # tarball with no model files alongside.
             tar -C out/$arch -czf mdkb-${{ steps.ver.outputs.version }}-linux-$arch-headless.tar.gz \
-              mdkbd mdkb mdkb-mcp mdkb-web model
+              mdkbd mdkb mdkb-mcp mdkb-web
           done
           # Per-arch checksum files so each arch artifact is self-contained.
           sha256sum mdkb-${{ steps.ver.outputs.version }}-linux-amd64-headless.tar.gz > SHA256SUMS-amd64.txt
@@ -165,7 +158,7 @@ jobs:
         run: |
           set -e
           apt-get install -y -qq jq
-          BODY="mdkb ${TAG}\n\nHeadless Linux payload (daemon + CLIs + embedding model) for amd64/arm64 — no desktop GUI. The complete desktop app (app + CLIs) ships for Linux amd64, macOS, and Windows from the GitHub release; Linux arm64 is headless-only. Also available as the container image ${IMAGE}:${TAG}."
+          BODY="mdkb ${TAG}\n\nHeadless Linux payload (daemon + CLIs, semantic search compiled in) for amd64/arm64 — no desktop GUI. The complete desktop app (app + CLIs) ships for Linux amd64, macOS, and Windows from the GitHub release; Linux arm64 is headless-only. Also available as the container image ${IMAGE}:${TAG}."
           # Create the release; if the tag already has one, fall back to looking it up.
           REL_ID=$(curl -s -X POST "$API/releases" \
             -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
@@ -188,18 +181,13 @@ jobs:
   # Builds the full set: the daemon WITH the onnx embedder (ort downloads the prebuilt
   # Windows onnxruntime and links it statically — no DLL to ship), the thin clients, and the
   # Tauri desktop app (raw .exe + an NSIS installer, bundled via makensis on the Linux
-  # runner). The embedding model is vendored alongside the headless binaries, so semantic
-  # search works out of the box — at parity with the Linux tarball.
+  # runner). The embedding model is compiled into the daemon binary, so semantic search works
+  # out of the box — at parity with the Linux tarball.
   windows:
     runs-on: docker
     timeout-minutes: 90
     permissions:
       contents: write
-    env:
-      # Base URL of the embedding-model mirror (same int8 BGE-small export the Docker image
-      # bakes in; the SHA-256 pins below make the source interchangeable). Falls back to the
-      # upstream repo when the MODEL_REPO Actions variable is unset.
-      MODEL_REPO: ${{ vars.MODEL_REPO || 'https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -227,23 +215,6 @@ jobs:
             echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Fetch + verify embedding model
-        run: |
-          set -eux
-          mkdir -p model
-          curl -fsSL "$MODEL_REPO/onnx/model_quantized.onnx" -o model/model_quantized.onnx
-          curl -fsSL "$MODEL_REPO/tokenizer.json"            -o model/tokenizer.json
-          curl -fsSL "$MODEL_REPO/config.json"               -o model/config.json
-          curl -fsSL "$MODEL_REPO/tokenizer_config.json"     -o model/tokenizer_config.json
-          curl -fsSL "$MODEL_REPO/special_tokens_map.json"   -o model/special_tokens_map.json
-          verify() { echo "$1  $2" | sha256sum -c -; }
-          cd model
-          verify 6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4 model_quantized.onnx
-          verify d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66 tokenizer.json
-          verify fa73f90bf92c8cace1fbcb709626306f2bdbc9ea3e5b5f94b440df9b6aa56350 config.json
-          verify 9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3 tokenizer_config.json
-          verify b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3 special_tokens_map.json
-
       - name: Cross-compile daemon (onnx) + clients for Windows
         run: |
           set -eux
@@ -255,11 +226,11 @@ jobs:
           # pass populates the xwin SDK cache (and is expected to fail only at the final link);
           # we then drop correctly-cased copies on an extra search path and relink — the
           # compiled objects are reused, so the second pass only re-runs the link.
-          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkbd --features onnx || true
+          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkbd || true
           SDK=$(find "$HOME/.cache/cargo-xwin" -type d -path '*sdk/lib/um/x86_64' | head -1)
           cp "$SDK/directml.lib" "$HOME/winlibs/DirectML.lib"
           cp "$SDK/pathcch.lib"  "$HOME/winlibs/PathCch.lib"
-          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkbd --features onnx
+          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkbd
           # The thin clients never need the embedder.
           cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkb-cli -p mdkb-mcp -p mdkb-web
 
@@ -287,15 +258,15 @@ jobs:
           APPREL=app/mdkb-tauri/src-tauri/target/x86_64-pc-windows-msvc/release
 
           # ONE complete archive: the desktop app + every CLI (mdkb, mdkb-mcp, mdkb-web) + the
-          # daemon + the vendored model. The model/ dir sits beside the binaries so mdkbd finds
-          # it via <exe_dir>/model; bin/ mirrors the app's bundled-resource layout so launching
-          # mdkb-tauri.exe portably can auto-start its daemon. Every download is the full product.
+          # daemon. The daemon is self-contained — the embedding model is compiled into the
+          # binary — so no model files ship alongside. bin/ mirrors the app's bundled-resource
+          # layout so launching mdkb-tauri.exe portably can auto-start its daemon. Every download
+          # is the full product.
           rm -rf dist && mkdir -p dist/bin
           cp "$APPREL/mdkb-tauri.exe" dist/
           cp "$REL/mdkbd.exe" "$REL/mdkb.exe" "$REL/mdkb-mcp.exe" "$REL/mdkb-web.exe" dist/
           cp "$REL/mdkbd.exe" "$REL/mdkb-mcp.exe" dist/bin/
           cp "$REL/mdkb.exe" dist/bin/mdkb-cli.exe
-          cp -r model dist/model
           ( cd dist && zip -qr "../mdkb-$V-windows-x64.zip" . )
 
           # The NSIS installer (which itself bundles app + cli + mcp + daemon as resources).

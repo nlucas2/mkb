@@ -8,7 +8,15 @@ repository.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
+# vendored-model: the BGE-small ONNX weights are compiled into the daemon (via mdkb-embed) so a
+# plain `cargo build`/`cargo install` produces a fully self-contained daemon — semantic search
+# works offline with no model files, no download, no config. ON by default. It implies `onnx`
+# (the engine that runs those weights). A consumer who specifically does not want ~33MB of model
+# bytes in their binary can opt out with `--no-default-features`; the daemon then resolves a model
+# from disk (e.g. $MDKB_BUNDLED_MODEL_DIR) and otherwise falls back to the offline hash embedder.
+default = ["vendored-model"]
+vendored-model = ["mdkb-embed/vendored-model"]
+# The ONNX engine without the embedded weights (e.g. to load a model from disk only).
 onnx = ["mdkb-embed/onnx"]
 # Remote OpenAI-compatible embeddings backend (opt-in; pulls a TLS client).
 remote = ["mdkb-embed/remote"]

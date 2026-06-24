@@ -26,8 +26,10 @@ cargo install --git https://github.com/<you>/mdkb mdkbd mdkb-cli mdkb-mcp mdkb-w
 # installs: mdkbd (daemon), mdkb (CLI), mdkb-mcp, mdkb-web
 ```
 
-This default build uses the offline hash embedder; semantic-quality search additionally needs the
-vendored model (see the release artifacts) or a local `--features onnx` build with the model files.
+This default build has semantic search built in: the neural model (BGE-small) is compiled into the
+daemon, so `cargo build` / `cargo install` "just works" fully offline — real semantic embeddings,
+no model files, no download. (Advanced: build with `--no-default-features` to leave the embedded
+model out and fall back to the offline hash embedder.)
 
 The desktop app lives in its own workspace and needs the Tauri toolchain — see
 [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md). On macOS, building it from source with

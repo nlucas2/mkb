@@ -14,5 +14,5 @@ each client auto-starts it on first use and it self-reaps when idle.
 | Script, search, or pipe from a terminal | **CLI** — `mdkb` | `mdkb search ~/vault "how do I…"` |
 | Give an AI assistant your notes | **MCP server** — `mdkb-mcp` | a set of tools your MCP client calls |
 
-Everything works with AI turned off; semantic search is an optional local model (see
-*Configuration* below).
+Everything works with AI turned off; semantic search runs entirely on a local model built into the
+daemon (see *Configuration* below).

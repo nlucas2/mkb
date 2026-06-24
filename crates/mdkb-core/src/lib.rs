@@ -11,6 +11,7 @@ pub mod block;
 pub mod blockfile;
 pub mod clock;
 pub mod conflict;
+pub mod dirs;
 pub mod embed;
 pub mod export;
 pub mod id;

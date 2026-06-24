@@ -2,7 +2,7 @@ name: Release (native binaries)
 
 # Tag-only. This repo's primary CI lives in Forgejo (.forgejo/workflows). This GitHub
 # workflow cuts a SELF-CONTAINED native release on GitHub-hosted runners: each platform job
-# produces BOTH the headless payload (daemon-with-onnx + thin clients + vendored model) AND
+# produces BOTH the headless payload (daemon-with-onnx + thin clients) AND
 # the desktop app with its native installer (Tauri), built natively on that OS — it does not
 # rely on Forgejo's cross-build for any part of the release. It runs when a version tag rides
 # the Forgejo->GitHub push-mirror up.
@@ -26,7 +26,7 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  name: linux-amd64 }
-          # Linux arm64 — HEADLESS only (daemon + CLIs + model, no desktop GUI). Cross-compiled
+          # Linux arm64 — HEADLESS only (daemon + CLIs, no desktop GUI). Cross-compiled
           # on the amd64 runner (a webkit-linked GUI doesn't cross-compile cleanly, and free
           # hosted arm64 runners are public-repo only), matching the Forgejo pipeline. The app
           # for arm64 Linux is build-from-source only.
@@ -38,10 +38,6 @@ jobs:
           - { os: windows-latest,   target: x86_64-pc-windows-msvc,    name: windows-amd64 }
 
     env:
-      # Base URL of the embedding-model mirror you control (e.g.
-      # https://huggingface.co/<you>/bge-small-en-v1.5-int8/resolve/main). Set this as a
-      # GitHub repo/org Actions *variable* named MODEL_REPO. Falls back to the upstream repo.
-      MODEL_REPO: ${{ vars.MODEL_REPO || 'https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main' }}
       # ── macOS code signing + notarization (OPTIONAL) ───────────────────────────────
       # Without these, the macOS app is ad-hoc signed and NOT notarized, so a browser
       # download triggers Gatekeeper's misleading "mdkb.app is damaged and can't be opened"
@@ -83,27 +79,6 @@ jobs:
             target
           key: ${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
 
-      # Fetch the vendored model from the mirror and SHA-256-verify every file. Same int8
-      # BGE-small export the Docker image bakes in; the pins make the source interchangeable.
-      - name: Fetch + verify embedding model
-        shell: bash
-        run: |
-          set -eux
-          mkdir -p model
-          curl -fsSL "$MODEL_REPO/onnx/model_quantized.onnx" -o model/model_quantized.onnx
-          curl -fsSL "$MODEL_REPO/tokenizer.json"            -o model/tokenizer.json
-          curl -fsSL "$MODEL_REPO/config.json"               -o model/config.json
-          curl -fsSL "$MODEL_REPO/tokenizer_config.json"     -o model/tokenizer_config.json
-          curl -fsSL "$MODEL_REPO/special_tokens_map.json"   -o model/special_tokens_map.json
-          # Portable checksum verify (sha256sum on Linux/Git-Bash, shasum on macOS).
-          verify() { echo "$1  $2" | sha256sum -c - 2>/dev/null || echo "$1  $2" | shasum -a 256 -c -; }
-          cd model
-          verify 6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4 model_quantized.onnx
-          verify d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66 tokenizer.json
-          verify fa73f90bf92c8cace1fbcb709626306f2bdbc9ea3e5b5f94b440df9b6aa56350 config.json
-          verify 9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3 tokenizer_config.json
-          verify b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3 special_tokens_map.json
-
       # Cross linker for the headless arm64 build (the Rust target itself is added by the
       # toolchain action above). ort downloads a prebuilt aarch64 onnxruntime and fastembed uses
       # rustls, so no arm64 system C libraries are needed — same approach as the Forgejo image.
@@ -118,13 +93,13 @@ jobs:
             echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
           } >> "$GITHUB_ENV"
 
-      # Daemon with the local ONNX embedder (ort downloads the platform's prebuilt onnxruntime
-      # at build time); clients are thin.
-      - name: Build (native, onnx)
+      # Daemon (semantic search built in by default; ort downloads the platform's prebuilt
+      # onnxruntime at build time); clients are thin.
+      - name: Build (native)
         shell: bash
         run: |
           set -eux
-          cargo build --release --target ${{ matrix.target }} -p mdkbd --features onnx
+          cargo build --release --target ${{ matrix.target }} -p mdkbd
           cargo build --release --target ${{ matrix.target }} -p mdkb-cli -p mdkb-mcp -p mdkb-web
 
       # ── Desktop app (Tauri) ──────────────────────────────────────────────────────
@@ -226,9 +201,10 @@ jobs:
           esac
 
       # ONE complete archive per platform: the desktop app + every CLI (mdkb, mdkb-mcp, mdkb-web)
-      # + the daemon + the vendored model. Every download is the full product, never a split.
-      # macOS ships the .app; Linux ships the runnable .AppImage (a bare mdkb-tauri binary needs
-      # system webkit, the AppImage bundles it); Windows ships mdkb-tauri.exe.
+      # + the daemon. The daemon is self-contained — the embedding model is compiled into the
+      # binary — so no model files ship alongside. Every download is the full product, never a
+      # split. macOS ships the .app; Linux ships the runnable .AppImage (a bare mdkb-tauri binary
+      # needs system webkit, the AppImage bundles it); Windows ships mdkb-tauri.exe.
       - name: Assemble complete archive (Unix)
         if: runner.os != 'Windows' && matrix.headless != true
         shell: bash
@@ -242,7 +218,6 @@ jobs:
           for lib in "$D"/libonnxruntime*.so* "$D"/libonnxruntime*.dylib; do
             [ -e "$lib" ] && cp "$lib" dist/ || true
           done
-          cp -r model dist/model
           if [ "${{ runner.os }}" = "macOS" ]; then
             cp -R "$B"/macos/*.app dist/
           else
@@ -252,7 +227,7 @@ jobs:
           tar -C dist -czf "$A" .
           ( sha256sum "$A" 2>/dev/null || shasum -a 256 "$A" ) > "$A.sha256"
 
-      # Headless archive (Linux arm64): daemon + CLIs + model, no desktop app. Named `-headless`
+      # Headless archive (Linux arm64): daemon + CLIs, no desktop app. Named `-headless`
       # so it never reads as the complete product — matching the Forgejo arm64 tarball.
       - name: Assemble headless archive
         if: matrix.headless == true
@@ -266,7 +241,6 @@ jobs:
           for lib in "$D"/libonnxruntime*.so*; do
             [ -e "$lib" ] && cp "$lib" dist/ || true
           done
-          cp -r model dist/model
           A="mdkb-$V-$N-headless.tar.gz"
           tar -C dist -czf "$A" .
           ( sha256sum "$A" 2>/dev/null || shasum -a 256 "$A" ) > "$A.sha256"
@@ -286,7 +260,6 @@ jobs:
           Get-ChildItem "$D" -Filter "onnxruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination dist/
           Copy-Item "$D/mdkbd.exe","$D/mdkb-mcp.exe" dist/bin/
           Copy-Item "$D/mdkb.exe" dist/bin/mdkb-cli.exe
-          Copy-Item -Recurse model dist/model
           $A = "mdkb-$V-$N.zip"
           Compress-Archive -Path dist/* -DestinationPath $A -Force
           (Get-FileHash $A -Algorithm SHA256).Hash.ToLower() + "  " + $A | Out-File -Encoding ascii "$A.sha256"

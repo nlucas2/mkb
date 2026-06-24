@@ -38,8 +38,8 @@ each client auto-starts it on first use and it self-reaps when idle.
 | Script, search, or pipe from a terminal | **CLI** — `mdkb` | `mdkb search ~/vault "how do I…"` |
 | Give an AI assistant your notes | **MCP server** — `mdkb-mcp` | a set of tools your MCP client calls |
 
-Everything works with AI turned off; semantic search is an optional local model (see
-*Configuration* below).
+Everything works with AI turned off; semantic search runs entirely on a local model built into the
+daemon (see *Configuration* below).
 
 ### Install: prebuilt (recommended)
 
@@ -49,8 +49,9 @@ desktop app together with the `mdkb` CLI and the `mdkb-mcp` server.
 
 **Portable binaries — no installer, or for servers.** Each platform also ships one archive that is
 the **complete product**: the desktop app plus every binary — `mdkb` (CLI), `mdkbd` (daemon),
-`mdkb-mcp` (MCP server), `mdkb-web` (web UI) — and a `model/` directory, so offline semantic
-search works out of the box. Extract it wherever you keep apps and put that folder on your `PATH`:
+`mdkb-mcp` (MCP server), `mdkb-web` (web UI) — with offline semantic search **built into the
+daemon**, so it works out of the box. Extract it wherever you keep apps and put that folder on your
+`PATH`:
 
 ```sh
 # macOS / Linux (example: macos-arm64 — also: linux-amd64, linux-arm64-headless)
@@ -65,21 +66,21 @@ mdkb --help
 On Windows, download `mdkb-<version>-windows-amd64.zip` and extract it; add that folder to your
 `PATH` (Settings → *Edit environment variables*) to run `mdkb` from any terminal.
 
-The daemon finds the embedding model in the `model/` folder **beside the binaries** — zero config,
-which is why they travel together. To keep the binaries somewhere already on `PATH` (e.g.
-`~/.local/bin`) and the model elsewhere, set `MDKB_BUNDLED_MODEL_DIR` to the model directory.
+The daemon has the embedding model **compiled in**, so semantic search works with zero config and
+nothing extra to place. (Advanced: to use a different/newer model, set `MDKB_BUNDLED_MODEL_DIR` to
+a model directory on disk — it overrides the compiled-in one.)
 
 **Prebuilt availability.** The complete archive (with the desktop app) is published for
 **Linux amd64**, **macOS** (Apple Silicon), and **Windows x64**. We don't currently publish a
 **prebuilt Linux arm64 desktop** binary — arm64 ships a `…-linux-arm64-headless.tar.gz` (daemon
-+ CLIs + model) and the multi-arch daemon container image. This is only about prebuilt
++ CLIs) and the multi-arch daemon container image. This is only about prebuilt
 *releases*: the desktop app builds and runs fine on arm64 Linux from source (`cargo tauri
 build`, see below), and the daemon container image covers running it as a server (see `deploy/`).
 
 ### Install: container
 
-Run the daemon as a networked, token-gated service — the image bakes in the embedding model,
-so semantic search works offline. Thin clients reach it over TCP with `MDKB_REMOTE` +
+Run the daemon as a networked, token-gated service — the daemon has the embedding model
+compiled in, so semantic search works offline. Thin clients reach it over TCP with `MDKB_REMOTE` +
 `MDKB_TOKEN`.
 
 ```sh
@@ -117,8 +118,10 @@ cargo install --git https://github.com/<you>/mdkb mdkbd mdkb-cli mdkb-mcp mdkb-w
 # installs: mdkbd (daemon), mdkb (CLI), mdkb-mcp, mdkb-web
 ```
 
-This default build uses the offline hash embedder; semantic-quality search additionally needs the
-vendored model (see the release artifacts) or a local `--features onnx` build with the model files.
+This default build has semantic search built in: the neural model (BGE-small) is compiled into the
+daemon, so `cargo build` / `cargo install` "just works" fully offline — real semantic embeddings,
+no model files, no download. (Advanced: build with `--no-default-features` to leave the embedded
+model out and fall back to the offline hash embedder.)
 
 The desktop app lives in its own workspace and needs the Tauri toolchain — see
 [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md). On macOS, building it from source with
@@ -228,12 +231,13 @@ connect either way — a **local** socket or a **remote** TCP daemon.
 ## Configuration: choosing an embedder (`config.json`)
 
 The embedder backend is configurable per vault via an optional `<vault>/.mdkb/config.json`.
-The model is **never downloaded at runtime** — local models are loaded from disk, and the
-shipped container image bakes the model in. The `embedder` block selects the source:
+The model is **never downloaded at runtime** — the default neural model is compiled into the
+daemon, and any other local model is loaded from disk. The `embedder` block selects the source:
 
 ```jsonc
-// 1. default / file absent → bundled vendored model (the container ships one); falls back
-//    to the offline hash embedder if no bundled model is present (e.g. a plain `cargo run`).
+// 1. default / file absent → the model compiled into the daemon (real neural semantic search,
+//    offline, zero config); falls back to the offline hash embedder only when the daemon was
+//    built without the embedded model (`--no-default-features`).
 { "embedder": { "kind": "bundled" } }
 
 // 2. a different ONNX model directory on disk (ONNX weights + tokenizer files)
@@ -249,11 +253,12 @@ shipped container image bakes the model in. The `embedder` block selects the sou
 { "embedder": { "kind": "hash" } }
 ```
 
-The bundled model directory is resolved from `$MDKB_BUNDLED_MODEL_DIR`, else a `model/`
-directory beside the binary. Any misconfiguration (missing model, unreachable endpoint)
-logs a warning and falls back to the hash embedder, so the tool always keeps working.
-The `onnx` (local models) and `remote` (HTTP endpoint) backends are opt-in cargo features;
-default builds pull neither and stay fully offline.
+For `bundled`, a model directory on disk **overrides** the compiled-in one: set
+`$MDKB_BUNDLED_MODEL_DIR` (or place a `model/` directory beside the binary) to point at a
+different/newer model. Any misconfiguration (missing model, unreachable endpoint) logs a warning
+and falls back to the hash embedder, so the tool always keeps working. The local neural model
+(ONNX engine + vendored weights) is built in by default; the `remote` (HTTP endpoint) backend is
+an opt-in cargo feature that adds a TLS client.
 
 ## Deployment
 
@@ -298,14 +303,11 @@ mdkb stats ~/my-vault
 mdkb search ~/my-vault "restart the web server"
 ```
 
-By default the offline hash embedder is used (deterministic, no downloads). For real semantic
-embeddings from a local ONNX model, the **daemon** owns embedding (clients are thin and need no
-embedder). Release builds already include the `onnx` backend and a bundled model; from source,
-enable the feature:
-
-```sh
-cargo run -p mdkbd --features onnx -- --vault ~/my-vault
-```
+The **daemon** owns embedding (clients are thin and need no embedder), and semantic search works
+out of the box: the neural model is compiled into `mdkbd` by default, so a plain
+`cargo run -p mdkbd` — or any release build — does real semantic embeddings with no model files
+and no download. The offline hash embedder is only a fallback, used when the daemon was built
+without the embedded model (`--no-default-features`).
 
 ## Single daemon per vault
 
@@ -375,8 +377,9 @@ If a piece of behavior doesn't clearly belong to transport or presentation, it b
 - `mdkb-index` — SQLite + FTS5 implementation of `Index` (keyword search, tag/lang filters,
   vector storage, brute-force cosine, hybrid keyword+vector fusion, backlinks, stats). Bundled
   SQLite, no system dependency.
-- `mdkb-embed` — `Embedder` backends: the offline deterministic `HashEmbedder` and a bundled
-  INT8 ONNX model (no runtime download); configurable per vault.
+- `mdkb-embed` — `Embedder` backends: the offline deterministic `HashEmbedder` and a local INT8
+  ONNX model (BGE-small) compiled into the daemon by default (`include_bytes!`, no runtime
+  download); configurable per vault.
 - `mdkb-core::service` — the shared `Service` API (search / get / render / create / update /
   delete / carve / link / reconcile) with a `RequestContext` + capability gate on every call.
   Every client goes through this; behavior is never reimplemented per client.

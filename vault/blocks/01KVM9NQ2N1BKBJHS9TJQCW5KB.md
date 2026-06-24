@@ -10,8 +10,9 @@ desktop app together with the `mdkb` CLI and the `mdkb-mcp` server.
 
 **Portable binaries — no installer, or for servers.** Each platform also ships one archive that is
 the **complete product**: the desktop app plus every binary — `mdkb` (CLI), `mdkbd` (daemon),
-`mdkb-mcp` (MCP server), `mdkb-web` (web UI) — and a `model/` directory, so offline semantic
-search works out of the box. Extract it wherever you keep apps and put that folder on your `PATH`:
+`mdkb-mcp` (MCP server), `mdkb-web` (web UI) — with offline semantic search **built into the
+daemon**, so it works out of the box. Extract it wherever you keep apps and put that folder on your
+`PATH`:
 
 ```sh
 # macOS / Linux (example: macos-arm64 — also: linux-amd64, linux-arm64-headless)
@@ -26,13 +27,13 @@ mdkb --help
 On Windows, download `mdkb-<version>-windows-amd64.zip` and extract it; add that folder to your
 `PATH` (Settings → *Edit environment variables*) to run `mdkb` from any terminal.
 
-The daemon finds the embedding model in the `model/` folder **beside the binaries** — zero config,
-which is why they travel together. To keep the binaries somewhere already on `PATH` (e.g.
-`~/.local/bin`) and the model elsewhere, set `MDKB_BUNDLED_MODEL_DIR` to the model directory.
+The daemon has the embedding model **compiled in**, so semantic search works with zero config and
+nothing extra to place. (Advanced: to use a different/newer model, set `MDKB_BUNDLED_MODEL_DIR` to
+a model directory on disk — it overrides the compiled-in one.)
 
 **Prebuilt availability.** The complete archive (with the desktop app) is published for
 **Linux amd64**, **macOS** (Apple Silicon), and **Windows x64**. We don't currently publish a
 **prebuilt Linux arm64 desktop** binary — arm64 ships a `…-linux-arm64-headless.tar.gz` (daemon
-+ CLIs + model) and the multi-arch daemon container image. This is only about prebuilt
++ CLIs) and the multi-arch daemon container image. This is only about prebuilt
 *releases*: the desktop app builds and runs fine on arm64 Linux from source (`cargo tauri
 build`, see below), and the daemon container image covers running it as a server (see `deploy/`).

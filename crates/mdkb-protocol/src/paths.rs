@@ -101,28 +101,7 @@ fn resolved_index_base() -> Option<PathBuf> {
     if let Some(b) = std::env::var_os("MDKB_INDEX_DIR") {
         return Some(PathBuf::from(b));
     }
-    os_local_data_dir().map(|d| d.join("mdkb"))
-}
-
-/// The OS's per-user local-data directory, or `None` if it can't be resolved (no home env).
-fn os_local_data_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("LOCALAPPDATA")
-            .or_else(|| std::env::var_os("APPDATA"))
-            .map(PathBuf::from)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"))
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Some(x) = std::env::var_os("XDG_STATE_HOME") {
-            return Some(PathBuf::from(x));
-        }
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state"))
-    }
+    mdkb_core::dirs::local_data_dir().map(|d| d.join("mdkb"))
 }
 
 /// A short, stable id for a vault: a 64-bit FNV-1a hash of its absolute (best-effort canonical)

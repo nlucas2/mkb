@@ -4,8 +4,8 @@ title: "README: Install — container"
 
 ### Install: container
 
-Run the daemon as a networked, token-gated service — the image bakes in the embedding model,
-so semantic search works offline. Thin clients reach it over TCP with `MDKB_REMOTE` +
+Run the daemon as a networked, token-gated service — the daemon has the embedding model
+compiled in, so semantic search works offline. Thin clients reach it over TCP with `MDKB_REMOTE` +
 `MDKB_TOKEN`.
 
 ```sh

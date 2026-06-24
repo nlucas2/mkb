@@ -12,6 +12,11 @@ default = []
 # Enables the local ONNX embedding model via fastembed. Off by default so the standard
 # build/test path stays fully offline and light; the daemon opts in.
 onnx = ["dep:fastembed"]
+# Compiles the BGE-small model weights directly into the binary (via include_bytes!) so the
+# embedder is fully self-contained — semantic search works offline with no model files on disk,
+# no download, no config. Implies `onnx` (the engine that runs the weights). The daemon turns
+# this on by default; it can be turned off to keep the ~33MB of weights out of a binary.
+vendored-model = ["onnx"]
 # Enables the remote OpenAI-compatible embeddings backend (ureq, blocking + rustls). Off by
 # default so thin clients and the offline test path don't pull a TLS stack; the daemon opts in.
 remote = ["dep:ureq"]

@@ -20,6 +20,9 @@ mod fast;
 #[cfg(feature = "onnx")]
 pub use fast::FastEmbedder;
 
+#[cfg(feature = "vendored-model")]
+mod embedded;
+
 #[cfg(feature = "remote")]
 mod remote;
 #[cfg(feature = "remote")]

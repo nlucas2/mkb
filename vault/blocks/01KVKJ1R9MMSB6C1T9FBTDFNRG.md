@@ -23,8 +23,9 @@ tags: [doc, readme]
 - `mdkb-index` — SQLite + FTS5 implementation of `Index` (keyword search, tag/lang filters,
   vector storage, brute-force cosine, hybrid keyword+vector fusion, backlinks, stats). Bundled
   SQLite, no system dependency.
-- `mdkb-embed` — `Embedder` backends: the offline deterministic `HashEmbedder` and a bundled
-  INT8 ONNX model (no runtime download); configurable per vault.
+- `mdkb-embed` — `Embedder` backends: the offline deterministic `HashEmbedder` and a local INT8
+  ONNX model (BGE-small) compiled into the daemon by default (`include_bytes!`, no runtime
+  download); configurable per vault.
 - `mdkb-core::service` — the shared `Service` API (search / get / render / create / update /
   delete / carve / link / reconcile) with a `RequestContext` + capability gate on every call.
   Every client goes through this; behavior is never reimplemented per client.
