@@ -35,6 +35,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("search") => cmd_search(&args[1..]),
         Some("tags") => cmd_tags(&args[1..]),
         Some("props") => cmd_props(&args[1..]),
+        Some("info") => cmd_info(&args[1..]),
         Some("backlinks") => cmd_links(&args[1..], true),
         Some("links") => cmd_links(&args[1..], false),
         Some("stats") => cmd_stats(&args[1..]),
@@ -78,9 +79,13 @@ reads:
   get <vault> <id>                  raw Markdown body of a block
   search <vault> <query> [flags]    search (keyword + semantic)
        flags: --lang=<l> --tag=<t> (repeatable) --limit=<n>
+              --created-after=<date> --created-before=<date>
+              --updated-after=<date> --updated-before=<date>   (date = YYYY-MM-DD or RFC3339)
        query also accepts operators: tag:<t>  #<t>  lang:<l>  code:<l>
+                                     created:before:<date>  updated:before:<date>  (and :after:)
   tags <vault>                      all tags with block counts
   props <vault> <id>                a block's properties (key<TAB>value per line)
+  info <vault> <id>                 a block's metadata (created, updated, locked, tags, props)
   backlinks <vault> <id>            blocks that reference/embed <id>
   links <vault> <id>                outgoing links/embeds from <id>
   stats <vault>                     index statistics
@@ -249,6 +254,14 @@ fn cmd_search(args: &[String]) -> Result<(), String> {
             }
         } else if let Some(n) = flag.strip_prefix("--limit=") {
             q.limit = n.parse().map_err(|_| format!("bad --limit: {n}"))?;
+        } else if let Some(d) = flag.strip_prefix("--created-after=") {
+            q.created_after = Some(parse_date_flag(d)?);
+        } else if let Some(d) = flag.strip_prefix("--created-before=") {
+            q.created_before = Some(parse_date_flag(d)?);
+        } else if let Some(d) = flag.strip_prefix("--updated-after=") {
+            q.updated_after = Some(parse_date_flag(d)?);
+        } else if let Some(d) = flag.strip_prefix("--updated-before=") {
+            q.updated_before = Some(parse_date_flag(d)?);
         } else {
             return Err(format!("unknown flag: {flag}"));
         }
@@ -263,6 +276,33 @@ fn cmd_search(args: &[String]) -> Result<(), String> {
         println!("{}  {}\n    {}", b.id, b.display_title(), preview);
     }
     Ok(())
+}
+
+fn parse_date_flag(d: &str) -> Result<String, String> {
+    mdkb_core::clock::parse_query_date(d)
+        .ok_or_else(|| format!("bad date {d:?}: use YYYY-MM-DD or an RFC 3339 timestamp"))
+}
+
+fn cmd_info(args: &[String]) -> Result<(), String> {
+    let c = client(req(args, 0, "<vault-dir>")?)?;
+    let id = parse_id(req(args, 1, "<block-id>")?)?;
+    match c.get_block(id).map_err(|e| e.to_string())? {
+        Some(rec) => {
+            println!("id       {}", rec.id);
+            println!("title    {}", rec.display_title());
+            println!("created  {}", rec.created.as_deref().unwrap_or("—"));
+            println!("updated  {}", rec.updated.as_deref().unwrap_or("—"));
+            println!("locked   {}", rec.locked);
+            if !rec.tags.is_empty() {
+                println!("tags     {}", rec.tags.join(", "));
+            }
+            for (k, v) in &rec.props {
+                println!("prop     {k} = {v}");
+            }
+            Ok(())
+        }
+        None => Err("block not found".to_string()),
+    }
 }
 
 fn cmd_tags(args: &[String]) -> Result<(), String> {

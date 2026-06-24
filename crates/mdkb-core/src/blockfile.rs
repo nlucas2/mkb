@@ -19,11 +19,13 @@ pub fn parse_block(id: BlockId, source: &str) -> Block {
     let (frontmatter, body) = split_frontmatter(source);
     let (mut title, mut tags) = (None, Vec::new());
     let mut locked = false;
+    let mut updated = None;
     let mut props = Vec::new();
     if let Some(fm) = frontmatter {
         title = parse_title(fm);
         tags = parse_fm_tags(fm);
         locked = parse_locked(fm);
+        updated = parse_named_scalar(fm, "updated");
         props = parse_fm_props(fm);
     }
     // The frontmatter tags are the managed set; inline #tags are prose mentions merged into the
@@ -47,27 +49,30 @@ pub fn parse_block(id: BlockId, source: &str) -> Block {
         fm_tags,
         langs,
         locked,
+        updated,
         props,
         body: body.to_string(),
     }
 }
 
 /// Serialize a block's managed metadata + body back into file text. Frontmatter is emitted only
-/// when there is metadata mdkb manages: a `title:`, `tags:`, the `locked:` flag, and/or one or
-/// more block `props`. Inline `#hashtag` mentions live in the body and are not re-emitted as
-/// frontmatter (they round-trip as prose). `tags` are the managed (frontmatter) tags; pass an
-/// empty slice for none. `locked` emits `locked: true` (and is omitted when false, so unlocked
-/// blocks stay clean). `props` are arbitrary scalar `key: value` pairs emitted in order after the
-/// managed keys; this is what makes open-ended metadata round-trip instead of being dropped on a
-/// rewrite. Empty/blank keys are skipped.
+/// when there is metadata mdkb manages: a `title:`, `tags:`, the `locked:` flag, an `updated:`
+/// timestamp, and/or one or more block `props`. `updated` is the system-stamped last-modified time
+/// (RFC 3339); `created` is *never* written — it is decoded from the block's ULID id. Inline
+/// `#hashtag` mentions live in the body and are not re-emitted. `tags` are the managed tags; pass
+/// an empty slice for none. `locked` emits `locked: true` (omitted when false). `props` are
+/// arbitrary scalar `key: value` pairs emitted after the managed keys; injection-unsafe or
+/// managed-named keys are skipped (`set_props` rejects them up front).
 pub fn write_block(
     title: Option<&str>,
     tags: &[String],
     locked: bool,
+    updated: Option<&str>,
     props: &[(String, String)],
     body: &str,
 ) -> String {
     let title = title.map(str::trim).filter(|t| !t.is_empty());
+    let updated = updated.map(str::trim).filter(|u| !u.is_empty());
     let clean_tags: Vec<&str> = tags
         .iter()
         .map(|t| t.trim())
@@ -77,14 +82,20 @@ pub fn write_block(
         .iter()
         .map(|(k, v)| (k.trim(), v.as_str()))
         // Only well-formed, non-managed keys are emitted. A malformed key (newline, `:`,
-        // whitespace) would inject extra frontmatter lines; a managed key (`title`/`tags`/`locked`)
-        // would collide with mdkb's own metadata — e.g. a smuggled `locked: true`, the human-only
-        // access-control flag agents must not set. This makes serialization safe by construction;
-        // `set_props` rejects such keys up front so this filter never silently drops valid data.
+        // whitespace) would inject extra frontmatter lines; a managed key (`title`/`tags`/`locked`/
+        // `created`/`updated`) would collide with mdkb's own metadata — e.g. a smuggled
+        // `locked: true`, the human-only access-control flag agents must not set. This makes
+        // serialization safe by construction; `set_props` rejects such keys up front so this filter
+        // never silently drops valid data.
         .filter(|(k, _)| is_prop_key(k) && !is_managed_key(k))
         .collect();
 
-    if title.is_none() && clean_tags.is_empty() && !locked && clean_props.is_empty() {
+    if title.is_none()
+        && clean_tags.is_empty()
+        && !locked
+        && updated.is_none()
+        && clean_props.is_empty()
+    {
         return body.to_string();
     }
 
@@ -97,6 +108,9 @@ pub fn write_block(
     }
     if locked {
         fm.push_str("locked: true\n");
+    }
+    if let Some(u) = updated {
+        fm.push_str(&format!("updated: {}\n", yaml_scalar(u)));
     }
     for (k, v) in clean_props {
         fm.push_str(&format!("{}: {}\n", k, yaml_scalar(v)));
@@ -136,8 +150,16 @@ fn split_frontmatter(source: &str) -> (Option<&str>, &str) {
 }
 
 fn parse_title(fm: &str) -> Option<String> {
+    parse_named_scalar(fm, "title")
+}
+
+/// Parse a top-level scalar frontmatter field by key (e.g. `title`, `updated`), returning its
+/// value or `None` if absent/blank. Used for the managed scalar fields; tolerant of a missing key,
+/// so reading a block that lacks it never fails.
+fn parse_named_scalar(fm: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
     for line in fm.lines() {
-        if let Some(rest) = line.trim().strip_prefix("title:") {
+        if let Some(rest) = line.trim().strip_prefix(prefix.as_str()) {
             let v = parse_scalar(rest);
             if !v.is_empty() {
                 return Some(v);
@@ -276,7 +298,9 @@ fn parse_fm_tags(fm: &str) -> Vec<String> {
 }
 
 /// The frontmatter keys mdkb manages directly; everything else becomes a block property.
-const MANAGED_KEYS: [&str; 3] = ["title", "tags", "locked"];
+/// `created`/`updated` are system-owned timestamps (read-only to callers); `created` is never
+/// written (decoded from the ULID) but is reserved so it can't be set as a property.
+const MANAGED_KEYS: [&str; 5] = ["title", "tags", "locked", "created", "updated"];
 
 /// Whether `key` (case-insensitively) is one mdkb manages itself (`title`/`tags`/`locked`). Such
 /// keys are never block properties: they round-trip through their own typed parsers/writers, and
@@ -434,7 +458,7 @@ mod tests {
 
     #[test]
     fn write_block_round_trips_through_parse() {
-        let text = write_block(Some("My Title"), &[], false, &[], "the body\n");
+        let text = write_block(Some("My Title"), &[], false, None, &[], "the body\n");
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.title.as_deref(), Some("My Title"));
         assert_eq!(b.body, "the body\n");
@@ -442,13 +466,16 @@ mod tests {
 
     #[test]
     fn write_block_without_title_or_tags_is_pure_body() {
-        assert_eq!(write_block(None, &[], false, &[], "hello\n"), "hello\n");
+        assert_eq!(
+            write_block(None, &[], false, None, &[], "hello\n"),
+            "hello\n"
+        );
     }
 
     #[test]
     fn write_block_round_trips_frontmatter_tags() {
         let tags = vec!["k8s".to_string(), "ops".to_string()];
-        let text = write_block(Some("Deploy"), &tags, false, &[], "body\n");
+        let text = write_block(Some("Deploy"), &tags, false, None, &[], "body\n");
         assert!(text.contains("tags: [k8s, ops]"));
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.fm_tags, vec!["k8s", "ops"]);
@@ -459,7 +486,7 @@ mod tests {
     #[test]
     fn write_block_emits_tags_without_title() {
         let tags = vec!["solo".to_string()];
-        let text = write_block(None, &tags, false, &[], "body\n");
+        let text = write_block(None, &tags, false, None, &[], "body\n");
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.fm_tags, vec!["solo"]);
         assert_eq!(b.title, None);
@@ -468,7 +495,7 @@ mod tests {
     #[test]
     fn write_block_quotes_title_with_colon() {
         // A title containing `: ` would be invalid YAML unquoted; it must be double-quoted.
-        let text = write_block(Some("SPEC: A block file"), &[], false, &[], "body\n");
+        let text = write_block(Some("SPEC: A block file"), &[], false, None, &[], "body\n");
         assert!(
             text.contains("title: \"SPEC: A block file\"\n"),
             "title should be quoted: {text}"
@@ -480,14 +507,14 @@ mod tests {
     #[test]
     fn write_block_leaves_plain_title_unquoted() {
         // Common titles stay plain so existing vault files don't churn.
-        let text = write_block(Some("Deploying to k3s"), &[], false, &[], "body\n");
+        let text = write_block(Some("Deploying to k3s"), &[], false, None, &[], "body\n");
         assert!(text.contains("title: Deploying to k3s\n"), "{text}");
     }
 
     #[test]
     fn write_block_round_trips_title_with_quotes_and_backslash() {
         let title = "He said \"hi\" \\ bye";
-        let text = write_block(Some(title), &[], false, &[], "body\n");
+        let text = write_block(Some(title), &[], false, None, &[], "body\n");
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.title.as_deref(), Some(title));
     }
@@ -510,7 +537,7 @@ mod tests {
 
     #[test]
     fn write_block_round_trips_locked() {
-        let text = write_block(Some("Pinned"), &[], true, &[], "body\n");
+        let text = write_block(Some("Pinned"), &[], true, None, &[], "body\n");
         assert!(text.contains("locked: true\n"), "{text}");
         let b = parse_block(BlockId::generate(), &text);
         assert!(b.locked);
@@ -520,14 +547,14 @@ mod tests {
     #[test]
     fn write_block_emits_locked_without_title_or_tags() {
         // A locked block must still get frontmatter even with no title/tags.
-        let text = write_block(None, &[], true, &[], "just body\n");
+        let text = write_block(None, &[], true, None, &[], "just body\n");
         assert!(text.starts_with("---\nlocked: true\n---\n"), "{text}");
         assert!(parse_block(BlockId::generate(), &text).locked);
     }
 
     #[test]
     fn write_block_omits_locked_when_false() {
-        let text = write_block(Some("Free"), &[], false, &[], "body\n");
+        let text = write_block(Some("Free"), &[], false, None, &[], "body\n");
         assert!(!text.contains("locked"), "{text}");
     }
 
@@ -561,7 +588,7 @@ mod tests {
             ("source".to_string(), "https://example.com/x".to_string()),
             ("verified".to_string(), "2026-06-01".to_string()),
         ];
-        let text = write_block(Some("Atom"), &[], false, &props, "body\n");
+        let text = write_block(Some("Atom"), &[], false, None, &props, "body\n");
         assert!(text.contains("source: https://example.com/x\n"), "{text}");
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.props, props);
@@ -571,7 +598,7 @@ mod tests {
     fn write_block_quotes_prop_value_with_colon() {
         // A value containing `: ` would be invalid YAML unquoted; it must be quoted and survive.
         let props = vec![("note".to_string(), "ratio: 2:1 high".to_string())];
-        let text = write_block(None, &[], false, &props, "body\n");
+        let text = write_block(None, &[], false, None, &props, "body\n");
         let b = parse_block(BlockId::generate(), &text);
         assert_eq!(b.prop("note"), Some("ratio: 2:1 high"));
     }
@@ -579,7 +606,7 @@ mod tests {
     #[test]
     fn write_block_emits_props_without_title_tags_or_lock() {
         let props = vec![("source".to_string(), "git".to_string())];
-        let text = write_block(None, &[], false, &props, "just body\n");
+        let text = write_block(None, &[], false, None, &props, "just body\n");
         assert!(text.starts_with("---\nsource: git\n---\n"), "{text}");
         assert_eq!(
             parse_block(BlockId::generate(), &text).prop("source"),
@@ -594,11 +621,48 @@ mod tests {
             ("evil\nlocked".to_string(), "true".to_string()),
             ("ok".to_string(), "1".to_string()),
         ];
-        let text = write_block(Some("V"), &[], false, &props, "body\n");
+        let text = write_block(Some("V"), &[], false, None, &props, "body\n");
         assert!(!text.contains("locked"), "injection leaked:\n{text}");
         let b = parse_block(BlockId::generate(), &text);
         assert!(!b.locked, "block must not be locked via injection");
         assert_eq!(b.prop("ok"), Some("1"));
         assert_eq!(b.props.len(), 1);
+    }
+
+    #[test]
+    fn updated_round_trips_and_timestamps_are_not_props() {
+        // `created`/`updated` are managed: even if present in frontmatter they are NOT properties.
+        let b = p("---\ntitle: A\ncreated: 2020-01-01T00:00:00Z\nupdated: 2026-06-24T02:30:00Z\nsource: git\n---\n\nbody\n");
+        assert_eq!(b.updated.as_deref(), Some("2026-06-24T02:30:00Z"));
+        assert_eq!(b.props, vec![("source".to_string(), "git".to_string())]);
+        // write emits `updated` (never `created` — that lives in the id) and round-trips.
+        let text = write_block(
+            Some("A"),
+            &[],
+            false,
+            b.updated.as_deref(),
+            &b.props,
+            "body\n",
+        );
+        assert!(text.contains("updated: 2026-06-24T02:30:00Z"), "{text}");
+        assert!(
+            !text.contains("created:"),
+            "created must never be written:\n{text}"
+        );
+        assert_eq!(
+            parse_block(BlockId::generate(), &text).updated.as_deref(),
+            Some("2026-06-24T02:30:00Z")
+        );
+    }
+
+    #[test]
+    fn block_without_updated_frontmatter_reads_cleanly() {
+        // The survival case: a block predating timestamps (no `updated:`) parses fine.
+        let b = p("# just a body\n\nno frontmatter\n");
+        assert_eq!(b.updated, None);
+        // created is still derivable from the (ULID) id — nothing stored.
+        assert!(b.created().is_some());
+        // A title-only block likewise has no updated.
+        assert_eq!(p("---\ntitle: Old\n---\n\nbody\n").updated, None);
     }
 }

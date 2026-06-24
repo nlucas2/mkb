@@ -9,6 +9,7 @@
 
 pub mod block;
 pub mod blockfile;
+pub mod clock;
 pub mod conflict;
 pub mod embed;
 pub mod export;

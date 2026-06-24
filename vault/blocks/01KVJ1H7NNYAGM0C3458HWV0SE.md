@@ -5,7 +5,9 @@ tags: [skill, surface, mcp]
 
 ## The MCP tool surface
 
-**Read:** `search` (filters: `tags`, `lang`, `limit`), `get_block`, `render_block`,
+**Read:** `search` (filters: `tags`, `lang`, `limit`, and `created_*`/`updated_*` date ranges —
+the freshness/staleness audit), `get_block` (returns title, tags, properties, and timestamps —
+`created` is free from the id, `updated` is the last-write time), `render_block`,
 `list_blocks`, `list_roots`, `graph`, `list_tags`, `backlinks`, `links_from`.
 
 **Write:** `create_block` (title?, body), `update_block` (id, title?, body - overwrites the

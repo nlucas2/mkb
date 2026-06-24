@@ -56,6 +56,20 @@ impl BlockId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The creation time encoded in this id's ULID (milliseconds since the Unix epoch), if the id
+    /// is a decodable ULID. mdkb-minted ids always are; a lenient non-ULID id yields `None`. This
+    /// is why `created` is free — every block's birth time rides in its id, with nothing stored.
+    pub fn created_ms(&self) -> Option<u64> {
+        ulid::Ulid::from_string(&self.0)
+            .ok()
+            .map(|u| u.timestamp_ms())
+    }
+
+    /// The creation time as an RFC 3339 UTC string (decoded from the ULID), if decodable.
+    pub fn created_rfc3339(&self) -> Option<String> {
+        self.created_ms().and_then(crate::clock::unix_ms_to_rfc3339)
+    }
 }
 
 impl fmt::Display for BlockId {

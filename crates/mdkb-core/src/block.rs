@@ -30,15 +30,20 @@ pub struct Block {
     /// CLI) are denied mutations. Enforced at the service write gate; see `RequestContext`.
     pub locked: bool,
     /// **Arbitrary block properties** — every frontmatter `key: value` that isn't one mdkb manages
-    /// (`title`/`tags`/`locked`), as ordered **scalar** key/value pairs (e.g. `source:`,
-    /// `verified:`, `confidence:`): the open-ended metadata primitive. Scalar properties are stored
-    /// and round-tripped exactly, and folded into [`Block::contextual_text`] so values are
-    /// full-text searchable. The model is deliberately flat — only scalar values are captured;
+    /// (`title`/`tags`/`locked`/`created`/`updated`), as ordered **scalar** key/value pairs (e.g.
+    /// `source:`, `verified:`, `confidence:`): the open-ended metadata primitive. Scalar properties
+    /// are stored and round-tripped exactly, and folded into [`Block::contextual_text`] so values
+    /// are full-text searchable. The model is deliberately flat — only scalar values are captured;
     /// non-scalar frontmatter (nested maps, block lists, block scalars) under an unmanaged key is
     /// not represented here, and `set_props` can only write scalars. mdkb imposes no schema on
     /// these — they are not typed or range-queryable (that is a separate, opt-in concern). Keys are
     /// unique (first occurrence wins on parse); order is first-seen.
     pub props: Vec<(String, String)>,
+    /// **Last-modified timestamp** (frontmatter `updated:`, RFC 3339 UTC) — system-owned and
+    /// stamped on every write; callers cannot set it. `None` for a block never written since this
+    /// was introduced (absence is normal and never an error). The complementary **created** time is
+    /// not stored here at all — it is decoded from the block's ULID id via [`Block::created`].
+    pub updated: Option<String>,
     /// The Markdown body (everything after frontmatter), verbatim.
     pub body: String,
 }
@@ -114,6 +119,12 @@ impl Block {
             .map(|(_, v)| v.as_str())
     }
 
+    /// The block's **creation time** as an RFC 3339 UTC string, decoded from its ULID id (nothing
+    /// is stored). `None` only if the id isn't a decodable ULID.
+    pub fn created(&self) -> Option<String> {
+        self.id.created_rfc3339()
+    }
+
     /// All tag names (deduplicated, order-preserving).
     pub fn tag_names(&self) -> Vec<&str> {
         let mut seen: Vec<&str> = Vec::new();
@@ -166,6 +177,7 @@ mod tests {
             langs: vec![],
             locked: false,
             props: vec![],
+            updated: None,
             body: body.to_string(),
         }
     }

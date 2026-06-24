@@ -202,7 +202,8 @@ impl<I: Index> SyncEngine<I> {
     /// the new block id. Frontmatter tags start empty; inline `#tags` in the body still apply.
     pub fn create_block(&mut self, title: Option<&str>, body: &str) -> Result<BlockId, IndexError> {
         let id = BlockId::generate();
-        let source = write_block(title, &[], false, &[], body);
+        let now = crate::clock::now_rfc3339();
+        let source = write_block(title, &[], false, Some(now.as_str()), &[], body);
         self.write_file(&id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -229,7 +230,8 @@ impl<I: Index> SyncEngine<I> {
         let fm_tags = existing.fm_tags.clone();
         let locked = existing.locked;
         let props = existing.props.clone();
-        let source = write_block(title, &fm_tags, locked, &props, body);
+        let now = crate::clock::now_rfc3339();
+        let source = write_block(title, &fm_tags, locked, Some(now.as_str()), &props, body);
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -257,7 +259,15 @@ impl<I: Index> SyncEngine<I> {
                 clean.push(t.to_string());
             }
         }
-        let source = write_block(title.as_deref(), &clean, locked, &props, &body);
+        let now = crate::clock::now_rfc3339();
+        let source = write_block(
+            title.as_deref(),
+            &clean,
+            locked,
+            Some(now.as_str()),
+            &props,
+            &body,
+        );
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -277,7 +287,15 @@ impl<I: Index> SyncEngine<I> {
         let tags = existing.fm_tags.clone();
         let body = existing.body.clone();
         let props = existing.props.clone();
-        let source = write_block(title.as_deref(), &tags, locked, &props, &body);
+        let now = crate::clock::now_rfc3339();
+        let source = write_block(
+            title.as_deref(),
+            &tags,
+            locked,
+            Some(now.as_str()),
+            &props,
+            &body,
+        );
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -349,7 +367,15 @@ impl<I: Index> SyncEngine<I> {
                 merged.push((k.to_string(), v.clone()));
             }
         }
-        let source = write_block(title.as_deref(), &tags, locked, &merged, &body);
+        let now = crate::clock::now_rfc3339();
+        let source = write_block(
+            title.as_deref(),
+            &tags,
+            locked,
+            Some(now.as_str()),
+            &merged,
+            &body,
+        );
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -378,7 +404,15 @@ impl<I: Index> SyncEngine<I> {
             .filter(|(k, _)| !drop.iter().any(|d| d.eq_ignore_ascii_case(k)))
             .cloned()
             .collect();
-        let source = write_block(title.as_deref(), &tags, locked, &kept, &body);
+        let now = crate::clock::now_rfc3339();
+        let source = write_block(
+            title.as_deref(),
+            &tags,
+            locked,
+            Some(now.as_str()),
+            &kept,
+            &body,
+        );
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -714,5 +748,62 @@ mod tests {
             .set_props(&id, &[("note".to_string(), "  ".to_string())])
             .is_err());
         assert!(e.vault().block(&id).unwrap().props.is_empty());
+    }
+
+    #[test]
+    fn set_props_rejects_timestamp_keys() {
+        // created/updated are system-owned; a caller can't set them via a property.
+        let (_dir, mut e) = engine();
+        let id = e.create_block(None, "b\n").unwrap();
+        assert!(e
+            .set_props(&id, &[("created".into(), "2020-01-01".into())])
+            .is_err());
+        assert!(e
+            .set_props(&id, &[("updated".into(), "2020-01-01".into())])
+            .is_err());
+        assert!(e.vault().block(&id).unwrap().props.is_empty());
+    }
+
+    #[test]
+    fn writes_stamp_updated_and_created_comes_from_id() {
+        let (_dir, mut e) = engine();
+        let id = e.create_block(Some("A"), "body\n").unwrap();
+        let b = e.vault().block(&id).unwrap();
+        assert!(b.updated.is_some(), "create should stamp updated");
+        assert!(b.created().is_some(), "created derives from the ULID id");
+        let first = b.updated.clone();
+        // A later edit re-stamps updated (monotonic; equal is fine within the same second).
+        e.update_block(&id, Some("A"), "edited\n").unwrap();
+        let b2 = e.vault().block(&id).unwrap();
+        assert!(b2.updated.as_deref() >= first.as_deref());
+        // The on-disk file carries `updated:` but never `created:`.
+        let on_disk = std::fs::read_to_string(_dir.path().join(format!("blocks/{id}.md"))).unwrap();
+        assert!(on_disk.contains("updated:"), "{on_disk}");
+        assert!(!on_disk.contains("created:"), "{on_disk}");
+    }
+
+    #[test]
+    fn pre_feature_block_has_no_updated_then_gets_stamped_on_edit() {
+        // The survival case the user flagged: an existing file with no `updated:` must read fine,
+        // and only gain a timestamp when it's next edited (never a mass-rewrite of old blocks).
+        let (dir, mut e) = engine();
+        let id = BlockId::generate();
+        std::fs::create_dir_all(dir.path().join("blocks")).unwrap();
+        std::fs::write(
+            dir.path().join(format!("blocks/{id}.md")),
+            "---\ntitle: Old\n---\n\nbody\n",
+        )
+        .unwrap();
+        e.reconcile().unwrap();
+        assert_eq!(
+            e.vault().block(&id).unwrap().updated,
+            None,
+            "old block has no updated until edited"
+        );
+        e.set_tags(&id, &["t".into()]).unwrap();
+        assert!(
+            e.vault().block(&id).unwrap().updated.is_some(),
+            "an edit stamps updated"
+        );
     }
 }

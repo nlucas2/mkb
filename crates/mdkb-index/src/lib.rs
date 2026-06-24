@@ -432,10 +432,12 @@ fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<BlockRecord> {
         contextual_text: r.get(4)?,
         tags: split_ws(&tags_text),
         child_count: r.get::<_, i64>(6)? as usize,
-        // `locked` and `props` are not persisted in the index; the service overlays them from the
-        // vault (the source of truth).
+        // `locked`, `props`, `created`, and `updated` are not persisted in the index; the service
+        // overlays them from the vault / the block id (the source of truth).
         locked: false,
         props: Vec::new(),
+        created: None,
+        updated: None,
     })
 }
 

@@ -32,6 +32,7 @@ mdkb-protocol = { path = "crates/mdkb-protocol" }
 mdkb-view = { path = "crates/mdkb-view" }
 regex = "1"
 ulid = "1"
+time = { version = "0.3", features = ["formatting", "parsing"] }
 rusqlite = "0.40"
 tempfile = "3"
 serde = "1"

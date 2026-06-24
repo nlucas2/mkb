@@ -221,18 +221,38 @@ impl<I: Index> Service<I> {
         query: SearchQuery,
     ) -> Result<Vec<SearchHit>, IndexError> {
         ctx.authorize(Capability::Read)?;
-        let mut hits = self.engine.search(query)?;
-        // The index doesn't persist `locked`/`props`; overlay the authoritative values from the
-        // parsed vault so a hit found *by* a property value also carries that property, matching
-        // what `get_block` returns (no second round-trip needed to see a block's metadata).
-        let vault = self.engine.vault();
+        // Date filters (created from the id, updated overlaid from the vault) are applied here, not
+        // in the index. So when one is present, fetch *all* candidates from the engine — bounded by
+        // the vault's block count, since it can't return more than that — then date-filter and
+        // re-apply the real limit. Using `0` would not work: the engine maps it to the default 50
+        // via `effective_limit`, which would silently drop stale blocks ranked past the 50th.
+        let has_date = query.has_date_filter();
+        let limit = query.effective_limit();
+        let mut engine_query = query.clone();
+        if has_date {
+            engine_query.limit = self.engine.vault().len().max(1);
+        }
+        let mut hits = self.engine.search(engine_query)?;
         for hit in &mut hits {
-            if let Some(b) = vault.block(&hit.block.id) {
-                hit.block.locked = b.locked;
-                hit.block.props = b.props.clone();
-            }
+            self.overlay_metadata(&mut hit.block);
+        }
+        if has_date {
+            hits.retain(|h| query.matches_dates(&h.block));
+            hits.truncate(limit);
         }
         Ok(hits)
+    }
+
+    /// Fill in the metadata the index doesn't persist: `locked`/`props`/`updated` from the parsed
+    /// vault, and `created` decoded from the block's ULID id. `created` is set even if the block is
+    /// (transiently) absent from the vault, since it depends only on the id.
+    fn overlay_metadata(&self, rec: &mut BlockRecord) {
+        rec.created = rec.id.created_rfc3339();
+        if let Some(b) = self.engine.vault().block(&rec.id) {
+            rec.locked = b.locked;
+            rec.props = b.props.clone();
+            rec.updated = b.updated.clone();
+        }
     }
 
     /// Fetch a single block record by id.
@@ -243,14 +263,11 @@ impl<I: Index> Service<I> {
     ) -> Result<Option<BlockRecord>, IndexError> {
         ctx.authorize(Capability::Read)?;
         let mut record = self.engine.index().block(id)?;
-        // The index doesn't persist `locked` or `props` (they live in the file frontmatter);
-        // overlay the authoritative values from the parsed vault so clients see true lock state
-        // and the block's open-ended metadata.
+        // The index doesn't persist `locked`/`props`/`updated` (they live in the file frontmatter)
+        // or `created` (decoded from the id); overlay the authoritative values so clients see the
+        // true lock state, the block's open-ended metadata, and its timestamps.
         if let Some(rec) = record.as_mut() {
-            if let Some(b) = self.engine.vault().block(id) {
-                rec.locked = b.locked;
-                rec.props = b.props.clone();
-            }
+            self.overlay_metadata(rec);
         }
         Ok(record)
     }
@@ -1169,6 +1186,86 @@ mod tests {
             .find(|h| h.block.id == id)
             .expect("block should be found");
         assert_eq!(hit.block.prop("source"), Some("git"));
+    }
+
+    #[test]
+    fn get_block_carries_created_and_updated() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let id = svc.create_block(&ctx, Some("Doc"), "body").unwrap();
+        let rec = svc.get_block(&ctx, &id).unwrap().unwrap();
+        assert!(rec.created.is_some(), "created decoded from the id");
+        assert!(rec.updated.is_some(), "updated stamped on create");
+    }
+
+    #[test]
+    fn search_date_filters_select_recent_and_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        svc.create_block(&ctx, Some("Doc"), "findable content here")
+            .unwrap();
+
+        let past = crate::clock::parse_query_date("2000-01-01");
+        let future = crate::clock::parse_query_date("2999-01-01");
+
+        // Just-written, so NOT updated before a past date, but IS before a far-future date.
+        let mut q = SearchQuery::text("findable");
+        q.updated_before = past.clone();
+        assert!(svc.search(&ctx, q).unwrap().is_empty());
+
+        let mut q = SearchQuery::text("findable");
+        q.updated_before = future;
+        assert_eq!(svc.search(&ctx, q).unwrap().len(), 1);
+
+        // created is ~now, so created_after a past date matches.
+        let mut q = SearchQuery::text("findable");
+        q.created_after = past;
+        assert_eq!(svc.search(&ctx, q).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn updated_before_excludes_block_without_updated() {
+        // A block with no `updated:` time must not match an updated bound (unknown != in range).
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let id = BlockId::generate();
+        std::fs::create_dir_all(dir.path().join("blocks")).unwrap();
+        std::fs::write(
+            dir.path().join(format!("blocks/{id}.md")),
+            "---\ntitle: Old\n---\n\nfindable old content\n",
+        )
+        .unwrap();
+        svc.reconcile(&ctx).unwrap();
+        let rec = svc.get_block(&ctx, &id).unwrap().unwrap();
+        assert_eq!(rec.updated, None);
+        assert!(rec.created.is_some());
+        let mut q = SearchQuery::text("findable");
+        q.updated_before = crate::clock::parse_query_date("2999-01-01");
+        assert!(
+            svc.search(&ctx, q).unwrap().is_empty(),
+            "no-updated block must be excluded from updated_before"
+        );
+    }
+
+    #[test]
+    fn date_filter_scans_beyond_the_default_limit() {
+        // Regression: a date filter must consider ALL blocks, not just the engine's default 50.
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        for _ in 0..60 {
+            svc.create_block(&ctx, Some("Doc"), "findable content")
+                .unwrap();
+        }
+        // All 60 were just written, so all are updated before a far-future date. With a generous
+        // limit, every one comes back — proving the candidate set wasn't pre-capped at 50.
+        let mut q = SearchQuery::text("findable");
+        q.updated_before = crate::clock::parse_query_date("2999-01-01");
+        q.limit = 100;
+        assert_eq!(svc.search(&ctx, q).unwrap().len(), 60);
     }
 
     #[test]

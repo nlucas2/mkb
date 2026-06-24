@@ -114,8 +114,11 @@ mdkb render <vault> <id> --flat              # published form: embeds dissolved,
 mdkb search <vault> "how do I restart nginx" # hybrid keyword+semantic; prefer a natural phrase
 mdkb search <vault> "ingress" --tag=ops --lang=yaml --limit=10   # filters (--tag repeatable)
 mdkb search <vault> "tag:ops #k8s lang:rust deploy"              # same filters as inline operators
+mdkb search <vault> "updated:before:2026-01-01"  # stale blocks (also --updated-before=DATE, and
+                                                 # created/updated :after:/:before:, YYYY-MM-DD)
 mdkb tags <vault>                            # every tag with its block count
 mdkb props <vault> <id>                      # a block's properties, "key<TAB>value" per line
+mdkb info <vault> <id>                       # a block's metadata: created, updated, locked, tags, props
 mdkb backlinks <vault> <id>                  # blocks that reference/embed <id> (check before edits)
 mdkb links <vault> <id>                      # outgoing links/embeds from <id>
 mdkb stats <vault>                           # index statistics

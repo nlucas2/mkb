@@ -52,10 +52,9 @@ impl Backend for DaemonBackend {
     }
 
     fn search(&self, query: &str) -> Result<Vec<ResultRow>, String> {
-        let q = SearchQuery {
-            text: Some(query.to_string()),
-            ..Default::default()
-        };
+        // Parse the same inline operators (tag:/#tag/lang:/created:/updated:) the CLI and app use,
+        // so the web search box behaves identically rather than treating operators as plain text.
+        let q = SearchQuery::parse(query);
         let hits = self.client.search(q).map_err(|e| e.to_string())?;
         Ok(hits
             .into_iter()

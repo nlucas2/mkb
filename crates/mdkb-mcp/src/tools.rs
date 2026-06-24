@@ -24,20 +24,24 @@ pub fn tool_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "search",
-            description: "Search the knowledge base (keyword + semantic). Optional filters: lang, tags, limit.",
+            description: "Search the knowledge base (keyword + semantic). Optional filters: lang, tags, limit, and created/updated date ranges (the staleness/freshness audit — e.g. updated_before to find blocks not touched since a date). Dates are YYYY-MM-DD or RFC 3339. created comes free from each block's id; updated is the last-write time.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Free-text query"},
                     "lang": {"type": "string", "description": "Restrict to a code-fence language (e.g. kusto)"},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Require all of these tags"},
-                    "limit": {"type": "integer", "description": "Max results (default 50)"}
+                    "limit": {"type": "integer", "description": "Max results (default 50)"},
+                    "created_after": {"type": "string", "description": "Only blocks created on/after this date (YYYY-MM-DD or RFC 3339)"},
+                    "created_before": {"type": "string", "description": "Only blocks created before this date"},
+                    "updated_after": {"type": "string", "description": "Only blocks last-modified on/after this date"},
+                    "updated_before": {"type": "string", "description": "Only blocks last-modified before this date (find stale blocks)"}
                 }
             }),
         },
         ToolDef {
             name: "get_block",
-            description: "Fetch a single block (its title, tags, properties, and Markdown body) by id.",
+            description: "Fetch a single block by id: its title, tags, properties, timestamps (created — free from the id — and updated), and Markdown body.",
             schema: json!({
                 "type": "object",
                 "properties": {"id": {"type": "string"}},
@@ -244,25 +248,49 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
 
     Ok(match name {
         "search" => {
-            let tags = args
-                .get("tags")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            Request::Search {
-                query: SearchQuery {
-                    text: s("query"),
-                    tags,
-                    lang: s("lang"),
-                    limit,
-                    ..Default::default()
-                },
+            // Parse the query for inline operators (tag:/#tag/lang:/created:/updated:) exactly like
+            // the CLI/app/web, then overlay the explicit structured arguments on top so both styles
+            // work and the agent's explicit filters win.
+            let mut q = match s("query") {
+                Some(text) => SearchQuery::parse(&text),
+                None => SearchQuery::default(),
+            };
+            if let Some(lang) = s("lang") {
+                q.lang = Some(lang);
             }
+            if let Some(arr) = args.get("tags").and_then(|v| v.as_array()) {
+                for t in arr.iter().filter_map(|x| x.as_str()) {
+                    if !q.tags.iter().any(|e| e.eq_ignore_ascii_case(t)) {
+                        q.tags.push(t.to_string());
+                    }
+                }
+            }
+            if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
+                q.limit = limit as usize;
+            }
+            // Normalize date filters to canonical RFC 3339; an unparsable date errors rather than
+            // being silently ignored. An explicit arg overrides the same operator from the query.
+            let date = |key: &str| -> Result<Option<String>, String> {
+                match s(key) {
+                    None => Ok(None),
+                    Some(d) => mdkb_core::clock::parse_query_date(&d)
+                        .map(Some)
+                        .ok_or_else(|| format!("invalid date for {key}: {d}")),
+                }
+            };
+            if let Some(d) = date("created_after")? {
+                q.created_after = Some(d);
+            }
+            if let Some(d) = date("created_before")? {
+                q.created_before = Some(d);
+            }
+            if let Some(d) = date("updated_after")? {
+                q.updated_after = Some(d);
+            }
+            if let Some(d) = date("updated_before")? {
+                q.updated_before = Some(d);
+            }
+            Request::Search { query: q }
         }
         "get_block" => Request::GetBlock { id: req_id("id")? },
         "render_block" => Request::RenderBlock { id: req_id("id")? },
@@ -465,6 +493,41 @@ mod tests {
             }
             _ => panic!("expected search"),
         }
+    }
+
+    #[test]
+    fn search_parses_query_operators_and_merges_explicit_args() {
+        // Operators typed into the query (parity with CLI/app/web) are honored, and explicit
+        // structured args merge on top — so a date filter works whether sent as an operator or arg.
+        let args = json!({
+            "query": "deploy #k8s updated:before:2026-01-01",
+            "tags": ["ops"],
+            "created_after": "2025-01-01"
+        });
+        match build_request("search", &args).unwrap() {
+            Request::Search { query } => {
+                assert_eq!(query.text.as_deref(), Some("deploy"));
+                assert!(query.tags.iter().any(|t| t == "k8s"), "operator tag kept");
+                assert!(query.tags.iter().any(|t| t == "ops"), "explicit tag merged");
+                assert_eq!(
+                    query.updated_before.as_deref(),
+                    Some("2026-01-01T00:00:00Z"),
+                    "operator date parsed + normalized"
+                );
+                assert_eq!(
+                    query.created_after.as_deref(),
+                    Some("2025-01-01T00:00:00Z"),
+                    "explicit date arg applied"
+                );
+            }
+            _ => panic!("expected search"),
+        }
+    }
+
+    #[test]
+    fn search_rejects_bad_date_arg() {
+        let args = json!({"query": "x", "updated_before": "last tuesday"});
+        assert!(build_request("search", &args).is_err());
     }
 
     #[test]

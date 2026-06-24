@@ -42,6 +42,15 @@ pub struct BlockRecord {
     /// authoritative pairs from the parsed vault when serving a record. Empty on the index read path.
     #[cfg_attr(feature = "serde", serde(default))]
     pub props: Vec<(String, String)>,
+    /// **Creation time** (RFC 3339 UTC), decoded from the block's ULID id — never stored. The
+    /// service fills this in when serving a record. `None` only if the id isn't a decodable ULID.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub created: Option<String>,
+    /// **Last-modified time** (RFC 3339 UTC) from the block's `updated:` frontmatter, stamped on
+    /// each write. Like `locked`/`props`, overlaid from the vault by the service. `None` for a
+    /// block not written since timestamps were introduced (absence is normal, never an error).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub updated: Option<String>,
 }
 
 impl BlockRecord {
@@ -57,6 +66,8 @@ impl BlockRecord {
             child_count,
             locked: block.locked,
             props: block.props.clone(),
+            created: block.created(),
+            updated: block.updated.clone(),
         }
     }
 
@@ -150,6 +161,15 @@ pub struct SearchQuery {
     pub tags: Vec<String>,
     /// Required fenced-code language.
     pub lang: Option<String>,
+    /// Keep only blocks **created** on/after this RFC 3339 UTC instant (inclusive).
+    pub created_after: Option<String>,
+    /// Keep only blocks **created** strictly before this RFC 3339 UTC instant.
+    pub created_before: Option<String>,
+    /// Keep only blocks **updated** on/after this RFC 3339 UTC instant (inclusive).
+    pub updated_after: Option<String>,
+    /// Keep only blocks **updated** strictly before this RFC 3339 UTC instant (the staleness
+    /// filter). A block with no `updated:` time does not match an updated bound.
+    pub updated_before: Option<String>,
     /// Max results. `0` is treated as the default (50).
     pub limit: usize,
 }
@@ -171,6 +191,9 @@ impl SearchQuery {
     ///
     /// - `tag:NAME` or `#NAME` — require the tag `NAME` (repeatable; all required, AND).
     /// - `lang:NAME` or `code:NAME` — require a fenced code block in language `NAME`.
+    /// - `created:after:DATE` / `created:before:DATE` — bound by creation time.
+    /// - `updated:after:DATE` / `updated:before:DATE` — bound by last-modified time. `DATE` is a
+    ///   `YYYY-MM-DD` date or a full RFC 3339 timestamp; an unparsable value is ignored.
     ///
     /// Everything else becomes the free-text (FTS) part. A leading `#` is treated as a tag only
     /// when it looks like a tag token (`#word`), so Markdown headings pasted into the box still
@@ -178,6 +201,7 @@ impl SearchQuery {
     pub fn parse(input: &str) -> SearchQuery {
         let mut tags: Vec<String> = Vec::new();
         let mut lang: Option<String> = None;
+        let mut q = SearchQuery::default();
         let mut words: Vec<&str> = Vec::new();
 
         for token in input.split_whitespace() {
@@ -187,6 +211,14 @@ impl SearchQuery {
                 set_lang(&mut lang, rest);
             } else if let Some(rest) = strip_ci_prefix(token, "code:") {
                 set_lang(&mut lang, rest);
+            } else if let Some(rest) = strip_ci_prefix(token, "created:after:") {
+                q.created_after = crate::clock::parse_query_date(rest);
+            } else if let Some(rest) = strip_ci_prefix(token, "created:before:") {
+                q.created_before = crate::clock::parse_query_date(rest);
+            } else if let Some(rest) = strip_ci_prefix(token, "updated:after:") {
+                q.updated_after = crate::clock::parse_query_date(rest);
+            } else if let Some(rest) = strip_ci_prefix(token, "updated:before:") {
+                q.updated_before = crate::clock::parse_query_date(rest);
             } else if let Some(rest) = token.strip_prefix('#') {
                 // `#tag` shorthand — only when it's a real tag token (not a bare `#`).
                 if !rest.is_empty() && rest.chars().all(is_tag_char) {
@@ -199,17 +231,14 @@ impl SearchQuery {
             }
         }
 
-        let text = if words.is_empty() {
+        q.text = if words.is_empty() {
             None
         } else {
             Some(words.join(" "))
         };
-        SearchQuery {
-            text,
-            tags,
-            lang,
-            ..Default::default()
-        }
+        q.tags = tags;
+        q.lang = lang;
+        q
     }
 
     /// The effective limit (defaulting `0` to 50).
@@ -219,6 +248,37 @@ impl SearchQuery {
         } else {
             self.limit
         }
+    }
+
+    /// Whether any created/updated date bound is set.
+    pub fn has_date_filter(&self) -> bool {
+        self.created_after.is_some()
+            || self.created_before.is_some()
+            || self.updated_after.is_some()
+            || self.updated_before.is_some()
+    }
+
+    /// Whether `rec` satisfies the created/updated date bounds. Comparison is lexical on the shared
+    /// fixed RFC 3339 format (so it is chronological). A `None` timestamp never satisfies a bound
+    /// (an unknown time can't be proven in range), so e.g. a never-updated block is excluded by an
+    /// `updated_*` filter rather than wrongly matched.
+    pub fn matches_dates(&self, rec: &BlockRecord) -> bool {
+        fn lower(bound: &Option<String>, val: &Option<String>) -> bool {
+            match bound {
+                None => true,
+                Some(b) => matches!(val, Some(v) if v.as_str() >= b.as_str()),
+            }
+        }
+        fn upper(bound: &Option<String>, val: &Option<String>) -> bool {
+            match bound {
+                None => true,
+                Some(b) => matches!(val, Some(v) if v.as_str() < b.as_str()),
+            }
+        }
+        lower(&self.created_after, &rec.created)
+            && upper(&self.created_before, &rec.created)
+            && lower(&self.updated_after, &rec.updated)
+            && upper(&self.updated_before, &rec.updated)
     }
 }
 
