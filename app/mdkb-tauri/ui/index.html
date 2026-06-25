@@ -232,7 +232,7 @@
     </div>
 
     <script type="module">
-      const { invoke } = window.__TAURI__.core;
+      const { invoke, convertFileSrc } = window.__TAURI__.core;
       const blocksEl = document.getElementById("blocks");
       const mainEl = document.getElementById("main");
 
@@ -510,10 +510,23 @@
           while (card.firstChild) card.parentNode.insertBefore(card.firstChild, card);
           card.remove();
         }
+        resolveAssetImages(tmp);
         body.innerHTML = `<div class="content reading">${tmp.innerHTML}</div>`;
         highlightIn(body);
         attachChipHovers(body);
         // References stay navigable (the global mdkb: handler covers them); no edit affordances.
+      }
+
+      // Map `mdkb-asset:<abs path>` image sources (emitted by the shared renderer for
+      // vault-relative images, e.g. ![](assets/x.png)) onto the Tauri asset protocol so the
+      // WebView can load files from the local vault. External URLs are left untouched by the
+      // renderer, so they never reach here.
+      function resolveAssetImages(root) {
+        root.querySelectorAll('img[src^="mdkb-asset:"]').forEach((img) => {
+          const abs = img.getAttribute("src").slice("mdkb-asset:".length);
+          try { img.src = convertFileSrc(abs); }
+          catch { img.removeAttribute("src"); }
+        });
       }
 
       // ---------- BLOCKS: interactive view (click-to-edit, embed cards, +add) ----------
@@ -522,6 +535,7 @@
           (locked ? `<div class="lockednote"><span class="lk">🔒</span><span>Locked (human-only) — unlock in the header to edit this block. Embedded blocks follow their own lock state.</span></div>` : "") +
           `<div class="content" id="content">${html}</div>` +
           `<div class="addrow"><button id="add">＋ Add block here</button></div>`;
+        resolveAssetImages(body);
         highlightIn(body);
         attachChipHovers(body);
         const content = body.querySelector("#content");

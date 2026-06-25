@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use mdkb_core::{BlockId, GraphData, SearchQuery};
 use mdkb_protocol::{connect, Client, ConnectionConfig, DaemonPaths};
-use mdkb_view::{block_title, markdown_to_html, search_results_html, ResultRow};
+use mdkb_view::{
+    block_title, markdown_to_html, markdown_to_html_with_assets, search_results_html, ResultRow,
+};
 use serde::Serialize;
 use tauri::Manager;
 
@@ -101,6 +103,22 @@ fn bundled_mdkbd(app: &tauri::AppHandle) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
+/// Whitelist a **local** vault directory in the WebView asset-protocol scope so rendered image
+/// sources under it (`mdkb-asset:` URLs from [`markdown_to_html_with_assets`], mapped to the asset
+/// protocol by the front-end) are allowed to load. Recursive, so `assets/` and any nested folders
+/// are covered. No-op for a remote vault (no local files to serve). Best-effort: a scope failure
+/// just means images won't load, never that the app fails.
+fn allow_vault_assets(app: &tauri::AppHandle, cfg: &ConnectionConfig) {
+    if let ConnectionConfig::Local { vault } = cfg {
+        if let Err(e) = app.asset_protocol_scope().allow_directory(vault, true) {
+            log_line!(
+                "mdkb: could not allow vault assets ({}): {e}",
+                vault.display()
+            );
+        }
+    }
+}
+
 /// Resolve a [`Client`] for `cfg`. Local mode ensures a **detached** daemon is running
 /// (auto-start that outlives the app); remote mode builds a TCP client. Falls back to the
 /// default local socket on error so the window still opens (the UI shows the failure).
@@ -170,6 +188,10 @@ fn block_index(state: tauri::State<'_, AppState>) -> Result<Vec<NavBlock>, Strin
 }
 
 /// Render a block to HTML (children resolved by the daemon, Markdown→HTML by mdkb-view).
+///
+/// For a **local** vault, relative image sources (`![](assets/x.png)`) are resolved against the
+/// vault so the WebView can load them via the asset protocol (see [`allow_vault_assets`]); a
+/// remote vault has no local files to serve, so its images render only if they are external URLs.
 #[tauri::command]
 fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockView, String> {
     let client = state.connected()?;
@@ -178,8 +200,12 @@ fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockVi
         .rendered_block(bid)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("block not found: {id}"))?;
+    let html = match &*state.cfg.lock().map_err(|_| "state poisoned")? {
+        ConnectionConfig::Local { vault } => markdown_to_html_with_assets(&rb.rendered, vault),
+        _ => markdown_to_html(&rb.rendered),
+    };
     Ok(BlockView {
-        html: markdown_to_html(&rb.rendered),
+        html,
         content: rb.raw,
         title: rb.title,
         tags: rb.tags,
@@ -413,6 +439,8 @@ fn save_settings(
     let client = resolve_client(&app, &config);
     let ok = client.ping();
     *state.client.lock().map_err(|_| "state poisoned")? = client;
+    // Allow image loading from the newly selected local vault before it becomes active.
+    allow_vault_assets(&app, &config);
     // Keep the stored config in sync so later auto-reconnects target the new vault/host.
     *state.cfg.lock().map_err(|_| "state poisoned")? = config;
     if ok {
@@ -506,6 +534,8 @@ pub fn run() {
             let cfg = current_config();
             let mdkbd = bundled_mdkbd(app.handle());
             let client = resolve_client(app.handle(), &cfg);
+            // Allow the WebView to load images stored in the local vault (asset protocol).
+            allow_vault_assets(app.handle(), &cfg);
             app.manage(AppState {
                 client: Mutex::new(client),
                 cfg: Mutex::new(cfg),

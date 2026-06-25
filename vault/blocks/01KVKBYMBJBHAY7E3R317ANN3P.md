@@ -11,8 +11,16 @@ tags: [spec, doc]
     <ULID>.md
     <ULID>.md
     ...
+  assets/                 # optional: images & other files referenced from blocks,
+    diagram.png           #   e.g. ![](assets/diagram.png) — synced with the vault, not indexed
+    ...
   SPEC.md                 # this file (in mdkb's own self-documenting vault)
 ```
+
+Only `blocks/` is indexed. Anything else in the vault — an `assets/` directory of images, other
+attachments — is carried along by sync but ignored by the index; a block displays such a file with
+a normal Markdown image/link using a **vault-relative** path (`![](assets/diagram.png)`), which the
+desktop app loads from disk.
 
 The index, socket, lock, and log are **machine-local** and live **outside** the vault, in a
 per-vault directory under the OS local-data location — so a cloud-synced vault never syncs the

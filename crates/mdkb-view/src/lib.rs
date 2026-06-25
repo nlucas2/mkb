@@ -7,7 +7,8 @@
 //! and wraps it in a browsable document.
 
 use mdkb_core::{IdCodec, NativeIdCodec};
-use pulldown_cmark::{html, Event, Options, Parser};
+use pulldown_cmark::{html, Event, Options, Parser, Tag};
+use std::path::{Path, PathBuf};
 
 /// HTML-escape a string for safe insertion into element text / attributes.
 pub fn escape_html(s: &str) -> String {
@@ -35,6 +36,66 @@ pub fn escape_html(s: &str) -> String {
 /// AI agent could be induced to write via the MCP write tools) renders as inert text rather
 /// than executing — this closes the stored-XSS vector.
 pub fn markdown_to_html(markdown: &str) -> String {
+    render_markdown(markdown, |_| None)
+}
+
+/// Like [`markdown_to_html`], but resolves **relative image sources** against `vault_root` so a
+/// UI can display images stored in the vault (e.g. `![](assets/diagram.png)`).
+///
+/// A relative source is resolved to an absolute path under the vault and emitted as an
+/// `mdkb-asset:<absolute-path>` URL; the client maps that sentinel to its own asset scheme (the
+/// desktop app uses Tauri's `convertFileSrc`). **External** sources — anything with a URL scheme
+/// (`https:`, `data:`, …) or a protocol-relative `//host` — are left untouched. Raw HTML is still
+/// neutralised, so this only affects Markdown `![alt](src)` images.
+pub fn markdown_to_html_with_assets(markdown: &str, vault_root: &Path) -> String {
+    render_markdown(markdown, |dest| {
+        vault_asset_path(dest, vault_root).map(|abs| format!("mdkb-asset:{}", abs.display()))
+    })
+}
+
+/// Resolve a Markdown image source to an absolute path inside `vault_root`, or `None` if the
+/// source is an external URL (has a scheme, is protocol-relative `//…`, or a fragment) that a UI
+/// should load as-is. A leading `./` or `/` is treated as vault-relative so a path can never
+/// escape the vault by being "absolute"; `..` segments are dropped for the same reason (the
+/// desktop app additionally confines loads to the vault via the asset-protocol scope).
+pub fn vault_asset_path(dest: &str, vault_root: &Path) -> Option<PathBuf> {
+    if dest.is_empty() || dest.starts_with('#') || dest.starts_with("//") || has_url_scheme(dest) {
+        return None;
+    }
+    let mut path = vault_root.to_path_buf();
+    for seg in dest.split('/') {
+        match seg {
+            "" | "." | ".." => continue,
+            s => path.push(s),
+        }
+    }
+    (path != vault_root).then_some(path)
+}
+
+/// Whether `s` begins with a URL scheme like `https:` or `data:` (RFC 3986: an ASCII letter
+/// followed by letters/digits/`+`/`-`/`.`, then `:`). Windows drive letters (`C:\…`) are not
+/// vault-relative image sources, so treating them as "external" (left as-is) is correct here.
+fn has_url_scheme(s: &str) -> bool {
+    let mut chars = s.char_indices();
+    match chars.next() {
+        Some((_, c)) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    for (i, c) in chars {
+        match c {
+            ':' => return i > 0,
+            c if c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.') => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Render Markdown to an HTML fragment, applying `rewrite_image` to every image source. The
+/// closure returns `Some(new_src)` to replace the source or `None` to leave it unchanged. Shared
+/// by [`markdown_to_html`] and [`markdown_to_html_with_assets`] so both render identically apart
+/// from image-source handling.
+fn render_markdown(markdown: &str, rewrite_image: impl Fn(&str) -> Option<String>) -> String {
     let cleaned = NativeIdCodec.strip(markdown);
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -45,6 +106,18 @@ pub fn markdown_to_html(markdown: &str) -> String {
         // Neutralise raw HTML: re-emit it as escaped text instead of live markup.
         Event::Html(h) => Event::Text(h),
         Event::InlineHtml(h) => Event::Text(h),
+        // Optionally rewrite Markdown image sources (e.g. vault-relative → asset URL).
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Image {
+            link_type,
+            dest_url: rewrite_image(&dest_url).map(Into::into).unwrap_or(dest_url),
+            title,
+            id,
+        }),
         other => other,
     });
     let mut out = String::new();
@@ -307,6 +380,62 @@ mod tests {
             escape_html("<script>&\"'"),
             "&lt;script&gt;&amp;&quot;&#39;"
         );
+    }
+
+    #[test]
+    fn vault_asset_path_resolves_relative_and_skips_external() {
+        let root = Path::new("/vault");
+        assert_eq!(
+            vault_asset_path("assets/x.png", root),
+            Some(PathBuf::from("/vault/assets/x.png"))
+        );
+        assert_eq!(
+            vault_asset_path("./assets/x.png", root),
+            Some(PathBuf::from("/vault/assets/x.png"))
+        );
+        // Leading slash / `..` can never escape the vault.
+        assert_eq!(
+            vault_asset_path("/assets/x.png", root),
+            Some(PathBuf::from("/vault/assets/x.png"))
+        );
+        assert_eq!(
+            vault_asset_path("../../etc/passwd", root),
+            Some(PathBuf::from("/vault/etc/passwd"))
+        );
+        // External / scheme / fragment / empty are left for the UI to load as-is.
+        for ext in [
+            "https://example.com/a.png",
+            "http://x/a.png",
+            "data:image/png;base64,AAAA",
+            "//cdn/a.png",
+            "#anchor",
+            "",
+        ] {
+            assert_eq!(vault_asset_path(ext, root), None, "should skip {ext}");
+        }
+    }
+
+    #[test]
+    fn asset_rendering_rewrites_only_relative_images() {
+        let html = markdown_to_html_with_assets(
+            "![a](assets/x.png) and ![b](https://h/y.png)\n",
+            Path::new("/vault"),
+        );
+        assert!(
+            html.contains("src=\"mdkb-asset:/vault/assets/x.png\""),
+            "relative image should become an asset URL; got: {html}"
+        );
+        assert!(
+            html.contains("src=\"https://h/y.png\""),
+            "external image should be untouched; got: {html}"
+        );
+    }
+
+    #[test]
+    fn plain_markdown_to_html_leaves_image_sources_unchanged() {
+        let html = markdown_to_html("![a](assets/x.png)\n");
+        assert!(html.contains("src=\"assets/x.png\""), "got: {html}");
+        assert!(!html.contains("mdkb-asset:"), "got: {html}");
     }
 
     #[test]
