@@ -1,5 +1,5 @@
 {
-  // Renovate config for mdkb. Self-hosted Renovate (Forgejo Actions, weekly) opens
+  // Renovate config for mkb. Self-hosted Renovate (Forgejo Actions, weekly) opens
   // dependency-update PRs; the CI gate (cargo test + cargo-deny advisories/licenses) validates
   // each before merge. See .forgejo/workflows/renovate.yml. "When" is driven by the workflow
   // cron, so no in-config schedule is set here.
@@ -14,7 +14,7 @@
   lockFileMaintenance: { enabled: true },
   packageRules: [
     {
-      // Rust: two cargo workspaces (root + app/mdkb-tauri/src-tauri) are auto-detected. Group
+      // Rust: two cargo workspaces (root + app/mkb-tauri/src-tauri) are auto-detected. Group
       // non-major bumps into one PR; majors stay separate for careful review.
       matchManagers: ["cargo"],
       matchUpdateTypes: ["minor", "patch"],

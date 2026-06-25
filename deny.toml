@@ -1,8 +1,8 @@
-# cargo-deny policy for mdkb — supply-chain + license + advisory gate.
+# cargo-deny policy for mkb — supply-chain + license + advisory gate.
 #
 # Run locally / in CI for BOTH workspaces (the desktop app is a separate workspace):
 #   cargo deny check
-#   cargo deny --manifest-path app/mdkb-tauri/src-tauri/Cargo.toml check --config deny.toml
+#   cargo deny --manifest-path app/mkb-tauri/src-tauri/Cargo.toml check --config deny.toml
 #
 # This single config is shared by both so the policy can't drift between them.
 

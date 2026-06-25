@@ -7,7 +7,7 @@ tags: [doc, readme]
 
 The desktop app is the human surface — a full **editor and graph browser**, not just a viewer. It
 connects either way: a **local** vault (auto-starting its daemon) or a **remote** TCP daemon
-`host:port` + token, and renders through the shared `mdkb-view` layer.
+`host:port` + token, and renders through the shared `mkb-view` layer.
 
 <table>
   <tr>
@@ -22,8 +22,8 @@ connects either way: a **local** vault (auto-starting its daemon) or a **remote*
   </tr>
 </table>
 
-- **Desktop app** (`app/mdkb-tauri`) — a Tauri app over the same crates, and a full **editor and
-  graph browser**, not just a viewer. It exposes the same three block modes as the rest of mdkb —
+- **Desktop app** (`app/mkb-tauri`) — a Tauri app over the same crates, and a full **editor and
+  graph browser**, not just a viewer. It exposes the same three block modes as the rest of mkb —
   **Read** (the clean document, embeds dissolved inline), **Blocks** (the working view, each embed
   an editable card), and **Edit** (raw Markdown with the `[[` picker and **Carve selection**).
 
@@ -31,8 +31,8 @@ connects either way: a **local** vault (auto-starting its daemon) or a **remote*
   type `[[` for a link/embed picker), a **"references in this block" legend** under the editor
   (the outgoing links/embeds, each resolved to its target with a preview, click-to-open) and
   **hover previews** on rendered wikilink chips, **New / Add / Carve / Delete** block actions, a
-  force-directed **knowledge graph** (nodes sized by link degree, computed in `mdkb-core`
+  force-directed **knowledge graph** (nodes sized by link degree, computed in `mkb-core`
   `link_graph`), **linked references** per block, a **lock toggle** that pins a block as
   **human-only** (🔒 — AI clients can read it but not modify it), and **Settings** (choose a Local
   vault or a Remote daemon `host:port` + token, no env vars; restart the daemon). Point Settings → Local vault at your vault and
-  go; see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
+  go; see [`app/mkb-tauri/README.md`](./app/mkb-tauri/README.md).

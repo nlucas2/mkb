@@ -7,15 +7,15 @@ tags: [doc, architecture]
 
 ```
         ┌───────────── thin clients (transport/presentation only) ─────────────┐
-        │   mdkb-cli          mdkb-mcp (MCP)          mdkb-tauri (app)         │
+        │   mkb-cli          mkb-mcp (MCP)          mkb-tauri (app)         │
         └────────────────────────────────┬─────────────────────────────────────┘
-                                         │  mdkb-protocol (JSON over local socket / TCP+token)
+                                         │  mkb-protocol (JSON over local socket / TCP+token)
                                 ┌────────▼────────┐
-                                │      mdkbd      │  single writer: owns watcher + index + writes
-                                │  mdkb-core::Service (capability-gated dispatch)
+                                │      mkbd      │  single writer: owns watcher + index + writes
+                                │  mkb-core::Service (capability-gated dispatch)
                                 └────────┬────────┘
                           ┌──────────────┼───────────────┐
-                       mdkb-core     mdkb-index        mdkb-embed
+                       mkb-core     mkb-index        mkb-embed
                     (block model,    (SQLite+FTS5+    (Embedder trait,
                      DAG, render,     vectors, RRF)    bundled/local/remote)
                      tags, search)
@@ -26,6 +26,6 @@ tags: [doc, architecture]
   fail-closed).
 - Clients **auto-start a detached daemon** for a local vault (it outlives the app) or connect to
   a remote one. Connection config is shared (`ConnectionConfig` / `connect` / `ensure_daemon` in
-  `mdkb-protocol`). The single-daemon-per-vault and idle-shutdown guarantees are below.
-- **Presentation is shared** via `mdkb-view` (Markdown→HTML, wikilink/embed decoration, XSS
+  `mkb-protocol`). The single-daemon-per-vault and idle-shutdown guarantees are below.
+- **Presentation is shared** via `mkb-view` (Markdown→HTML, wikilink/embed decoration, XSS
   neutralization), so any current or future UI renders through the exact same path.

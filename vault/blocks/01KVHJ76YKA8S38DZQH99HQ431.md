@@ -1,9 +1,9 @@
 ---
-title: Run mdkb with Docker
-tags: [mdkb, run, docker]
+title: Run mkb with Docker
+tags: [mkb, run, docker]
 ---
 
-# Run mdkb with Docker
+# Run mkb with Docker
 
 Run the daemon in a container, mounting your vault.
 
@@ -13,6 +13,6 @@ Run the daemon in a container, mounting your vault.
 docker run --rm \
   -v "$PWD/my-vault:/vault" \
   -p 7820:7820 \
-  ghcr.io/example/mdkb:latest \
-  mdkbd --vault /vault --listen 0.0.0.0:7820 --token "$MDKB_TOKEN"
+  ghcr.io/example/mkb:latest \
+  mkbd --vault /vault --listen 0.0.0.0:7820 --token "$MKB_TOKEN"
 ```

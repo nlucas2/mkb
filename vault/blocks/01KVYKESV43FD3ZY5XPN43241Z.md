@@ -3,7 +3,7 @@ title: "CONTRIBUTING page"
 tags: [doc, doc-page, dev]
 ---
 
-# Contributing to mdkb
+# Contributing to mkb
 
 This page collects the developer-facing material — workspace layout, internals, and the roadmap.
 Two companions go deeper: the design rationale is in
@@ -43,5 +43,5 @@ the daemon for you — but it matters when hacking on the daemon or deploying it
 
 These are mandatory; the canonical copy is [`AGENTS.md`](../AGENTS.md), generated from the same
 blocks. In short: every behavior change ships with tests, `cargo test --workspace` is green before
-every commit, shared behavior lives in `mdkb-core` (clients stay thin), and generated docs are
+every commit, shared behavior lives in `mkb-core` (clients stay thin), and generated docs are
 edited at their **source block** then re-exported — never by hand.

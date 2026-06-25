@@ -4,7 +4,7 @@ title: Don't repeat — reuse
 
 # Don't repeat — reuse
 
-The whole point of mdkb is to write a thing **once** and reuse it everywhere.
+The whole point of mkb is to write a thing **once** and reuse it everywhere.
 
 1. Before adding something new, **search** for it.
 2. If it exists, **embed** or **link** it instead of copying.

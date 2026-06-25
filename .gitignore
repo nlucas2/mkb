@@ -2,20 +2,20 @@
 /target/
 **/*.rs.bk
 
-# mdkb local index (never synced, never committed)
-.mdkb/
+# mkb local index (never synced, never committed)
+.mkb/
 
 # Tauri / node (added in later phases)
 app/**/node_modules/
 app/**/dist/
 src-tauri/target/
 # Staged daemon binary bundled into the desktop app at build time (rebuilt, never committed)
-app/mdkb-tauri/src-tauri/bin/
+app/mkb-tauri/src-tauri/bin/
 
-# Desktop-app icons are GENERATED from the single source app/mdkb-tauri/app-icon.png via
+# Desktop-app icons are GENERATED from the single source app/mkb-tauri/app-icon.png via
 # `cargo tauri icon` (wired into the bundling builds). The whole icons/ tree is build output —
 # only the source (app-icon.png + assets/) is tracked.
-app/mdkb-tauri/src-tauri/icons/
+app/mkb-tauri/src-tauri/icons/
 
 # OS
 .DS_Store
@@ -23,5 +23,5 @@ Thumbs.db
 
 # fastembed's local model cache (created by ad-hoc runs; never committed)
 .fastembed_cache/
-app/mdkb-tauri/src-tauri/target/
-app/mdkb-tauri/src-tauri/gen/
+app/mkb-tauri/src-tauri/target/
+app/mkb-tauri/src-tauri/gen/

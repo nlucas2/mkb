@@ -4,12 +4,12 @@ tags: [doc, doc-page, user]
 updated: 2026-06-25T10:04:10Z
 ---
 
-# mdkb — Markdown Knowledge Base
+# mkb — Markdown Knowledge Base
 
 ![[01KVHJ76YA04MEM71HNDB7RT8G]]
 
 <p align="center">
-  <a href="docs/images/app-read.png"><img src="docs/images/app-read.png" alt="mdkb desktop app in Read mode — a block with its embeds dissolved into one clean Markdown document" width="820"></a>
+  <a href="docs/images/app-read.png"><img src="docs/images/app-read.png" alt="mkb desktop app in Read mode — a block with its embeds dissolved into one clean Markdown document" width="820"></a>
 </p>
 
 > Status: core re-architected to the file-per-block model (parser, transclusion, index,
@@ -31,7 +31,7 @@ Per-OS commands for these are in **[Installing the prerequisites](docs/PREREQS.m
 
 ![[01KVKJ1R428705BJD9VXGTRSDV]]
 
-## Using mdkb
+## Using mkb
 
 ![[01KVM9NPR2HD2WF05GKFYNMG68]]
 
@@ -53,7 +53,7 @@ Optional, advanced setup — choosing a different embedder and managing multiple
 
 ## Development
 
-Hacking on mdkb? The workspace layout, the daemon/client internals, and the roadmap are in
+Hacking on mkb? The workspace layout, the daemon/client internals, and the roadmap are in
 **[`docs/CONTRIBUTING.md`](./docs/CONTRIBUTING.md)**; the mandatory working rules are in
 **[`AGENTS.md`](./AGENTS.md)**, the design in **[`docs/architecture.md`](./docs/architecture.md)**,
 and the on-disk format in **[`docs/SPEC.md`](./docs/SPEC.md)**.

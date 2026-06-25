@@ -3,9 +3,9 @@ title: "INSTALL page"
 tags: [doc, doc-page]
 ---
 
-# Installing mdkb
+# Installing mkb
 
-mdkb is one product — the desktop app a human uses, the daemon it drives, the CLI, and the MCP
+mkb is one product — the desktop app a human uses, the daemon it drives, the CLI, and the MCP
 server an AI client connects to. They install together; the container is the only daemon-only case.
 
 For the quickest complete install, just run `just install` from a checkout (see

@@ -3,7 +3,7 @@ name: PR Check
 # Pre-merge gate for pull requests (including Renovate's dependency-update PRs). It runs the exact
 # same validation as the release pipeline by invoking the Dockerfile `tester` stage via
 # `--target tester` — the single source of truth for "does this pass": `cargo test --workspace`,
-# the docs-as-data export drift check (`mdkb export vault --check`), and `cargo deny` over both
+# the docs-as-data export drift check (`mkb export vault --check`), and `cargo deny` over both
 # the main workspace and the desktop-app workspace. `Build and Release` calls the very same stage
 # (see build.yaml's "Run tests" step), so the PR gate and the release gate cannot drift apart — to
 # change what "passing" means, edit the `tester` stage once and both pick it up.
@@ -19,7 +19,7 @@ on:
 
 env:
   REGISTRY: ${{ vars.REGISTRY }}
-  IMAGE: ${{ vars.REGISTRY }}/${{ vars.REGISTRY_ORG }}/mdkb
+  IMAGE: ${{ vars.REGISTRY }}/${{ vars.REGISTRY_ORG }}/mkb
 
 jobs:
   test:

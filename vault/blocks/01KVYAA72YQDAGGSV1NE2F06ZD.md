@@ -6,7 +6,7 @@ tags: [doc, readme]
 ### Where your vault lives — local or synced
 
 Your vault is just a directory of Markdown files, and **the Markdown is the only thing you ever
-need to sync**. How you store it is independent of how you installed mdkb.
+need to sync**. How you store it is independent of how you installed mkb.
 
 - **Local (single machine).** Point a client at any folder (`--vault ~/notes`) and go. Nothing
   else to set up.
@@ -22,5 +22,5 @@ live database between machines (the classic cause of cloud-sync corruption); eac
 own index for the same notes. **Never sync the index** — only the Markdown.
 
 If a sync tool produces a conflict copy (e.g. `note (conflicted copy).md` /
-`note-DESKTOP-AB12.md`), mdkb deliberately **doesn't index it** and surfaces it via `mdkb conflicts
+`note-DESKTOP-AB12.md`), mkb deliberately **doesn't index it** and surfaces it via `mkb conflicts
 --vault <dir>` so you can merge it back in plain text. The Markdown stays authoritative.

@@ -1,34 +1,34 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/mdkb-core",
-    "crates/mdkb-index",
-    "crates/mdkb-embed",
-    "crates/mdkb-protocol",
-    "crates/mdkb-view",
-    "crates/mdkbd",
-    "crates/mdkb-mcp",
-    "crates/mdkb-cli",
+    "crates/mkb-core",
+    "crates/mkb-index",
+    "crates/mkb-embed",
+    "crates/mkb-protocol",
+    "crates/mkb-view",
+    "crates/mkbd",
+    "crates/mkb-mcp",
+    "crates/mkb-cli",
 ]
 
 # The Tauri desktop shell is an independent workspace: it needs the Tauri toolchain and
 # system webview, which aren't required to build/test the core product. Excluded so
 # `cargo test --workspace` stays green everywhere.
-exclude = ["app/mdkb-tauri/src-tauri"]
+exclude = ["app/mkb-tauri/src-tauri"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/nlucas2/mdkb"
+repository = "https://github.com/nlucas2/mkb"
 rust-version = "1.80"
 
 [workspace.dependencies]
-mdkb-core = { path = "crates/mdkb-core" }
-mdkb-index = { path = "crates/mdkb-index" }
-mdkb-embed = { path = "crates/mdkb-embed" }
-mdkb-protocol = { path = "crates/mdkb-protocol" }
-mdkb-view = { path = "crates/mdkb-view" }
+mkb-core = { path = "crates/mkb-core" }
+mkb-index = { path = "crates/mkb-index" }
+mkb-embed = { path = "crates/mkb-embed" }
+mkb-protocol = { path = "crates/mkb-protocol" }
+mkb-view = { path = "crates/mkb-view" }
 regex = "1"
 ulid = "1"
 time = { version = "0.3", features = ["formatting", "parsing"] }

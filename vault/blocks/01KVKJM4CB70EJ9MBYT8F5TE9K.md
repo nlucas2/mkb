@@ -5,7 +5,7 @@ tags: [doc, architecture]
 
 ## The index is a rebuildable cache
 
-A SQLite index (`mdkb-index`, behind the `Index` trait) caches everything for fast reads and is
+A SQLite index (`mkb-index`, behind the `Index` trait) caches everything for fast reads and is
 **always reconstructable** by scanning `blocks/`:
 
 - a row per block (id, title, content, kind metadata, tags, lineage/breadcrumb, embedding);

@@ -1,9 +1,9 @@
-# mdkb task runner. Install `just` (https://github.com/casey/just), then run e.g. `just`,
+# mkb task runner. Install `just` (https://github.com/casey/just), then run e.g. `just`,
 # `just install`, or `just install-cli`. These recipes are the canonical build steps — the same
 # icon → stage → bundle sequence the release CI runs — so "build it from source" is one command on
 # any platform (notably arm64 Linux, which has no prebuilt desktop release).
 
-app_dir := "app/mdkb-tauri"
+app_dir := "app/mkb-tauri"
 tauri   := app_dir / "src-tauri"
 
 # `just` runs recipe lines with `sh` on every OS, but Windows has no `sh`. Point Windows at
@@ -33,10 +33,10 @@ check:
 
 # Installs the WHOLE product: the headless tools (daemon, CLI, MCP server) onto ~/.cargo/bin,
 # AND the desktop app (macOS → /Applications, Linux → .deb or a ~/.local AppImage, Windows → the
-# NSIS installer, silent). mdkb is one product — the app, the daemon it drives, and the MCP server
+# NSIS installer, silent). mkb is one product — the app, the daemon it drives, and the MCP server
 # an AI client uses all share one vault — so the default install gives you all of it. (Daemon-only
 # is the container deployment, not this.)
-# Install mdkb — the desktop app, the daemon, the CLI, and the MCP server.
+# Install mkb — the desktop app, the daemon, the CLI, and the MCP server.
 [unix]
 install: install-cli app
     #!/usr/bin/env bash
@@ -45,18 +45,18 @@ install: install-cli app
     case "$(uname -s)" in
       Darwin)
         # Quit a running copy first — macOS blocks overwriting a running .app bundle.
-        if osascript -e 'application "mdkb" is running' 2>/dev/null | grep -q true; then
-          echo "Quitting running mdkb…"
-          osascript -e 'quit app "mdkb"' 2>/dev/null || true
+        if osascript -e 'application "mkb" is running' 2>/dev/null | grep -q true; then
+          echo "Quitting running mkb…"
+          osascript -e 'quit app "mkb"' 2>/dev/null || true
           for _ in $(seq 1 20); do
-            osascript -e 'application "mdkb" is running' 2>/dev/null | grep -q true || break
+            osascript -e 'application "mkb" is running' 2>/dev/null | grep -q true || break
             sleep 0.25
           done
         fi
-        echo "Installing mdkb.app → /Applications"
-        rm -rf /Applications/mdkb.app
-        cp -R "$bundle/macos/mdkb.app" /Applications/mdkb.app
-        echo "Done. Launch mdkb from /Applications (or Spotlight)." ;;
+        echo "Installing mkb.app → /Applications"
+        rm -rf /Applications/mkb.app
+        cp -R "$bundle/macos/mkb.app" /Applications/mkb.app
+        echo "Done. Launch mkb from /Applications (or Spotlight)." ;;
       Linux)
         deb=$(ls "$bundle"/deb/*.deb 2>/dev/null | head -1 || true)
         appimage=$(ls "$bundle"/appimage/*.AppImage 2>/dev/null | head -1 || true)
@@ -65,9 +65,9 @@ install: install-cli app
           sudo dpkg -i "$deb"
         elif [ -n "$appimage" ]; then
           mkdir -p "$HOME/.local/bin"
-          cp "$appimage" "$HOME/.local/bin/mdkb.AppImage"
-          chmod +x "$HOME/.local/bin/mdkb.AppImage"
-          echo "Installed → ~/.local/bin/mdkb.AppImage (ensure ~/.local/bin is on PATH)."
+          cp "$appimage" "$HOME/.local/bin/mkb.AppImage"
+          chmod +x "$HOME/.local/bin/mkb.AppImage"
+          echo "Installed → ~/.local/bin/mkb.AppImage (ensure ~/.local/bin is on PATH)."
         else
           echo "Built bundles are under $bundle — install the .deb or .AppImage manually."
         fi ;;
@@ -85,7 +85,7 @@ install: install-cli app
     if ($setup) {
       Write-Host "Running $($setup.Name) (silent)"
       Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
-      Write-Host 'Installed mdkb (Start menu).'
+      Write-Host 'Installed mkb (Start menu).'
     } else {
       Write-Host "Built installer is under $bundle\nsis — run the *-setup.exe to install."
     }
@@ -93,9 +93,9 @@ install: install-cli app
 # Semantic search is compiled in, so this works offline. The desktop app is added by `just install`.
 # Install the headless tools (daemon + CLI + MCP) onto ~/.cargo/bin.
 install-cli:
-    cargo install --path crates/mdkbd
-    cargo install --path crates/mdkb-cli
-    cargo install --path crates/mdkb-mcp
+    cargo install --path crates/mkbd
+    cargo install --path crates/mkb-cli
+    cargo install --path crates/mkb-mcp
 
 # icons/ is git-ignored build output that `tauri::generate_context!` needs to compile.
 # Generate the desktop app's icon set from the tracked source app-icon.png.
@@ -117,25 +117,25 @@ icons:
 [unix]
 app: icons
     # Release binaries the app bundles as resources (auto-start daemon + in-app "install CLI tools").
-    cargo build --release -p mdkbd -p mdkb-cli -p mdkb-mcp
+    cargo build --release -p mkbd -p mkb-cli -p mkb-mcp
     mkdir -p {{tauri}}/bin
-    # The CLI is staged as `mdkb-cli` so the bundle glob is unambiguous; it installs as `mdkb`.
-    cp target/release/mdkbd   {{tauri}}/bin/mdkbd
-    cp target/release/mdkb-mcp {{tauri}}/bin/mdkb-mcp
-    cp target/release/mdkb     {{tauri}}/bin/mdkb-cli
+    # The CLI is staged as `mkb-cli` so the bundle glob is unambiguous; it installs as `mkb`.
+    cp target/release/mkbd   {{tauri}}/bin/mkbd
+    cp target/release/mkb-mcp {{tauri}}/bin/mkb-mcp
+    cp target/release/mkb     {{tauri}}/bin/mkb-cli
     cd {{tauri}} && cargo tauri build
 
 [windows]
 app: icons
     #!powershell
-    # Release binaries the app bundles as resources; the bundle globs (bin/mdkbd*, …) match the .exe.
+    # Release binaries the app bundles as resources; the bundle globs (bin/mkbd*, …) match the .exe.
     $ErrorActionPreference = 'Stop'
-    cargo build --release -p mdkbd -p mdkb-cli -p mdkb-mcp
+    cargo build --release -p mkbd -p mkb-cli -p mkb-mcp
     New-Item -ItemType Directory -Force -Path '{{tauri}}/bin' | Out-Null
-    Copy-Item 'target/release/mdkbd.exe'    '{{tauri}}/bin/mdkbd.exe'    -Force
-    Copy-Item 'target/release/mdkb-mcp.exe' '{{tauri}}/bin/mdkb-mcp.exe' -Force
-    # The CLI is staged as `mdkb-cli` so the bundle glob is unambiguous; it installs as `mdkb`.
-    Copy-Item 'target/release/mdkb.exe'     '{{tauri}}/bin/mdkb-cli.exe' -Force
+    Copy-Item 'target/release/mkbd.exe'    '{{tauri}}/bin/mkbd.exe'    -Force
+    Copy-Item 'target/release/mkb-mcp.exe' '{{tauri}}/bin/mkb-mcp.exe' -Force
+    # The CLI is staged as `mkb-cli` so the bundle glob is unambiguous; it installs as `mkb`.
+    Copy-Item 'target/release/mkb.exe'     '{{tauri}}/bin/mkb-cli.exe' -Force
     Set-Location '{{tauri}}'
     cargo tauri build
 
@@ -153,8 +153,8 @@ app-dev: icons
 
 # Regenerate the docs that are generated from vault blocks (docs-as-data), then verify no drift.
 docs:
-    cargo run -p mdkb-cli -- export --vault vault
-    cargo run -p mdkb-cli -- export --vault vault --check
+    cargo run -p mkb-cli -- export --vault vault
+    cargo run -p mkb-cli -- export --vault vault --check
 
 # Remove build artifacts (both workspaces).
 clean:

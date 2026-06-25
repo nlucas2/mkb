@@ -6,7 +6,7 @@ tags: [doc, contributing, concept]
 ### One shared core — the UI and the MCP server must never diverge ⚠️ critical
 
 - **All** behavior that touches blocks, transclusion, indexing, search, parsing, or writes
-  **MUST** live in `mdkb-core` and be invoked through the daemon/core API.
+  **MUST** live in `mkb-core` and be invoked through the daemon/core API.
 - The **MCP server, the Tauri UI, and the CLI are thin clients.** They contain
   presentation and transport glue only — **never** a second copy of core behavior.
 - Rationale: if the same surface is implemented twice, a bug can be fixed in one and left

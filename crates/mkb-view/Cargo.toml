@@ -1,0 +1,12 @@
+[package]
+name = "mkb-view"
+description = "Shared presentation layer for mkb UIs: Markdown -> HTML rendering and page templating."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mkb-core.workspace = true
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

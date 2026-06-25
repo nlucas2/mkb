@@ -1,10 +1,10 @@
 ---
-title: Welcome to mdkb
+title: Welcome to mkb
 ---
 
-# Welcome to mdkb
+# Welcome to mkb
 
-This vault is a **live demo**: it documents mdkb *using* mdkb. Every page here is a
+This vault is a **live demo**: it documents mkb *using* mkb. Every page here is a
 block, and the one you're reading is composed from real transclusions.
 
 ![[01KVHJ76YA04MEM71HNDB7RT8G]]
@@ -18,7 +18,7 @@ block, and the one you're reading is composed from real transclusions.
 - [[01KVHJ76YFPY8M8T0KM0DKNEK5]]
 - [[01KVHJ76YGV0RD3NTDGWGYC9C1]]
 
-## Run mdkb
+## Run mkb
 
 Each guide reuses the **same** shared note (edit it once, every guide updates):
 

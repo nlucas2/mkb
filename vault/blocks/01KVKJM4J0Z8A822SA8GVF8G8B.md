@@ -3,13 +3,13 @@ title: Architecture page
 tags: [doc, doc-page, dev]
 ---
 
-# mdkb architecture — the file-per-block model
+# mkb architecture — the file-per-block model
 
-This is the architecture of mdkb's **file-per-block** model: how knowledge is stored, composed,
+This is the architecture of mkb's **file-per-block** model: how knowledge is stored, composed,
 indexed, and served. The exact on-disk format is in [`SPEC.md`](./SPEC.md); how to run and use
-mdkb is in the [`README`](../README.md).
+mkb is in the [`README`](../README.md).
 
-## What mdkb is
+## What mkb is
 
 ![[01KVHJ76YA04MEM71HNDB7RT8G]]
 

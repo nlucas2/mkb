@@ -4,19 +4,19 @@ tags: [skill, skill-page, dedup, cli]
 ---
 
 ---
-name: mdkb-dedup
+name: mkb-dedup
 description: >-
-    Keep an mdkb knowledge base deduplicated and well-connected from the CLI: audit for
+    Keep an mkb knowledge base deduplicated and well-connected from the CLI: audit for
     near-duplicate facts and orphans with search + backlinks, and consolidate duplicates by ULID
     (repoint embedders, then delete) without breaking links. Read when tidying or merging knowledge
-    in an mdkb vault.
+    in an mkb vault.
 user-invocable: false
 ---
 
-# Keeping an mdkb vault deduplicated (CLI)
+# Keeping an mkb vault deduplicated (CLI)
 
-A healthy mdkb vault states each fact in **exactly one block**. This skill is the *repair* side
-of that discipline — finding and consolidating duplication that already exists — using the `mdkb`
+A healthy mkb vault states each fact in **exactly one block**. This skill is the *repair* side
+of that discipline — finding and consolidating duplication that already exists — using the `mkb`
 CLI (a thin client of the daemon). **It is human-driven: you audit and propose; you do not delete
 or merge knowledge on your own** (see the rule below). Audit instruments: `search` (find
 near-dupes in 2-3 phrasings), `backlinks <id>` (find orphans, and check before repointing/

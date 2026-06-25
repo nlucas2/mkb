@@ -7,7 +7,7 @@ updated: 2026-06-25T09:25:20Z
 ## The MCP tool surface
 
 The surface is deliberately lean. By default the server exposes a small **core** set; set
-`MDKB_MCP_TOOLS=full` to also expose the **advanced** structural/metadata tools. Diagnostics
+`MKB_MCP_TOOLS=full` to also expose the **advanced** structural/metadata tools. Diagnostics
 (`graph`, `stats`, `conflicts`, `rebuild`) and the narrow read primitives are CLI-only - they
 don't earn a slot in an agent's per-turn tool budget.
 
@@ -28,7 +28,7 @@ body; a stale/ambiguous anchor is a safe no-op); `append_to_block` (id, text - a
 fresh line); `set_tags` (id, tags - replaces managed tags); `link_blocks` (source_id, target_id,
 embed - embed=true is `![[...]]`, auto-downgraded to a reference on a cycle); `delete_block`.
 
-**Advanced (opt-in, `MDKB_MCP_TOOLS=full`):** `set_props` (id, props - **add or update** the named
+**Advanced (opt-in, `MKB_MCP_TOOLS=full`):** `set_props` (id, props - **add or update** the named
 `key`/`value` properties, preserving the rest; open-ended searchable metadata like
 `source`/`verified`/`confidence`), `unset_props` (id, keys - remove the named properties,
 preserving the rest), `carve_block` (parent_id, body - split a child out), `flatten_block`

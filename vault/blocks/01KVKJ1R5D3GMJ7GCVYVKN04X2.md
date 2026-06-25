@@ -25,20 +25,20 @@ unsigned `.dmg` triggers.
 
 ```sh
 # 1. headless tools (daemon + CLI + MCP) → ~/.cargo/bin
-cargo install --git https://github.com/<you>/mdkb mdkbd mdkb-cli mdkb-mcp
+cargo install --git https://github.com/<you>/mkb mkbd mkb-cli mkb-mcp
 
 # 2. desktop app — build the bundle from a checkout
-git clone https://github.com/<you>/mdkb && cd mdkb
-cargo build --release -p mdkbd -p mdkb-cli -p mdkb-mcp        # bins the app bundles
-mkdir -p app/mdkb-tauri/src-tauri/bin
-cp target/release/mdkbd    app/mdkb-tauri/src-tauri/bin/mdkbd
-cp target/release/mdkb-mcp app/mdkb-tauri/src-tauri/bin/mdkb-mcp
-cp target/release/mdkb     app/mdkb-tauri/src-tauri/bin/mdkb-cli
-cd app/mdkb-tauri && cargo tauri icon app-icon.png           # generate the icon set
+git clone https://github.com/<you>/mkb && cd mkb
+cargo build --release -p mkbd -p mkb-cli -p mkb-mcp        # bins the app bundles
+mkdir -p app/mkb-tauri/src-tauri/bin
+cp target/release/mkbd    app/mkb-tauri/src-tauri/bin/mkbd
+cp target/release/mkb-mcp app/mkb-tauri/src-tauri/bin/mkb-mcp
+cp target/release/mkb     app/mkb-tauri/src-tauri/bin/mkb-cli
+cd app/mkb-tauri && cargo tauri icon app-icon.png           # generate the icon set
 cd src-tauri && cargo tauri build                            # bundle → target/release/bundle/
 ```
 
-Then install the bundle for your OS (macOS → copy `mdkb.app` to `/Applications`; Linux → the
+Then install the bundle for your OS (macOS → copy `mkb.app` to `/Applications`; Linux → the
 `.deb`/`.AppImage`; Windows → run the `*-setup.exe`). `just install` automates exactly this — these
 are its steps spelled out.
 
@@ -49,13 +49,13 @@ embedded model out and falls back to the offline hash embedder.)
 **Zero-to-running:**
 
 ```sh
-echo "# First note" | mdkb create --vault ~/notes --title "First note"   # auto-starts the daemon
-mdkb search --vault ~/notes "first note"
+echo "# First note" | mkb create --vault ~/notes --title "First note"   # auto-starts the daemon
+mkb search --vault ~/notes "first note"
 ```
 
 The first command may take a few seconds while the daemon starts and indexes; later ones are warm.
 
-**Contributors** run the interfaces straight from the tree (`cargo run -p mdkb-cli -- … --vault …`,
+**Contributors** run the interfaces straight from the tree (`cargo run -p mkb-cli -- … --vault …`,
 `cargo test --workspace`). The index is keyed by the vault's absolute path and lives outside the
-vault, so it never pollutes your checkout; set `CARGO_TARGET_DIR=~/.cache/mdkb-target` to move
+vault, so it never pollutes your checkout; set `CARGO_TARGET_DIR=~/.cache/mkb-target` to move
 build output out of the tree too.

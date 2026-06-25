@@ -1,9 +1,9 @@
 ---
-title: Run mdkb with Docker Compose
-tags: [mdkb, run, docker]
+title: Run mkb with Docker Compose
+tags: [mkb, run, docker]
 ---
 
-# Run mdkb with Docker Compose
+# Run mkb with Docker Compose
 
 A reproducible local stack.
 
@@ -11,9 +11,9 @@ A reproducible local stack.
 
 ```yaml
 services:
-  mdkbd:
-    image: ghcr.io/example/mdkb:latest
-    command: ["mdkbd", "--vault", "/vault", "--listen", "0.0.0.0:7820", "--token", "${MDKB_TOKEN}"]
+  mkbd:
+    image: ghcr.io/example/mkb:latest
+    command: ["mkbd", "--vault", "/vault", "--listen", "0.0.0.0:7820", "--token", "${MKB_TOKEN}"]
     volumes:
       - ./my-vault:/vault
     ports:

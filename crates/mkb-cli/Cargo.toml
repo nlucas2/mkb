@@ -1,0 +1,17 @@
+[package]
+name = "mkb-cli"
+description = "mkb CLI: thin client for scripting and manual operations."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mkb"
+path = "src/main.rs"
+
+[dependencies]
+mkb-core.workspace = true
+mkb-protocol.workspace = true
+clap.workspace = true

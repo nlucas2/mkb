@@ -1,0 +1,15 @@
+[package]
+name = "mkb-index"
+description = "SQLite (FTS5 + sqlite-vec) implementation of the mkb-core Index trait."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mkb-core.workspace = true
+rusqlite = { workspace = true, features = ["bundled"] }
+
+[dev-dependencies]
+tempfile.workspace = true

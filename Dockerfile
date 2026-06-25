@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1
 #
-# Multi-stage build for mdkb.
+# Multi-stage build for mkb.
 #
 # Stages:
 #   tester     – runs `cargo test --workspace` (native, on the build platform)
-#   builder    – compiles mdkbd (onnx embedder + vendored model, compiled in) + the client
+#   builder    – compiles mkbd (onnx embedder + vendored model, compiled in) + the client
 #                binaries for the *target* platform (built natively / cross-compiled, so the
 #                statically-linked onnxruntime resolves per-arch without cross-link pain)
 #   runtime    – minimal Debian base for the daemon image
-#   final      – the mdkbd daemon image shipped to the registry (per --platform)
+#   final      – the mkbd daemon image shipped to the registry (per --platform)
 #   artifacts  – a scratch stage holding just the binaries, extracted to the host
 #                via `docker buildx build --target artifacts --output type=local`
 #
@@ -35,25 +35,25 @@ WORKDIR /app
 # Cache the dependency download separately from source: copy every crate manifest, stub
 # their sources, fetch, then bring in the real source.
 COPY Cargo.toml Cargo.lock ./
-COPY crates/mdkb-core/Cargo.toml     crates/mdkb-core/
-COPY crates/mdkb-index/Cargo.toml    crates/mdkb-index/
-COPY crates/mdkb-embed/Cargo.toml    crates/mdkb-embed/
-COPY crates/mdkb-protocol/Cargo.toml crates/mdkb-protocol/
-COPY crates/mdkb-view/Cargo.toml     crates/mdkb-view/
-COPY crates/mdkbd/Cargo.toml         crates/mdkbd/
-COPY crates/mdkb-mcp/Cargo.toml      crates/mdkb-mcp/
-COPY crates/mdkb-cli/Cargo.toml      crates/mdkb-cli/
+COPY crates/mkb-core/Cargo.toml     crates/mkb-core/
+COPY crates/mkb-index/Cargo.toml    crates/mkb-index/
+COPY crates/mkb-embed/Cargo.toml    crates/mkb-embed/
+COPY crates/mkb-protocol/Cargo.toml crates/mkb-protocol/
+COPY crates/mkb-view/Cargo.toml     crates/mkb-view/
+COPY crates/mkbd/Cargo.toml         crates/mkbd/
+COPY crates/mkb-mcp/Cargo.toml      crates/mkb-mcp/
+COPY crates/mkb-cli/Cargo.toml      crates/mkb-cli/
 RUN mkdir -p \
-        crates/mdkb-core/src crates/mdkb-index/src crates/mdkb-embed/src \
-        crates/mdkb-protocol/src crates/mdkb-view/src \
-        crates/mdkbd/src crates/mdkb-mcp/src crates/mdkb-cli/src \
+        crates/mkb-core/src crates/mkb-index/src crates/mkb-embed/src \
+        crates/mkb-protocol/src crates/mkb-view/src \
+        crates/mkbd/src crates/mkb-mcp/src crates/mkb-cli/src \
     && touch \
-        crates/mdkb-core/src/lib.rs crates/mdkb-index/src/lib.rs \
-        crates/mdkb-embed/src/lib.rs crates/mdkb-protocol/src/lib.rs \
-        crates/mdkb-view/src/lib.rs \
-    && for b in mdkbd mdkb-mcp mdkb-cli; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
-    && mkdir -p crates/mdkb-embed/examples \
-    && echo 'fn main(){}' > crates/mdkb-embed/examples/footprint.rs
+        crates/mkb-core/src/lib.rs crates/mkb-index/src/lib.rs \
+        crates/mkb-embed/src/lib.rs crates/mkb-protocol/src/lib.rs \
+        crates/mkb-view/src/lib.rs \
+    && for b in mkbd mkb-mcp mkb-cli; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
+    && mkdir -p crates/mkb-embed/examples \
+    && echo 'fn main(){}' > crates/mkb-embed/examples/footprint.rs
 RUN cargo fetch
 
 COPY . .
@@ -75,8 +75,8 @@ RUN curl -sSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${C
       | tar -xz -C /usr/local/bin --strip-components=1 \
         "cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny" \
     && cargo deny check \
-    && cargo fetch --manifest-path app/mdkb-tauri/src-tauri/Cargo.toml \
-    && cargo deny --manifest-path app/mdkb-tauri/src-tauri/Cargo.toml check --config deny.toml
+    && cargo fetch --manifest-path app/mkb-tauri/src-tauri/Cargo.toml \
+    && cargo deny --manifest-path app/mkb-tauri/src-tauri/Cargo.toml check --config deny.toml
 
 
 # -- amd64 builder (native on the runner) -------------------------------------
@@ -87,34 +87,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
-COPY crates/mdkb-core/Cargo.toml     crates/mdkb-core/
-COPY crates/mdkb-index/Cargo.toml    crates/mdkb-index/
-COPY crates/mdkb-embed/Cargo.toml    crates/mdkb-embed/
-COPY crates/mdkb-protocol/Cargo.toml crates/mdkb-protocol/
-COPY crates/mdkb-view/Cargo.toml     crates/mdkb-view/
-COPY crates/mdkbd/Cargo.toml         crates/mdkbd/
-COPY crates/mdkb-mcp/Cargo.toml      crates/mdkb-mcp/
-COPY crates/mdkb-cli/Cargo.toml      crates/mdkb-cli/
+COPY crates/mkb-core/Cargo.toml     crates/mkb-core/
+COPY crates/mkb-index/Cargo.toml    crates/mkb-index/
+COPY crates/mkb-embed/Cargo.toml    crates/mkb-embed/
+COPY crates/mkb-protocol/Cargo.toml crates/mkb-protocol/
+COPY crates/mkb-view/Cargo.toml     crates/mkb-view/
+COPY crates/mkbd/Cargo.toml         crates/mkbd/
+COPY crates/mkb-mcp/Cargo.toml      crates/mkb-mcp/
+COPY crates/mkb-cli/Cargo.toml      crates/mkb-cli/
 RUN mkdir -p \
-        crates/mdkb-core/src crates/mdkb-index/src crates/mdkb-embed/src \
-        crates/mdkb-protocol/src crates/mdkb-view/src \
-        crates/mdkbd/src crates/mdkb-mcp/src crates/mdkb-cli/src \
+        crates/mkb-core/src crates/mkb-index/src crates/mkb-embed/src \
+        crates/mkb-protocol/src crates/mkb-view/src \
+        crates/mkbd/src crates/mkb-mcp/src crates/mkb-cli/src \
     && touch \
-        crates/mdkb-core/src/lib.rs crates/mdkb-index/src/lib.rs \
-        crates/mdkb-embed/src/lib.rs crates/mdkb-protocol/src/lib.rs \
-        crates/mdkb-view/src/lib.rs \
-    && for b in mdkbd mdkb-mcp mdkb-cli; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
-    && mkdir -p crates/mdkb-embed/examples \
-    && echo 'fn main(){}' > crates/mdkb-embed/examples/footprint.rs
+        crates/mkb-core/src/lib.rs crates/mkb-index/src/lib.rs \
+        crates/mkb-embed/src/lib.rs crates/mkb-protocol/src/lib.rs \
+        crates/mkb-view/src/lib.rs \
+    && for b in mkbd mkb-mcp mkb-cli; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
+    && mkdir -p crates/mkb-embed/examples \
+    && echo 'fn main(){}' > crates/mkb-embed/examples/footprint.rs
 RUN cargo fetch
 
 COPY . .
 # Build the daemon (semantic search baked in by default) and the thin clients in one shot. onnx is
 # a daemon-only feature, so it never leaks into the clients' dep tree.
-RUN cargo build --release -p mdkbd -p mdkb-cli -p mdkb-mcp
+RUN cargo build --release -p mkbd -p mkb-cli -p mkb-mcp
 # Normalise output location so final/artifacts stages are arch-agnostic.
-RUN mkdir -p /out && cp target/release/mdkbd target/release/mdkb \
-        target/release/mdkb-mcp /out/
+RUN mkdir -p /out && cp target/release/mkbd target/release/mkb \
+        target/release/mkb-mcp /out/
 
 
 # -- arm64 builder (cross-compiled, native speed on the runner) ----------------
@@ -134,34 +134,34 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
-COPY crates/mdkb-core/Cargo.toml     crates/mdkb-core/
-COPY crates/mdkb-index/Cargo.toml    crates/mdkb-index/
-COPY crates/mdkb-embed/Cargo.toml    crates/mdkb-embed/
-COPY crates/mdkb-protocol/Cargo.toml crates/mdkb-protocol/
-COPY crates/mdkb-view/Cargo.toml     crates/mdkb-view/
-COPY crates/mdkbd/Cargo.toml         crates/mdkbd/
-COPY crates/mdkb-mcp/Cargo.toml      crates/mdkb-mcp/
-COPY crates/mdkb-cli/Cargo.toml      crates/mdkb-cli/
+COPY crates/mkb-core/Cargo.toml     crates/mkb-core/
+COPY crates/mkb-index/Cargo.toml    crates/mkb-index/
+COPY crates/mkb-embed/Cargo.toml    crates/mkb-embed/
+COPY crates/mkb-protocol/Cargo.toml crates/mkb-protocol/
+COPY crates/mkb-view/Cargo.toml     crates/mkb-view/
+COPY crates/mkbd/Cargo.toml         crates/mkbd/
+COPY crates/mkb-mcp/Cargo.toml      crates/mkb-mcp/
+COPY crates/mkb-cli/Cargo.toml      crates/mkb-cli/
 RUN mkdir -p \
-        crates/mdkb-core/src crates/mdkb-index/src crates/mdkb-embed/src \
-        crates/mdkb-protocol/src crates/mdkb-view/src \
-        crates/mdkbd/src crates/mdkb-mcp/src crates/mdkb-cli/src \
+        crates/mkb-core/src crates/mkb-index/src crates/mkb-embed/src \
+        crates/mkb-protocol/src crates/mkb-view/src \
+        crates/mkbd/src crates/mkb-mcp/src crates/mkb-cli/src \
     && touch \
-        crates/mdkb-core/src/lib.rs crates/mdkb-index/src/lib.rs \
-        crates/mdkb-embed/src/lib.rs crates/mdkb-protocol/src/lib.rs \
-        crates/mdkb-view/src/lib.rs \
-    && for b in mdkbd mdkb-mcp mdkb-cli; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
-    && mkdir -p crates/mdkb-embed/examples \
-    && echo 'fn main(){}' > crates/mdkb-embed/examples/footprint.rs
+        crates/mkb-core/src/lib.rs crates/mkb-index/src/lib.rs \
+        crates/mkb-embed/src/lib.rs crates/mkb-protocol/src/lib.rs \
+        crates/mkb-view/src/lib.rs \
+    && for b in mkbd mkb-mcp mkb-cli; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
+    && mkdir -p crates/mkb-embed/examples \
+    && echo 'fn main(){}' > crates/mkb-embed/examples/footprint.rs
 RUN cargo fetch --target aarch64-unknown-linux-gnu
 
 COPY . .
 RUN cargo build --release --target aarch64-unknown-linux-gnu \
-        -p mdkbd -p mdkb-cli -p mdkb-mcp
+        -p mkbd -p mkb-cli -p mkb-mcp
 RUN mkdir -p /out && cp \
-        target/aarch64-unknown-linux-gnu/release/mdkbd \
-        target/aarch64-unknown-linux-gnu/release/mdkb \
-        target/aarch64-unknown-linux-gnu/release/mdkb-mcp \
+        target/aarch64-unknown-linux-gnu/release/mkbd \
+        target/aarch64-unknown-linux-gnu/release/mkb \
+        target/aarch64-unknown-linux-gnu/release/mkb-mcp \
         /out/
 
 
@@ -182,14 +182,14 @@ WORKDIR /vault
 RUN chgrp -R 0 /vault \
     && chmod -R g=u /vault
 ENV HOME=/vault
-# Vault is mounted here; the local index is created under $MDKB_VAULT/.mdkb at runtime.
-ENV MDKB_VAULT=/vault
+# Vault is mounted here; the local index is created under $MKB_VAULT/.mkb at runtime.
+ENV MKB_VAULT=/vault
 EXPOSE 7820
 # Default to a non-root uid; the actual uid is overridable at deploy time and the image works
 # with any uid (its gid 0 membership grants access to the prepared paths).
 USER 65534:0
-ENTRYPOINT ["mdkbd"]
-# Token must be provided at runtime (e.g. from a Secret) via $MDKB_TOKEN.
+ENTRYPOINT ["mkbd"]
+# Token must be provided at runtime (e.g. from a Secret) via $MKB_TOKEN.
 CMD ["--vault", "/vault", "--listen", "0.0.0.0:7820"]
 
 
@@ -198,22 +198,22 @@ CMD ["--vault", "/vault", "--listen", "0.0.0.0:7820"]
 # The runtime base inherits the target platform; the heavy compile already happened
 # natively in the matching builder stage.
 FROM runtime AS final-amd64
-COPY --from=builder-amd64 /out/mdkbd /usr/local/bin/mdkbd
+COPY --from=builder-amd64 /out/mkbd /usr/local/bin/mkbd
 
 FROM runtime AS final-arm64
-COPY --from=builder-arm64 /out/mdkbd /usr/local/bin/mdkbd
+COPY --from=builder-arm64 /out/mkbd /usr/local/bin/mkbd
 
 
 # -- Release payload, for extraction to the host (not runnable images) --------
 # The daemon + clients. The daemon is self-contained — the embedding model is compiled into the
-# binary — so no model files ship alongside. The container image is just one way to run mdkbd;
+# binary — so no model files ship alongside. The container image is just one way to run mkbd;
 # these tarballs are the native way (Linux service / CLI).
 FROM scratch AS artifacts-amd64
-COPY --from=builder-amd64 /out/mdkbd   /mdkbd
-COPY --from=builder-amd64 /out/mdkb     /mdkb
-COPY --from=builder-amd64 /out/mdkb-mcp /mdkb-mcp
+COPY --from=builder-amd64 /out/mkbd   /mkbd
+COPY --from=builder-amd64 /out/mkb     /mkb
+COPY --from=builder-amd64 /out/mkb-mcp /mkb-mcp
 
 FROM scratch AS artifacts-arm64
-COPY --from=builder-arm64 /out/mdkbd   /mdkbd
-COPY --from=builder-arm64 /out/mdkb     /mdkb
-COPY --from=builder-arm64 /out/mdkb-mcp /mdkb-mcp
+COPY --from=builder-arm64 /out/mkbd   /mkbd
+COPY --from=builder-arm64 /out/mkb     /mkb
+COPY --from=builder-arm64 /out/mkb-mcp /mkb-mcp

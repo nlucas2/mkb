@@ -9,8 +9,8 @@ title: Embeds vs references
 - **Reference** — `[[id]]` is a navigable link, not inlined.
 
 Only embeds expand at render time, so only embeds can form a cycle. If an embed
-would loop, mdkb **downgrades it to a reference** automatically.
+would loop, mkb **downgrades it to a reference** automatically.
 
 A target can be a block id **or a title**: for example, this links to [[Blocks are files]] by its
-title, and mdkb resolves it to that block just as an id would. Ids are stable across renames, so
+title, and mkb resolves it to that block just as an id would. Ids are stable across renames, so
 the picker defaults to them — but a title works too.

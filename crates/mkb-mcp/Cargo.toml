@@ -1,0 +1,22 @@
+[package]
+name = "mkb-mcp"
+description = "mkb MCP server: exposes the mkb tools over MCP (stdio), as a thin client of the daemon."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mkb-mcp"
+path = "src/main.rs"
+
+[dependencies]
+mkb-core = { workspace = true, features = ["serde"] }
+mkb-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

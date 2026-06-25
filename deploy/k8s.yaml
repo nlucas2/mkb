@@ -1,24 +1,24 @@
-# mdkb daemon — k3s/Kubernetes deployment.
+# mkb daemon — k3s/Kubernetes deployment.
 #
-# Single-writer invariant: exactly one mdkbd owns the vault + index, so the Deployment is
+# Single-writer invariant: exactly one mkbd owns the vault + index, so the Deployment is
 # pinned to replicas: 1 with a Recreate strategy. The Markdown vault is the source of
 # truth (a PVC you sync/seed); the local index is rebuildable and lives on the same volume
-# under .mdkb. The network listener is token-gated (fail-closed); the token comes from a
+# under .mkb. The network listener is token-gated (fail-closed); the token comes from a
 # Secret. Adjust namespace/storageClass/host to your cluster.
 #
 # NOTE: create the token Secret out-of-band, e.g.:
-#   kubectl -n mdkb create secret generic mdkb-token --from-literal=token=$(openssl rand -hex 24)
+#   kubectl -n mkb create secret generic mkb-token --from-literal=token=$(openssl rand -hex 24)
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: mdkb
+  name: mkb
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: mdkb-vault
-  namespace: mdkb
+  name: mkb-vault
+  namespace: mkb
 spec:
   accessModes: ["ReadWriteOnce"]
   resources:
@@ -29,29 +29,29 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mdkbd
-  namespace: mdkb
-  labels: { app: mdkbd }
+  name: mkbd
+  namespace: mkb
+  labels: { app: mkbd }
 spec:
   replicas: 1                 # single writer — never scale this up
   strategy:
     type: Recreate           # never run two daemons against one vault/index
   selector:
-    matchLabels: { app: mdkbd }
+    matchLabels: { app: mkbd }
   template:
     metadata:
-      labels: { app: mdkbd }
+      labels: { app: mkbd }
     spec:
       containers:
-        - name: mdkbd
-          image: mdkb:latest        # build from ./Dockerfile and push to your registry
+        - name: mkbd
+          image: mkb:latest        # build from ./Dockerfile and push to your registry
           imagePullPolicy: IfNotPresent
           args: ["--vault", "/vault", "--listen", "0.0.0.0:7820"]
           env:
-            - name: MDKB_TOKEN
+            - name: MKB_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: mdkb-token
+                  name: mkb-token
                   key: token
           ports:
             - name: api
@@ -69,19 +69,19 @@ spec:
       volumes:
         - name: vault
           persistentVolumeClaim:
-            claimName: mdkb-vault
+            claimName: mkb-vault
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: mdkbd
-  namespace: mdkb
+  name: mkbd
+  namespace: mkb
 spec:
   # LoadBalancer gives the daemon a stable address clients (desktop app / CLI / MCP) can reach.
   # Works with any LB implementation (cloud, MetalLB, or k3s's built-in ServiceLB). Switch
   # to ClusterIP if you only consume it in-cluster.
   type: LoadBalancer
-  selector: { app: mdkbd }
+  selector: { app: mkbd }
   ports:
     - name: api
       port: 7820

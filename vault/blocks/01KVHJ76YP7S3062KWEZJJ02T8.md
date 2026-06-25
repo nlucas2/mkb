@@ -1,9 +1,9 @@
 ---
-title: Use mdkb from an AI client (MCP)
-tags: [mdkb, run, mcp]
+title: Use mkb from an AI client (MCP)
+tags: [mkb, run, mcp]
 ---
 
-# Use mdkb from an AI client (MCP)
+# Use mkb from an AI client (MCP)
 
 ![[01KVHJ76YHDWY5PMB7GY9B0WP6]]
 

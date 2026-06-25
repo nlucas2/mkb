@@ -6,28 +6,28 @@ title: "README: Install — prebuilt"
 
 **The installer — easiest.** Download the installer for your OS from the **Releases** page and run
 it: `.dmg` (macOS), `…-setup.exe` (Windows), `.deb` or `.AppImage` (Linux). It installs the
-desktop app together with the `mdkb` CLI and the `mdkb-mcp` server.
+desktop app together with the `mkb` CLI and the `mkb-mcp` server.
 
 **Portable binaries — no installer, or for servers.** Each platform also ships one archive that is
-the **complete product**: the desktop app plus every binary — `mdkb` (CLI), `mdkbd` (daemon),
-`mdkb-mcp` (MCP server) — with offline semantic search **built into the daemon**, so it works out
+the **complete product**: the desktop app plus every binary — `mkb` (CLI), `mkbd` (daemon),
+`mkb-mcp` (MCP server) — with offline semantic search **built into the daemon**, so it works out
 of the box. Extract it wherever you keep apps and put that folder on your `PATH`:
 
 ```sh
 # macOS / Linux (example: macos-arm64 — also: linux-amd64, linux-arm64-headless)
-mkdir -p ~/Applications/mdkb
-tar -xzf mdkb-<version>-macos-arm64.tar.gz -C ~/Applications/mdkb
+mkdir -p ~/Applications/mkb
+tar -xzf mkb-<version>-macos-arm64.tar.gz -C ~/Applications/mkb
 # add it to PATH permanently (pick your shell's rc file)
-echo 'export PATH="$HOME/Applications/mdkb:$PATH"' >> ~/.zprofile   # or ~/.bashrc / ~/.profile
+echo 'export PATH="$HOME/Applications/mkb:$PATH"' >> ~/.zprofile   # or ~/.bashrc / ~/.profile
 exec "$SHELL" -l        # reload, then:
-mdkb --help
+mkb --help
 ```
 
-On Windows, download `mdkb-<version>-windows-amd64.zip` and extract it; add that folder to your
-`PATH` (Settings → *Edit environment variables*) to run `mdkb` from any terminal.
+On Windows, download `mkb-<version>-windows-amd64.zip` and extract it; add that folder to your
+`PATH` (Settings → *Edit environment variables*) to run `mkb` from any terminal.
 
 The daemon has the embedding model **compiled in**, so semantic search works with zero config and
-nothing extra to place. (Advanced: to use a different/newer model, set `MDKB_BUNDLED_MODEL_DIR` to
+nothing extra to place. (Advanced: to use a different/newer model, set `MKB_BUNDLED_MODEL_DIR` to
 a model directory on disk — it overrides the compiled-in one.)
 
 **Prebuilt availability.** The complete archive (with the desktop app) is published for

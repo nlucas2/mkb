@@ -3,10 +3,10 @@ title: SPEC page
 tags: [spec, doc, doc-page]
 ---
 
-# mdkb vault on-disk format (SPEC)
+# mkb vault on-disk format (SPEC)
 
-> This file documents the on-disk format of an mdkb vault so a raw directory can always be
-> turned back into knowledge — with or without the mdkb app. The Markdown files are the
+> This file documents the on-disk format of an mkb vault so a raw directory can always be
+> turned back into knowledge — with or without the mkb app. The Markdown files are the
 > **single source of truth**; everything else (the index) is a rebuildable cache.
 
 ![[01KVKBYMBJBHAY7E3R317ANN3P]]

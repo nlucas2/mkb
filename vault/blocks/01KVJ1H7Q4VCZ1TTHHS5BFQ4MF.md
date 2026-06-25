@@ -4,16 +4,16 @@ tags: [skill, skill-page, mcp]
 ---
 
 ---
-name: mdkb-knowledge
+name: mkb-knowledge
 description: >-
-    How to use mdkb (a personal Markdown knowledge base) well via the MCP server: the DRY search-before-write process, embed-vs-reference, search operators, safe
-    writes, and the MCP tool surface. Read before storing or retrieving knowledge in an mdkb vault.
+    How to use mkb (a personal Markdown knowledge base) well via the MCP server: the DRY search-before-write process, embed-vs-reference, search operators, safe
+    writes, and the MCP tool surface. Read before storing or retrieving knowledge in an mkb vault.
 user-invocable: false
 ---
 
-# Using mdkb as a knowledge base
+# Using mkb as a knowledge base
 
-mdkb is **a tool, not an agent**: plain Markdown files are the single source of truth, and
+mkb is **a tool, not an agent**: plain Markdown files are the single source of truth, and
 you reach them through the MCP server's tools. Knowledge is stored as **blocks** - one file each. Your job: keep the KB a
 clean, deduplicated, well-connected graph, not a pile of near-duplicate notes.
 

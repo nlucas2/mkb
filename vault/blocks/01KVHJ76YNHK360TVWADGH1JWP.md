@@ -1,9 +1,9 @@
 ---
-title: Run mdkb on Kubernetes
-tags: [mdkb, run, k8s]
+title: Run mkb on Kubernetes
+tags: [mkb, run, k8s]
 ---
 
-# Run mdkb on Kubernetes
+# Run mkb on Kubernetes
 
 Deploy the daemon as a single writer (`replicas: 1`) with a ClusterIP Service.
 
@@ -13,21 +13,21 @@ Deploy the daemon as a single writer (`replicas: 1`) with a ClusterIP Service.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mdkbd
+  name: mkbd
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: mdkbd
+      app: mkbd
   template:
     metadata:
       labels:
-        app: mdkbd
+        app: mkbd
     spec:
       containers:
-        - name: mdkbd
-          image: ghcr.io/example/mdkb:latest
-          args: ["mdkbd", "--vault", "/vault", "--listen", "0.0.0.0:7820"]
+        - name: mkbd
+          image: ghcr.io/example/mkb:latest
+          args: ["mkbd", "--vault", "/vault", "--listen", "0.0.0.0:7820"]
           ports:
             - containerPort: 7820
           volumeMounts:
@@ -36,5 +36,5 @@ spec:
       volumes:
         - name: vault
           persistentVolumeClaim:
-            claimName: mdkb-vault
+            claimName: mkb-vault
 ```

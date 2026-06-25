@@ -1,9 +1,9 @@
 {
-  "//": "Example MCP client config for mdkb. Point your MCP-capable agent at mdkb-mcp; it speaks MCP over stdio and auto-starts the daemon for the given vault.",
+  "//": "Example MCP client config for mkb. Point your MCP-capable agent at mkb-mcp; it speaks MCP over stdio and auto-starts the daemon for the given vault.",
   "mcpServers": {
-    "mdkb": {
-      "command": "mdkb-mcp",
-      "args": ["--vault", "/path/to/your/mdkb-vault"]
+    "mkb": {
+      "command": "mkb-mcp",
+      "args": ["--vault", "/path/to/your/mkb-vault"]
     }
   }
 }

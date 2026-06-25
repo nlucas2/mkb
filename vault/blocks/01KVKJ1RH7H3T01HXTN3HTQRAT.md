@@ -12,13 +12,13 @@ updated: 2026-06-25T19:57:26Z
   extraction, CLI render.
 - **Phase 2 — Index + watcher** *(done)*: SQLite (FTS5) index, keyword + tag/lang-filtered
   search, `SyncEngine` reconcile. *(Live `notify` event loop lands with the daemon.)*
-- **Phase 3 — Semantic search** *(done)*: local embeddings (`mdkb-embed`: offline hash +
+- **Phase 3 — Semantic search** *(done)*: local embeddings (`mkb-embed`: offline hash +
   optional `fastembed` ONNX), vector storage, hybrid keyword+vector ranking.
 - **Phase 4 — Daemon + API** *(done)*: shared `Service` API + `RequestContext`, JSON wire
-  protocol, `mdkbd` with a local-socket server and `notify` file watcher.
-- **Phase 5 — MCP server** *(done)*: `mdkb-mcp` exposes search / get / render / upsert /
+  protocol, `mkbd` with a local-socket server and `notify` file watcher.
+- **Phase 5 — MCP server** *(done)*: `mkb-mcp` exposes search / get / render / upsert /
   link / stats as MCP tools over stdio; thin client of the daemon.
-- **Phase 6 — Frontends** *(done)*: shared `mdkb-view` (Markdown→HTML) and a `app/mdkb-tauri`
+- **Phase 6 — Frontends** *(done)*: shared `mkb-view` (Markdown→HTML) and a `app/mkb-tauri`
   desktop shell over that view layer.
 - **Phase 7 — Sync UX & packaging** *(done)*: cloud-sync conflict detection (surfaced, not
   indexed), index `rebuild`, token-gated TCP transport for cluster deploy, Dockerfile + k8s
@@ -35,18 +35,18 @@ updated: 2026-06-25T19:57:26Z
   graceful exit.
   - *Investigation note:* a "window flashes then disappears" symptom on Windows was reproduced
     only by a pathological harness (force-killing the app + daemon + webview every ~2s, which
-    races the shared WebView2 profile lock at `%LOCALAPPDATA%\dev.mdkb.desktop\EBWebView`).
+    races the shared WebView2 profile lock at `%LOCALAPPDATA%\dev.mkb.desktop\EBWebView`).
     Normal launches, and relaunch-after-crash, were reliable in testing. The file log above is
     what would let us confirm/deny this in the wild rather than theorize.
 - **Knowledge graph — distinguish transclusions from references** *(planned)*: the graph
   currently collapses `[[refs]]` and `![[transclusions]]` into one undifferentiated edge type.
-  Tag each edge with its kind in `mdkb-core` (`link_graph`) so the two are distinguishable in
+  Tag each edge with its kind in `mkb-core` (`link_graph`) so the two are distinguishable in
   the data, then render them differently in the UI (e.g. solid edges for `![[transclusions]]`,
   dashed for `[[refs]]`) so a reused/embedded block reads visibly different from a plain link.
 - **Desktop app — light theme** *(planned)*: the app currently ships a single dark theme. Add a
   light theme and a theme toggle (follow the OS appearance by default), so the editor, graph, and
   block cards read well on a light background. Until then, the README screenshots are dark-only.
-- **Limited inline HTML rendering** *(planned)*: `mdkb-view` currently neutralises **all** raw HTML
+- **Limited inline HTML rendering** *(planned)*: `mkb-view` currently neutralises **all** raw HTML
   in a block (re-emitting it as escaped text) to close the stored-XSS vector — safe, but it means
   hand-written layout (image grids, captions, `<details>`) shows as literal markup. Move to a
   GitHub-style **sanitize-by-allowlist** model: parse the HTML and keep a vetted set of tags and
@@ -63,11 +63,11 @@ updated: 2026-06-25T19:57:26Z
   `SearchHit` (e.g. a `MatchSource` flag), then surface it in the clients — so a `"quoted phrase"`
   search visibly distinguishes an exact phrase/keyword hit from a result that only the semantic
   side returned. Useful for trusting precision queries and for debugging ranking.
-- **Block-display view — CLI `mdkb show`** *(core + MCP done; CLI planned)*: the
+- **Block-display view — CLI `mkb show`** *(core + MCP done; CLI planned)*: the
   page-as-a-human-sees-it read — breadcrumb lineage upward, rendered children downward, backlinks,
   and metadata in one call — now exists in core as `Service::page_view` and is exactly what the MCP
   `get_block` returns (it absorbed the old separate render / backlinks / links tools). The CLI still
-  lacks a single equivalent (it has separate `get` / `render` / `backlinks` / `links`); add `mdkb
+  lacks a single equivalent (it has separate `get` / `render` / `backlinks` / `links`); add `mkb
   show` over the same `page_view` so the human CLI gets the same one-call page read.
 - **Partial-edit primitives** *(mostly done)*: `replace_in_block` (exact string swap),
   `append_to_block` (add to the end), and a line-range source view (`get_block_source_range`,
@@ -77,18 +77,18 @@ updated: 2026-06-25T19:57:26Z
 - **Opt-in root-biased search** *(planned)*: `--roots-only` and `--root-bias <w>` as post-fusion
   knobs in the service (never the default, never inside RRF), for navigational queries that want
   the page rather than its embedded fragments.
-- **`mdkb daemon restart` / `stop` (CLI)** *(planned)*: only the desktop app can currently
+- **`mkb daemon restart` / `stop` (CLI)** *(planned)*: only the desktop app can currently
   restart the local daemon (Settings -> Restart daemon); from the CLI there is no way to replace a
-  running detached daemon, so after rebuilding `mdkbd` a stale daemon (e.g. the one bundled in the
+  running detached daemon, so after rebuilding `mkbd` a stale daemon (e.g. the one bundled in the
   installed app, which owns the vault socket) keeps serving the old binary and new requests fail
-  with "unknown variant". Add a `mdkb daemon restart`/`stop` command (shut down + let the next
+  with "unknown variant". Add a `mkb daemon restart`/`stop` command (shut down + let the next
   client respawn) to fix the dev loop without the GUI.
 
 - **Concurrent-edit safety — the app's full-overwrite write is a lost-update vector** *(live-refresh shipped; lost-update prevention planned)*:
   the desktop app reads a block into its editor and saves with a **whole-body overwrite**
   (`save_block`), with no check that the block is unchanged since it was read. If an AI client (or
   the CLI) edits that block via MCP between the app opening it and the human saving, the app's save
-  silently **clobbers** the external edits — the classic lost-update problem, made likely by mdkb's
+  silently **clobbers** the external edits — the classic lost-update problem, made likely by mkb's
   whole premise of a human and an AI co-editing one vault. The rendered body is *not* itself stale
   (the app re-fetches on navigation/reload) and the daemon remains the single writer, so this is a
   *concerning surface, not an active bug*. Close it with **optimistic concurrency**: stamp each read
@@ -112,6 +112,6 @@ updated: 2026-06-25T19:57:26Z
   `cargo` recipes and ships `[windows]` variants of `install` / `app` / `icons` / `app-dev` (the
   macOS/Linux recipes are unchanged), but that path was **written from macOS and has not run on a
   Windows host**. Verify on Windows that `just install` builds the bundles and launches the NSIS
-  `*-setup.exe`, that the staged `bin\*.exe` names match the Tauri `resources` globs (`bin/mdkbd*`,
-  `bin/mdkb-mcp*`, `bin/mdkb-cli*`), and that the plain recipes run under `powershell.exe`; fix path
+  `*-setup.exe`, that the staged `bin\*.exe` names match the Tauri `resources` globs (`bin/mkbd*`,
+  `bin/mkb-mcp*`, `bin/mkb-cli*`), and that the plain recipes run under `powershell.exe`; fix path
   separators / quoting as needed.

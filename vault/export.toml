@@ -8,11 +8,11 @@
 # banner is spliced after it.
 
 [[doc]]
-path  = "docs/skills/mdkb-cli/SKILL.md"
+path  = "docs/skills/mkb-cli/SKILL.md"
 block = "CLI skill page"
 
 [[doc]]
-path  = "docs/skills/mdkb-knowledge/SKILL.md"
+path  = "docs/skills/mkb-knowledge/SKILL.md"
 block = "MCP skill page"
 
 # The on-disk format spec, authored as blocks.
@@ -52,16 +52,16 @@ block = "CONTRIBUTING page"
 
 # Dedup/audit skill — repair side of the search-before-write discipline.
 [[doc]]
-path  = "docs/skills/mdkb-dedup/SKILL.md"
+path  = "docs/skills/mkb-dedup/SKILL.md"
 block = "Dedup skill page (CLI)"
 
 [[doc]]
-path  = "docs/skills/mdkb-dedup-mcp/SKILL.md"
+path  = "docs/skills/mkb-dedup-mcp/SKILL.md"
 block = "Dedup skill page (MCP)"
 
 # Docs-as-data workflow skill — edit the source block, re-export.
 [[doc]]
-path  = "docs/skills/mdkb-docs-as-data/SKILL.md"
+path  = "docs/skills/mkb-docs-as-data/SKILL.md"
 block = "Docs-as-data skill page"
 
 # Optional, advanced configuration (the README links here).

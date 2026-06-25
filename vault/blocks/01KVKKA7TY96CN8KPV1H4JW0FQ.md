@@ -4,18 +4,18 @@ tags: [skill, skill-page, dedup, mcp]
 ---
 
 ---
-name: mdkb-dedup-mcp
+name: mkb-dedup-mcp
 description: >-
-    Keep an mdkb knowledge base deduplicated and well-connected via the MCP server: audit for
+    Keep an mkb knowledge base deduplicated and well-connected via the MCP server: audit for
     near-duplicate facts and orphans with search + backlinks, and consolidate duplicates by ULID
     (repoint embedders, then delete) without breaking links. Read when tidying or merging knowledge
-    in an mdkb vault.
+    in an mkb vault.
 user-invocable: false
 ---
 
-# Keeping an mdkb vault deduplicated (MCP)
+# Keeping an mkb vault deduplicated (MCP)
 
-A healthy mdkb vault states each fact in **exactly one block**. This skill is the *repair* side
+A healthy mkb vault states each fact in **exactly one block**. This skill is the *repair* side
 of that discipline — finding and consolidating duplication that already exists — using the MCP
 tools. **It is human-driven: you audit and propose; you do not delete or merge knowledge on your
 own** (see the rule below). Audit instruments: `search` (find near-dupes in 2-3 phrasings),

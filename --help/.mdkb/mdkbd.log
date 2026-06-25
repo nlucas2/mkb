@@ -1,0 +1,7 @@
+mdkbd: vault=--help db=--help/.mdkb/index.db socket=--help/.mdkb/mdkbd.sock
+mdkbd: embedder source = Bundled
+mdkb-embed: no bundled model found (set MDKB_BUNDLED_MODEL_DIR or place a `model/` dir beside the binary); using offline hash embedder
+mdkbd: initial reconcile — 0 changed, 0 removed
+mdkbd: idle self-shutdown armed (120s)
+mdkbd: listening on --help/.mdkb/mdkbd.sock
+mdkbd: idle for 120.029s (>= 120s) and no interactive lease; shutting down --help/.mdkb/mdkbd.sock

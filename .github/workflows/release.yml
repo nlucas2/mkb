@@ -40,8 +40,8 @@ jobs:
     env:
       # ── macOS code signing + notarization (OPTIONAL) ───────────────────────────────
       # Without these, the macOS app is ad-hoc signed and NOT notarized, so a browser
-      # download triggers Gatekeeper's misleading "mdkb.app is damaged and can't be opened"
-      # on Apple Silicon (the only workaround is `xattr -dr com.apple.quarantine mdkb.app`).
+      # download triggers Gatekeeper's misleading "mkb.app is damaged and can't be opened"
+      # on Apple Silicon (the only workaround is `xattr -dr com.apple.quarantine mkb.app`).
       # To ship a cleanly-openable app, enroll in the Apple Developer Program ($99/yr),
       # create a "Developer ID Application" certificate, and add these GitHub Actions secrets
       # (Settings → Secrets and variables → Actions):
@@ -99,13 +99,13 @@ jobs:
         shell: bash
         run: |
           set -eux
-          cargo build --release --target ${{ matrix.target }} -p mdkbd
-          cargo build --release --target ${{ matrix.target }} -p mdkb-cli -p mdkb-mcp
+          cargo build --release --target ${{ matrix.target }} -p mkbd
+          cargo build --release --target ${{ matrix.target }} -p mkb-cli -p mkb-mcp
 
       # ── Desktop app (Tauri) ──────────────────────────────────────────────────────
       # Build the desktop app + its native installer on this same runner so the release for
       # this platform is complete on its own. The app bundles the onnx daemon built above as a
-      # resource (src-tauri/bin/mdkbd[.exe], matching bundle.resources "bin/mdkbd*"), so
+      # resource (src-tauri/bin/mkbd[.exe], matching bundle.resources "bin/mkbd*"), so
       # local-vault auto-start works from the installed app. The frontend is static (../ui), so
       # no Node toolchain is needed.
       - name: Install Linux desktop bundling deps
@@ -151,30 +151,30 @@ jobs:
         run: |
           set -eux
           # Generate the icon set from the single tracked source (icons/ is git-ignored build output).
-          ( cd app/mdkb-tauri && cargo tauri icon app-icon.png )
+          ( cd app/mkb-tauri && cargo tauri icon app-icon.png )
           D="target/${{ matrix.target }}/release"
-          mkdir -p app/mdkb-tauri/src-tauri/bin
-          # Stage the daemon (local-vault auto-start) + the CLI tools (mdkb + mdkb-mcp) as app
+          mkdir -p app/mkb-tauri/src-tauri/bin
+          # Stage the daemon (local-vault auto-start) + the CLI tools (mkb + mkb-mcp) as app
           # resources, so the in-app "Install command-line tools" action can expose them on PATH.
-          # The CLI is staged as `mdkb-cli` to keep the bundle glob unambiguous; it installs as `mdkb`.
+          # The CLI is staged as `mkb-cli` to keep the bundle glob unambiguous; it installs as `mkb`.
           case "${{ runner.os }}" in
             Windows)
-              cp "$D/mdkbd.exe"   app/mdkb-tauri/src-tauri/bin/mdkbd.exe
-              cp "$D/mdkb-mcp.exe" app/mdkb-tauri/src-tauri/bin/mdkb-mcp.exe
-              cp "$D/mdkb.exe"     app/mdkb-tauri/src-tauri/bin/mdkb-cli.exe
+              cp "$D/mkbd.exe"   app/mkb-tauri/src-tauri/bin/mkbd.exe
+              cp "$D/mkb-mcp.exe" app/mkb-tauri/src-tauri/bin/mkb-mcp.exe
+              cp "$D/mkb.exe"     app/mkb-tauri/src-tauri/bin/mkb-cli.exe
               BUNDLES=nsis ;;
             macOS)
-              cp "$D/mdkbd"   app/mdkb-tauri/src-tauri/bin/mdkbd
-              cp "$D/mdkb-mcp" app/mdkb-tauri/src-tauri/bin/mdkb-mcp
-              cp "$D/mdkb"     app/mdkb-tauri/src-tauri/bin/mdkb-cli
+              cp "$D/mkbd"   app/mkb-tauri/src-tauri/bin/mkbd
+              cp "$D/mkb-mcp" app/mkb-tauri/src-tauri/bin/mkb-mcp
+              cp "$D/mkb"     app/mkb-tauri/src-tauri/bin/mkb-cli
               BUNDLES=app,dmg ;;
             *)
-              cp "$D/mdkbd"   app/mdkb-tauri/src-tauri/bin/mdkbd
-              cp "$D/mdkb-mcp" app/mdkb-tauri/src-tauri/bin/mdkb-mcp
-              cp "$D/mdkb"     app/mdkb-tauri/src-tauri/bin/mdkb-cli
+              cp "$D/mkbd"   app/mkb-tauri/src-tauri/bin/mkbd
+              cp "$D/mkb-mcp" app/mkb-tauri/src-tauri/bin/mkb-mcp
+              cp "$D/mkb"     app/mkb-tauri/src-tauri/bin/mkb-cli
               BUNDLES=deb,appimage ;;
           esac
-          ( cd app/mdkb-tauri/src-tauri && \
+          ( cd app/mkb-tauri/src-tauri && \
             cargo tauri build --target ${{ matrix.target }} --bundles "$BUNDLES" )
 
       - name: Collect desktop installer(s)
@@ -184,27 +184,27 @@ jobs:
           set -eux
           V="${{ github.ref_name }}"
           N="${{ matrix.name }}"
-          B="app/mdkb-tauri/src-tauri/target/${{ matrix.target }}/release/bundle"
+          B="app/mkb-tauri/src-tauri/target/${{ matrix.target }}/release/bundle"
           sum() { ( sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" ) > "$1.sha256"; }
           case "${{ runner.os }}" in
             Windows)
-              cp "$B"/nsis/*-setup.exe "mdkb-$V-$N-setup.exe"
-              sum "mdkb-$V-$N-setup.exe" ;;
+              cp "$B"/nsis/*-setup.exe "mkb-$V-$N-setup.exe"
+              sum "mkb-$V-$N-setup.exe" ;;
             macOS)
-              cp "$B"/dmg/*.dmg "mdkb-$V-$N.dmg"
-              sum "mdkb-$V-$N.dmg" ;;
+              cp "$B"/dmg/*.dmg "mkb-$V-$N.dmg"
+              sum "mkb-$V-$N.dmg" ;;
             *)
-              cp "$B"/appimage/*.AppImage "mdkb-$V-$N.AppImage"
-              cp "$B"/deb/*.deb           "mdkb-$V-$N.deb"
-              sum "mdkb-$V-$N.AppImage"
-              sum "mdkb-$V-$N.deb" ;;
+              cp "$B"/appimage/*.AppImage "mkb-$V-$N.AppImage"
+              cp "$B"/deb/*.deb           "mkb-$V-$N.deb"
+              sum "mkb-$V-$N.AppImage"
+              sum "mkb-$V-$N.deb" ;;
           esac
 
-      # ONE complete archive per platform: the desktop app + every CLI (mdkb, mdkb-mcp)
+      # ONE complete archive per platform: the desktop app + every CLI (mkb, mkb-mcp)
       # + the daemon. The daemon is self-contained — the embedding model is compiled into the
       # binary — so no model files ship alongside. Every download is the full product, never a
-      # split. macOS ships the .app; Linux ships the runnable .AppImage (a bare mdkb-tauri binary
-      # needs system webkit, the AppImage bundles it); Windows ships mdkb-tauri.exe.
+      # split. macOS ships the .app; Linux ships the runnable .AppImage (a bare mkb-tauri binary
+      # needs system webkit, the AppImage bundles it); Windows ships mkb-tauri.exe.
       - name: Assemble complete archive (Unix)
         if: runner.os != 'Windows' && matrix.headless != true
         shell: bash
@@ -212,18 +212,18 @@ jobs:
           set -eux
           V="${{ github.ref_name }}"; N="${{ matrix.name }}"
           D="target/${{ matrix.target }}/release"
-          B="app/mdkb-tauri/src-tauri/target/${{ matrix.target }}/release/bundle"
+          B="app/mkb-tauri/src-tauri/target/${{ matrix.target }}/release/bundle"
           rm -rf dist && mkdir -p dist
-          cp "$D/mdkbd" "$D/mdkb" "$D/mdkb-mcp" dist/
+          cp "$D/mkbd" "$D/mkb" "$D/mkb-mcp" dist/
           for lib in "$D"/libonnxruntime*.so* "$D"/libonnxruntime*.dylib; do
             [ -e "$lib" ] && cp "$lib" dist/ || true
           done
           if [ "${{ runner.os }}" = "macOS" ]; then
             cp -R "$B"/macos/*.app dist/
           else
-            cp "$B"/appimage/*.AppImage "dist/mdkb.AppImage"
+            cp "$B"/appimage/*.AppImage "dist/mkb.AppImage"
           fi
-          A="mdkb-$V-$N.tar.gz"
+          A="mkb-$V-$N.tar.gz"
           tar -C dist -czf "$A" .
           ( sha256sum "$A" 2>/dev/null || shasum -a 256 "$A" ) > "$A.sha256"
 
@@ -237,11 +237,11 @@ jobs:
           V="${{ github.ref_name }}"; N="${{ matrix.name }}"
           D="target/${{ matrix.target }}/release"
           rm -rf dist && mkdir -p dist
-          cp "$D/mdkbd" "$D/mdkb" "$D/mdkb-mcp" dist/
+          cp "$D/mkbd" "$D/mkb" "$D/mkb-mcp" dist/
           for lib in "$D"/libonnxruntime*.so*; do
             [ -e "$lib" ] && cp "$lib" dist/ || true
           done
-          A="mdkb-$V-$N-headless.tar.gz"
+          A="mkb-$V-$N-headless.tar.gz"
           tar -C dist -czf "$A" .
           ( sha256sum "$A" 2>/dev/null || shasum -a 256 "$A" ) > "$A.sha256"
 
@@ -252,15 +252,15 @@ jobs:
           $ErrorActionPreference = "Stop"
           $V = "${{ github.ref_name }}"; $N = "${{ matrix.name }}"
           $D = "target/${{ matrix.target }}/release"
-          $APPREL = "app/mdkb-tauri/src-tauri/target/${{ matrix.target }}/release"
+          $APPREL = "app/mkb-tauri/src-tauri/target/${{ matrix.target }}/release"
           Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path dist/bin | Out-Null
-          Copy-Item "$APPREL/mdkb-tauri.exe" dist/
-          Copy-Item "$D/mdkbd.exe","$D/mdkb.exe","$D/mdkb-mcp.exe" dist/
+          Copy-Item "$APPREL/mkb-tauri.exe" dist/
+          Copy-Item "$D/mkbd.exe","$D/mkb.exe","$D/mkb-mcp.exe" dist/
           Get-ChildItem "$D" -Filter "onnxruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination dist/
-          Copy-Item "$D/mdkbd.exe","$D/mdkb-mcp.exe" dist/bin/
-          Copy-Item "$D/mdkb.exe" dist/bin/mdkb-cli.exe
-          $A = "mdkb-$V-$N.zip"
+          Copy-Item "$D/mkbd.exe","$D/mkb-mcp.exe" dist/bin/
+          Copy-Item "$D/mkb.exe" dist/bin/mkb-cli.exe
+          $A = "mkb-$V-$N.zip"
           Compress-Archive -Path dist/* -DestinationPath $A -Force
           (Get-FileHash $A -Algorithm SHA256).Hash.ToLower() + "  " + $A | Out-File -Encoding ascii "$A.sha256"
 
@@ -268,18 +268,18 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz.sha256
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}-headless.tar.gz
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}-headless.tar.gz.sha256
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}.zip
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}.zip.sha256
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}-setup.exe
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}-setup.exe.sha256
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}.dmg
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}.dmg.sha256
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}.AppImage
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}.AppImage.sha256
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}.deb
-            mdkb-${{ github.ref_name }}-${{ matrix.name }}.deb.sha256
+            mkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+            mkb-${{ github.ref_name }}-${{ matrix.name }}.tar.gz.sha256
+            mkb-${{ github.ref_name }}-${{ matrix.name }}-headless.tar.gz
+            mkb-${{ github.ref_name }}-${{ matrix.name }}-headless.tar.gz.sha256
+            mkb-${{ github.ref_name }}-${{ matrix.name }}.zip
+            mkb-${{ github.ref_name }}-${{ matrix.name }}.zip.sha256
+            mkb-${{ github.ref_name }}-${{ matrix.name }}-setup.exe
+            mkb-${{ github.ref_name }}-${{ matrix.name }}-setup.exe.sha256
+            mkb-${{ github.ref_name }}-${{ matrix.name }}.dmg
+            mkb-${{ github.ref_name }}-${{ matrix.name }}.dmg.sha256
+            mkb-${{ github.ref_name }}-${{ matrix.name }}.AppImage
+            mkb-${{ github.ref_name }}-${{ matrix.name }}.AppImage.sha256
+            mkb-${{ github.ref_name }}-${{ matrix.name }}.deb
+            mkb-${{ github.ref_name }}-${{ matrix.name }}.deb.sha256
           fail_on_unmatched_files: false

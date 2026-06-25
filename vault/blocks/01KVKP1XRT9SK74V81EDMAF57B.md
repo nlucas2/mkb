@@ -4,18 +4,18 @@ tags: [skill, skill-page, docs, dev]
 ---
 
 ---
-name: mdkb-docs-as-data
+name: mkb-docs-as-data
 description: >-
-    How to maintain docs-as-data in an mdkb-backed repo: never hand-edit a generated file — find
+    How to maintain docs-as-data in an mkb-backed repo: never hand-edit a generated file — find
     its source block from the @generated banner, edit the block (and the blocks it embeds), then
-    re-run `mdkb export` and verify with `--check`. Read before changing any generated doc.
+    re-run `mkb export` and verify with `--check`. Read before changing any generated doc.
 user-invocable: false
 ---
 
 # Maintaining generated docs (docs-as-data)
 
-In an mdkb-backed repo, some committed docs are **generated from blocks in the vault** — the vault
-is the source of truth and `mdkb export` renders chosen blocks to flat Markdown. Editing a
+In an mkb-backed repo, some committed docs are **generated from blocks in the vault** — the vault
+is the source of truth and `mkb export` renders chosen blocks to flat Markdown. Editing a
 generated file directly is a mistake: it drifts from its source and is **clobbered on the next
 export**. This skill is the workflow for changing those docs correctly.
 

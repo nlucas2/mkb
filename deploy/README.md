@@ -1,18 +1,18 @@
-# Deploying mdkb
+# Deploying mkb
 
 ## Local (single machine)
 
 Run the daemon against your vault; it owns the index and a file watcher:
 
 ```sh
-mdkbd --vault ~/mdkb-vault
+mkbd --vault ~/mkb-vault
 ```
 
 Then use any client:
 
 - **AI agent (MCP):** point your client at `deploy/mcp-config.example.json` (it runs
-  `mdkb-mcp`, which auto-starts the daemon).
-- **CLI:** `mdkb search --vault ~/mdkb-vault "…"`
+  `mkb-mcp`, which auto-starts the daemon).
+- **CLI:** `mkb search --vault ~/mkb-vault "…"`
 
 The Markdown vault is the source of truth and is the only thing you should sync across
 machines (OneDrive, etc.). The index is machine-local and rebuildable — it lives **outside**
@@ -27,18 +27,18 @@ The daemon can serve over TCP for in-cluster clients. It stays a **single writer
 
 ```sh
 # 1. build & push the image
-docker build -t <registry>/mdkb:latest .
-docker push <registry>/mdkb:latest
+docker build -t <registry>/mkb:latest .
+docker push <registry>/mkb:latest
 
 # 2. create the shared token secret
-kubectl -n mdkb create secret generic mdkb-token \
+kubectl -n mkb create secret generic mkb-token \
   --from-literal=token=$(openssl rand -hex 24)
 
 # 3. apply (edit image / storageClass first)
 kubectl apply -f deploy/k8s.yaml
 ```
 
-Clients connect with `mdkbd`'s TCP transport and the token:
+Clients connect with `mkbd`'s TCP transport and the token:
 
 - A networked client authenticates first (`authenticate { token }`), then issues requests.
 - Without a valid token, every data request is rejected.
@@ -56,36 +56,36 @@ Clients connect with `mdkbd`'s TCP transport and the token:
 
 ### Connecting a UI to the deployed daemon
 
-The `mdkbd` Service is a `LoadBalancer`, so it gets an address reachable from outside the
+The `mkbd` Service is a `LoadBalancer`, so it gets an address reachable from outside the
 cluster. Point the desktop app (or the CLI/MCP) at it via `--remote` / the env vars:
 
 ```sh
 # Find the daemon's external address:
-kubectl -n mdkb get svc mdkbd          # note EXTERNAL-IP
+kubectl -n mkb get svc mkbd          # note EXTERNAL-IP
 
 # Desktop app (Tauri) — environment-driven, or via Settings → Remote daemon:
-export MDKB_REMOTE=<EXTERNAL-IP>:7820
-export MDKB_TOKEN=<token>
-cargo tauri dev        # from app/mdkb-tauri
+export MKB_REMOTE=<EXTERNAL-IP>:7820
+export MKB_TOKEN=<token>
+cargo tauri dev        # from app/mkb-tauri
 
 # CLI / MCP — flags or the same env:
-mdkb search --remote <EXTERNAL-IP>:7820 --token <token> "…"
+mkb search --remote <EXTERNAL-IP>:7820 --token <token> "…"
 ```
 
 If your cluster has no LoadBalancer provider, switch the Service to `ClusterIP` and reach it
-for a quick test with `kubectl -n mdkb port-forward svc/mdkbd 7820:7820`, then point
-`MDKB_REMOTE` at `127.0.0.1:7820`.
+for a quick test with `kubectl -n mkb port-forward svc/mkbd 7820:7820`, then point
+`MKB_REMOTE` at `127.0.0.1:7820`.
 
 ### Why single-writer
 
-One `mdkbd` owns the index and serializes writes, which preserves consistency and avoids
+One `mkbd` owns the index and serializes writes, which preserves consistency and avoids
 the cloud-sync corruption that plagues multi-writer database files. Scale *clients*, never
 the daemon.
 
 ## Conflict files
 
 If a synced vault produces conflict copies (e.g. `note-DESKTOP-AB12.md`), the daemon
-**does not index them** — they are surfaced via the `conflicts` tool / `mdkb conflicts
+**does not index them** — they are surfaced via the `conflicts` tool / `mkb conflicts
 --vault <dir>` so you can resolve them in plain text. The Markdown stays authoritative.
 
 ## Continuous build & releases
@@ -93,10 +93,10 @@ If a synced vault produces conflict copies (e.g. `note-DESKTOP-AB12.md`), the da
 `.forgejo/workflows/build.yaml` runs on every push to `main` (and version tags):
 
 - **Every push to `main`** — runs `cargo test --workspace` (the Dockerfile `tester` stage),
-  builds and pushes the multi-arch daemon image to `$REGISTRY/containers/mdkb:latest` and
+  builds and pushes the multi-arch daemon image to `$REGISTRY/containers/mkb:latest` and
   `:<short-sha>` (amd64 + arm64 manifests), and publishes the daemon + client binaries
-  (`mdkbd`, `mdkb`, `mdkb-mcp`, per-arch tarballs — the embedding model is compiled
-  into `mdkbd`, so nothing extra ships alongside — plus checksums) as **downloadable workflow
+  (`mkbd`, `mkb`, `mkb-mcp`, per-arch tarballs — the embedding model is compiled
+  into `mkbd`, so nothing extra ships alongside — plus checksums) as **downloadable workflow
   artifacts** on the run.
 - **A version tag `vX.Y.Z`** — does all of the above tagged with the version, **and** cuts a
   Forgejo release with the same binaries attached.
@@ -106,7 +106,7 @@ Required Forgejo Actions configuration:
 | Name | Kind | Used for |
 |------|------|----------|
 | `REGISTRY` | variable | Container registry host (e.g. `registry.example`); used for `docker login` and as the image-ref base. |
-| `REGISTRY_ORG` | variable | Registry namespace/org (e.g. `containers`); the image ref is `$REGISTRY/$REGISTRY_ORG/mdkb`. |
+| `REGISTRY_ORG` | variable | Registry namespace/org (e.g. `containers`); the image ref is `$REGISTRY/$REGISTRY_ORG/mkb`. |
 | `REGISTRY_TOKEN` | secret | `docker login $REGISTRY` to push images |
 | `RELEASE_TOKEN` | secret | Forgejo API token to create the release + upload assets (tags only) |
 
@@ -134,4 +134,4 @@ The embedding model is compiled into the daemon by default, so the image always 
 semantic search built in (no model files to mount, no runtime download). Building an image
 *without* the embedded model isn't a supported build-arg; it would require editing the
 Dockerfile's `cargo build` to pass `--no-default-features` (the daemon then falls back to the
-offline hash embedder unless `$MDKB_BUNDLED_MODEL_DIR` points at a model on disk).
+offline hash embedder unless `$MKB_BUNDLED_MODEL_DIR` points at a model on disk).

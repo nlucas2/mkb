@@ -29,7 +29,7 @@ Our cluster runs k3s on the Pi rack.
 Push to Forgejo and the pipeline applies the manifests.
 ```
 
-- **Frontmatter** (optional): mdkb manages `title:` (a human title), `tags:` (flow `[a, b]` or a
+- **Frontmatter** (optional): mkb manages `title:` (a human title), `tags:` (flow `[a, b]` or a
   block list), and `locked:` (`true` marks the block **human-only** — see below). It also stamps
   `updated:` (RFC 3339 UTC last-modified) on every write; the matching **`created:` time is *not*
   stored** — it is decoded from the block's ULID id, which embeds its creation timestamp. **Any

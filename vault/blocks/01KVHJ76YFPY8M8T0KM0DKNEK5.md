@@ -5,10 +5,10 @@ title: Code blocks & languages
 # Code blocks & languages
 
 Fenced code blocks keep their language tag, which powers language-filtered search.
-mdkb is language-agnostic — shell, YAML, Rust, Python, Kusto, anything:
+mkb is language-agnostic — shell, YAML, Rust, Python, Kusto, anything:
 
 ```sh
-mdkbd --vault ./my-vault
+mkbd --vault ./my-vault
 ```
 
 ```python

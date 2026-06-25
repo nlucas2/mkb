@@ -1,11 +1,11 @@
 # Build artifacts (the giant one — never ship the local target/ into the build context)
 target/
 **/target/
-app/mdkb-tauri/src-tauri/target/
+app/mkb-tauri/src-tauri/target/
 
-# Local mdkb index/socket/lock — rebuildable cache, never part of the build (it would also drag a
+# Local mkb index/socket/lock — rebuildable cache, never part of the build (it would also drag a
 # stale Unix socket + sqlite WAL into the context and make the docs-as-data gate non-deterministic)
-**/.mdkb/
+**/.mkb/
 
 # Git metadata
 .git/

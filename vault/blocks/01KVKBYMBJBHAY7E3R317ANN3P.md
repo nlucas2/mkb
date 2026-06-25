@@ -14,7 +14,7 @@ tags: [spec, doc]
   assets/                 # optional: images & other files referenced from blocks,
     diagram.png           #   e.g. ![](assets/diagram.png) — synced with the vault, not indexed
     ...
-  SPEC.md                 # this file (in mdkb's own self-documenting vault)
+  SPEC.md                 # this file (in mkb's own self-documenting vault)
 ```
 
 Only `blocks/` is indexed. Anything else in the vault — an `assets/` directory of images, other
@@ -24,7 +24,7 @@ desktop app loads from disk. **External** image URLs (`https:`, `data:`, `//host
 fetched — the app shows an inert placeholder instead, so an image source in an AI-written block can
 never act as a tracking or exfiltration request. Assets are never deleted automatically (an image
 may be shared by several blocks); **orphans** — files under `assets/` that no block references —
-are surfaced for explicit cleanup (`mdkb assets`, `--prune` to delete; or the desktop app's
+are surfaced for explicit cleanup (`mkb assets`, `--prune` to delete; or the desktop app's
 Settings → *Unused images*).
 
 The index, socket, lock, and log are **machine-local** and live **outside** the vault, in a
@@ -32,14 +32,14 @@ per-vault directory under the OS local-data location — so a cloud-synced vault
 live index:
 
 ```
-<base>/mdkb/<vault-id>/   # base: %LOCALAPPDATA% (Win), ~/Library/Application Support (macOS),
+<base>/mkb/<vault-id>/   # base: %LOCALAPPDATA% (Win), ~/Library/Application Support (macOS),
     index.db              #   ~/.local/state (Linux); <vault-id> hashes the vault path
     config.json           # embedder configuration (optional)
-    mdkbd.sock            # daemon socket (local mode)
-    mdkbd.lock            # exclusive lock: at most one daemon per vault
-    mdkbd.log             # daemon log (local mode)
+    mkbd.sock            # daemon socket (local mode)
+    mkbd.lock            # exclusive lock: at most one daemon per vault
+    mkbd.log             # daemon log (local mode)
 ```
 
-Set `$MDKB_INDEX_DIR` to override the base. With no resolvable home (a minimal container), it
-falls back to the legacy in-vault `<vault>/.mdkb/`. Anything in the index directory is a
+Set `$MKB_INDEX_DIR` to override the base. With no resolvable home (a minimal container), it
+falls back to the legacy in-vault `<vault>/.mkb/`. Anything in the index directory is a
 rebuildable cache — delete it and the daemon rebuilds from `blocks/` on next start.
