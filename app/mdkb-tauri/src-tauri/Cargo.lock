@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "regex",
  "serde",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "interprocess",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-tauri"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mdkb-core",
  "mdkb-protocol",
@@ -1743,7 +1743,7 @@ dependencies = [
 
 [[package]]
 name = "mdkb-view"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mdkb-core",
  "pulldown-cmark",

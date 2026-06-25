@@ -41,6 +41,10 @@ Prefer not to build? Grab a **prebuilt release** (installer or portable archive)
 **Releases** page, run it as a **container**, or `cargo install` just the headless tools — all
 detailed in the **[install guide](docs/INSTALL.md)**.
 
+> **Heads-up:** the prebuilt **release pipeline is still a work in progress** — published
+> artifacts can lag behind `main` or miss a platform. Until it stabilises, **`just install` from a
+> fresh checkout is the most reliable way to get the latest version.**
+
 Building **from source** (`just install`, `cargo install`, or `cargo tauri build`) needs these on
 your machine. Prebuilt releases and the container need none of them.
 
