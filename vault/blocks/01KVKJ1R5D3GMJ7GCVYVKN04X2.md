@@ -16,17 +16,31 @@ just app            # build just the desktop app bundle
 just --list         # every recipe (build, test, check, docs, …)
 ```
 
-Requires Rust (the workspace pins `rust-version = 1.80`); `just install` additionally needs the
-Tauri toolchain (`cargo install tauri-cli` + your platform's webkit/GTK dev libs) — see
-[`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md). Building from source on macOS also avoids
-the Gatekeeper "damaged" prompt that a downloaded, unsigned `.dmg` triggers.
+Requires the [prerequisites](PREREQS.md) (Rust, `just`, Tauri CLI, system build libraries).
+Building from source on macOS also avoids the Gatekeeper "damaged" prompt that a downloaded,
+unsigned `.dmg` triggers.
 
-**No `just`, headless only.** Install the daemon + CLI + MCP straight onto `~/.cargo/bin` (no
-desktop app):
+**Without `just`** (the raw commands `just install` runs). The headless tools install with one
+`cargo install`; the desktop app is built with `cargo tauri build` right alongside it:
 
 ```sh
+# 1. headless tools (daemon + CLI + MCP) → ~/.cargo/bin
 cargo install --git https://github.com/<you>/mdkb mdkbd mdkb-cli mdkb-mcp
+
+# 2. desktop app — build the bundle from a checkout
+git clone https://github.com/<you>/mdkb && cd mdkb
+cargo build --release -p mdkbd -p mdkb-cli -p mdkb-mcp        # bins the app bundles
+mkdir -p app/mdkb-tauri/src-tauri/bin
+cp target/release/mdkbd    app/mdkb-tauri/src-tauri/bin/mdkbd
+cp target/release/mdkb-mcp app/mdkb-tauri/src-tauri/bin/mdkb-mcp
+cp target/release/mdkb     app/mdkb-tauri/src-tauri/bin/mdkb-cli
+cd app/mdkb-tauri && cargo tauri icon app-icon.png           # generate the icon set
+cd src-tauri && cargo tauri build                            # bundle → target/release/bundle/
 ```
+
+Then install the bundle for your OS (macOS → copy `mdkb.app` to `/Applications`; Linux → the
+`.deb`/`.AppImage`; Windows → run the `*-setup.exe`). `just install` automates exactly this — these
+are its steps spelled out.
 
 Semantic search is built in either way: the BGE-small model is compiled into the daemon, so it
 works fully offline — no model files, no download. (Advanced: `--no-default-features` leaves the

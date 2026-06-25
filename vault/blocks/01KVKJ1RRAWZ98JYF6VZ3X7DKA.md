@@ -12,7 +12,7 @@ tags: [doc, doc-page, user]
 </p>
 
 > Status: core re-architected to the file-per-block model (parser, transclusion, index,
-> semantic search, daemon, MCP, web + desktop UIs). Versioned `0.1.0` / pre-release. See
+> semantic search, daemon, MCP, and the desktop app). Versioned `0.1.0` / pre-release. See
 > **[`docs/architecture.md`](./docs/architecture.md)** for the design and
 > **[`docs/SPEC.md`](./docs/SPEC.md)** for the exact on-disk format.
 
@@ -21,6 +21,10 @@ tags: [doc, doc-page, user]
 ![[01KVM9NPR2HD2WF05GKFYNMG68]]
 
 ![[01KVYGC2REQ5D7MG46FRVW5TR0]]
+
+![[01KVYHAT6GF9C0NB8AHPAAKX6Y]]
+
+Per-OS commands for these are in **[Installing the prerequisites](docs/PREREQS.md)**.
 
 ![[01KVYAA72QVXFFEP1PA6FDZN9V]]
 
@@ -46,56 +50,11 @@ for adding knowledge, and effective search patterns — see the example skill at
 
 ![[01KVKJ1RM8647XQC65WD0G37YN]]
 
-## Under the hood
+## Development
 
-Implementation details most users never touch — clients auto-start and self-reap the daemon for
-you; the vault Markdown is the only thing you manage.
-
-![[01KVKJ1R2KE4ZCAPJM9C25ZBV6]]
-
-![[01KVKJ1RCJDFP7KFY56ENW3PR1]]
-
-![[01KVKBYMCVYWADCHVEJFBGZR8Z]]
-
-![[01KVKBYMDS9STTDCAVZMYDVPHG]]
-
-## Workspace layout
-
-![[01KVKH5GX94BYEDTNEMA5W1NHS]]
-
-### What each crate/module does
-
-![[01KVKJ1R9MMSB6C1T9FBTDFNRG]]
-
-![[01KVKJ1R6TX2CP1QPB3HDVKYP2]]
-
-![[01KVKJ1R8416YVA07D34004351]]
-
-![[01KVKJ1RH7H3T01HXTN3HTQRAT]]
+Hacking on mdkb? The workspace layout, the daemon/client internals, and the roadmap are in
+**[`docs/CONTRIBUTING.md`](./docs/CONTRIBUTING.md)**; the mandatory working rules are in
+**[`AGENTS.md`](./AGENTS.md)**, the design in **[`docs/architecture.md`](./docs/architecture.md)**,
+and the on-disk format in **[`docs/SPEC.md`](./docs/SPEC.md)**.
 
 ![[01KVM9NQP8GEPRXQRKK062E37R]]
-
-## Contributing
-
-These rules are mandatory; the canonical copy is **[`AGENTS.md`](./AGENTS.md)**, generated from
-the **same blocks** embedded below — so editing a rule once updates both.
-
-![[01KVKH5GYBEGZVMQQYG4Q7SE8E]]
-
-![[01KVKH5GZDV9MPQKCZ4VM6GQM9]]
-
-![[01KVKH5H0H88ZTK52FBH60AWJG]]
-
-![[01KVKH5H1R0129ZVGF76MAQZB9]]
-
-![[01KVKH5H2ZH4890TK2G6NRR2EH]]
-
-![[01KVKH5H48K7CNNXG1HH958MJ6]]
-
-### Pre-commit checklist (run top to bottom)
-
-![[01KVKH5H5DS8TPSBC7T7PJF953]]
-
-### Commit hygiene
-
-![[01KVKH5H6NV4178V7WGMQEXAHT]]

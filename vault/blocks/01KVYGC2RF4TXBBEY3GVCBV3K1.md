@@ -10,7 +10,8 @@ server an AI client connects to. They install together; the container is the onl
 
 For the quickest complete install, just run `just install` from a checkout (see
 [From source](#from-source)). The other methods below trade the build step for a download, or get
-you only the headless tools.
+you only the headless tools. Building from source first needs a few
+[prerequisites](PREREQS.md).
 
 ![[01KVM9NQ2N1BKBJHS9TJQCW5KB]]
 
