@@ -36,6 +36,15 @@ install: install-cli app
     bundle="{{tauri}}/target/release/bundle"
     case "$(uname -s)" in
       Darwin)
+        # Quit a running copy first — macOS blocks overwriting a running .app bundle.
+        if osascript -e 'application "mdkb" is running' 2>/dev/null | grep -q true; then
+          echo "Quitting running mdkb…"
+          osascript -e 'quit app "mdkb"' 2>/dev/null || true
+          for _ in $(seq 1 20); do
+            osascript -e 'application "mdkb" is running' 2>/dev/null | grep -q true || break
+            sleep 0.25
+          done
+        fi
         echo "Installing mdkb.app → /Applications"
         rm -rf /Applications/mdkb.app
         cp -R "$bundle/macos/mdkb.app" /Applications/mdkb.app
