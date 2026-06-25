@@ -1,6 +1,6 @@
 //! Client-side connection configuration and daemon lifecycle.
 //!
-//! A *client* (the desktop app, the web UI, the MCP server) needs to know **where** the
+//! A *client* (the desktop app, the MCP server) needs to know **where** the
 //! daemon is and, for a local vault, be able to **start** one. This is distinct from the
 //! vault's own `.mdkb/config.json` (which configures the daemon's embedder). Keeping the
 //! resolution here means every client connects identically — no divergence (see `AGENTS.md`).
@@ -25,7 +25,7 @@ use crate::{Client, DaemonPaths};
 /// the remote/k3s deployment) gets no `--idle-timeout` and runs forever.
 ///
 /// This is now a short *grace* window, not a long warm‑hold: a long‑lived client (the desktop app
-/// / web UI) holds a heartbeat **lease** that keeps the daemon alive while it's open, so when that
+/// / desktop app) holds a heartbeat **lease** that keeps the daemon alive while it's open, so when that
 /// client closes the daemon winds down within ~this grace instead of lingering for 15 minutes.
 /// Momentary clients (CLI/MCP) keep the daemon warm only through this window — long enough for
 /// fast back‑to‑back commands, short enough that walking away reclaims the process (and its

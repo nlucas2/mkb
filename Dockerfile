@@ -43,16 +43,15 @@ COPY crates/mdkb-view/Cargo.toml     crates/mdkb-view/
 COPY crates/mdkbd/Cargo.toml         crates/mdkbd/
 COPY crates/mdkb-mcp/Cargo.toml      crates/mdkb-mcp/
 COPY crates/mdkb-cli/Cargo.toml      crates/mdkb-cli/
-COPY crates/mdkb-web/Cargo.toml      crates/mdkb-web/
 RUN mkdir -p \
         crates/mdkb-core/src crates/mdkb-index/src crates/mdkb-embed/src \
         crates/mdkb-protocol/src crates/mdkb-view/src \
-        crates/mdkbd/src crates/mdkb-mcp/src crates/mdkb-cli/src crates/mdkb-web/src \
+        crates/mdkbd/src crates/mdkb-mcp/src crates/mdkb-cli/src \
     && touch \
         crates/mdkb-core/src/lib.rs crates/mdkb-index/src/lib.rs \
         crates/mdkb-embed/src/lib.rs crates/mdkb-protocol/src/lib.rs \
         crates/mdkb-view/src/lib.rs \
-    && for b in mdkbd mdkb-mcp mdkb-cli mdkb-web; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
+    && for b in mdkbd mdkb-mcp mdkb-cli; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
     && mkdir -p crates/mdkb-embed/examples \
     && echo 'fn main(){}' > crates/mdkb-embed/examples/footprint.rs
 RUN cargo fetch
@@ -96,16 +95,15 @@ COPY crates/mdkb-view/Cargo.toml     crates/mdkb-view/
 COPY crates/mdkbd/Cargo.toml         crates/mdkbd/
 COPY crates/mdkb-mcp/Cargo.toml      crates/mdkb-mcp/
 COPY crates/mdkb-cli/Cargo.toml      crates/mdkb-cli/
-COPY crates/mdkb-web/Cargo.toml      crates/mdkb-web/
 RUN mkdir -p \
         crates/mdkb-core/src crates/mdkb-index/src crates/mdkb-embed/src \
         crates/mdkb-protocol/src crates/mdkb-view/src \
-        crates/mdkbd/src crates/mdkb-mcp/src crates/mdkb-cli/src crates/mdkb-web/src \
+        crates/mdkbd/src crates/mdkb-mcp/src crates/mdkb-cli/src \
     && touch \
         crates/mdkb-core/src/lib.rs crates/mdkb-index/src/lib.rs \
         crates/mdkb-embed/src/lib.rs crates/mdkb-protocol/src/lib.rs \
         crates/mdkb-view/src/lib.rs \
-    && for b in mdkbd mdkb-mcp mdkb-cli mdkb-web; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
+    && for b in mdkbd mdkb-mcp mdkb-cli; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
     && mkdir -p crates/mdkb-embed/examples \
     && echo 'fn main(){}' > crates/mdkb-embed/examples/footprint.rs
 RUN cargo fetch
@@ -113,10 +111,10 @@ RUN cargo fetch
 COPY . .
 # Build the daemon (semantic search baked in by default) and the thin clients in one shot. onnx is
 # a daemon-only feature, so it never leaks into the clients' dep tree.
-RUN cargo build --release -p mdkbd -p mdkb-cli -p mdkb-mcp -p mdkb-web
+RUN cargo build --release -p mdkbd -p mdkb-cli -p mdkb-mcp
 # Normalise output location so final/artifacts stages are arch-agnostic.
 RUN mkdir -p /out && cp target/release/mdkbd target/release/mdkb \
-        target/release/mdkb-mcp target/release/mdkb-web /out/
+        target/release/mdkb-mcp /out/
 
 
 # -- arm64 builder (cross-compiled, native speed on the runner) ----------------
@@ -144,28 +142,27 @@ COPY crates/mdkb-view/Cargo.toml     crates/mdkb-view/
 COPY crates/mdkbd/Cargo.toml         crates/mdkbd/
 COPY crates/mdkb-mcp/Cargo.toml      crates/mdkb-mcp/
 COPY crates/mdkb-cli/Cargo.toml      crates/mdkb-cli/
-COPY crates/mdkb-web/Cargo.toml      crates/mdkb-web/
 RUN mkdir -p \
         crates/mdkb-core/src crates/mdkb-index/src crates/mdkb-embed/src \
         crates/mdkb-protocol/src crates/mdkb-view/src \
-        crates/mdkbd/src crates/mdkb-mcp/src crates/mdkb-cli/src crates/mdkb-web/src \
+        crates/mdkbd/src crates/mdkb-mcp/src crates/mdkb-cli/src \
     && touch \
         crates/mdkb-core/src/lib.rs crates/mdkb-index/src/lib.rs \
         crates/mdkb-embed/src/lib.rs crates/mdkb-protocol/src/lib.rs \
         crates/mdkb-view/src/lib.rs \
-    && for b in mdkbd mdkb-mcp mdkb-cli mdkb-web; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
+    && for b in mdkbd mdkb-mcp mdkb-cli; do echo 'fn main(){}' > crates/$b/src/main.rs; done \
     && mkdir -p crates/mdkb-embed/examples \
     && echo 'fn main(){}' > crates/mdkb-embed/examples/footprint.rs
 RUN cargo fetch --target aarch64-unknown-linux-gnu
 
 COPY . .
 RUN cargo build --release --target aarch64-unknown-linux-gnu \
-        -p mdkbd -p mdkb-cli -p mdkb-mcp -p mdkb-web
+        -p mdkbd -p mdkb-cli -p mdkb-mcp
 RUN mkdir -p /out && cp \
         target/aarch64-unknown-linux-gnu/release/mdkbd \
         target/aarch64-unknown-linux-gnu/release/mdkb \
         target/aarch64-unknown-linux-gnu/release/mdkb-mcp \
-        target/aarch64-unknown-linux-gnu/release/mdkb-web /out/
+        /out/
 
 
 # -- Runtime base (resolves to the target platform) ---------------------------
@@ -215,10 +212,8 @@ FROM scratch AS artifacts-amd64
 COPY --from=builder-amd64 /out/mdkbd   /mdkbd
 COPY --from=builder-amd64 /out/mdkb     /mdkb
 COPY --from=builder-amd64 /out/mdkb-mcp /mdkb-mcp
-COPY --from=builder-amd64 /out/mdkb-web /mdkb-web
 
 FROM scratch AS artifacts-arm64
 COPY --from=builder-arm64 /out/mdkbd   /mdkbd
 COPY --from=builder-arm64 /out/mdkb     /mdkb
 COPY --from=builder-arm64 /out/mdkb-mcp /mdkb-mcp
-COPY --from=builder-arm64 /out/mdkb-web /mdkb-web

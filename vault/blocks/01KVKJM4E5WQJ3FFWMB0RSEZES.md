@@ -7,7 +7,7 @@ tags: [doc, architecture]
 
 ```
         ┌───────────── thin clients (transport/presentation only) ─────────────┐
-        │   mdkb-cli      mdkb-mcp (MCP)     mdkb-web (HTTP)     mdkb-tauri (app) │
+        │   mdkb-cli          mdkb-mcp (MCP)              mdkb-tauri (app)        │
         └───────────────────────────────┬──────────────────────────────────────┘
                                          │  mdkb-protocol (JSON over local socket / TCP+token)
                                 ┌────────▼────────┐
@@ -28,4 +28,4 @@ tags: [doc, architecture]
   a remote one. Connection config is shared (`ConnectionConfig` / `connect` / `ensure_daemon` in
   `mdkb-protocol`). The single-daemon-per-vault and idle-shutdown guarantees are below.
 - **Presentation is shared** via `mdkb-view` (Markdown→HTML, wikilink/embed decoration, XSS
-  neutralization), so the web UI and desktop UI render through the exact same path.
+  neutralization), so any current or future UI renders through the exact same path.

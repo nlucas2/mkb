@@ -52,7 +52,7 @@ grace by default) and **reaps itself** once it has been idle that long **and no 
 is attached** — freeing its process and embedder RAM so an unused vault doesn't leak a daemon. Any
 request (including a liveness ping) defers the timer.
 
-Long-lived interactive clients (the desktop app, the web UI) hold a renewable **lease**: they
+Long-lived interactive clients (the desktop app) hold a renewable **lease**: they
 heartbeat the daemon periodically, and it will not reap while any lease is active. A lease carries
 a TTL and lapses if its client stops heartbeating, so a crashed or closed client can never pin the
 daemon open — the lease expires and the idle grace then applies. Momentary clients (the CLI, MCP)

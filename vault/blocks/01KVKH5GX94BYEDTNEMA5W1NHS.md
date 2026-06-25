@@ -13,7 +13,6 @@ tags: [doc, concept]
 | `crates/mdkb-mcp` | bin (`mdkb-mcp`) | MCP server (stdio); thin client that forwards tool calls to the daemon. |
 | `crates/mdkb-cli` | bin (`mdkb`) | CLI for scripting/manual ops, thin client. |
 | `crates/mdkb-view` | lib | Shared presentation: Markdown→HTML rendering + page templating for any UI. |
-| `crates/mdkb-web` | bin (`mdkb-web`) | Local web UI: thin HTTP server over the daemon + `mdkb-view`. |
 | `app/mdkb-tauri` | app | Desktop shell (Tauri); thin client over `mdkb-view` + daemon. *(separate workspace)* |
 
 If a piece of behavior doesn't clearly belong to transport or presentation, it belongs in

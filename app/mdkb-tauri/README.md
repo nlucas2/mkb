@@ -8,7 +8,7 @@ co-manage as equals, and this is your side of it (the AI's side is the MCP serve
 Architecturally it stays a **thin client**: all knowledge-base behavior (block parsing,
 transclusion, indexing, the link graph, writes) lives in `mdkb-core` and is reached over the
 wire through `mdkb-protocol`; HTML rendering goes through `mdkb-view`. There is no second copy of
-engine behavior here, so the desktop UI can never drift from the web UI or the MCP server (see
+engine behavior here, so the desktop UI can never drift from the MCP server (see
 the repo `AGENTS.md`).
 
 It is **not** part of the main cargo workspace (it needs the Tauri toolchain and a system

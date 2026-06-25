@@ -9,7 +9,6 @@ members = [
     "crates/mdkbd",
     "crates/mdkb-mcp",
     "crates/mdkb-cli",
-    "crates/mdkb-web",
 ]
 
 # The Tauri desktop shell is an independent workspace: it needs the Tauri toolchain and

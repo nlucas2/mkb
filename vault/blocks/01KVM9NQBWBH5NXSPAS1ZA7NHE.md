@@ -14,8 +14,8 @@ docker run -d --name mdkb -p 127.0.0.1:7820:7820 \
   -v ~/mdkb-vault:/vault \
   <registry>/mdkb:latest --vault /vault --listen 0.0.0.0:7820 --token "$MDKB_TOKEN"
 
-# from a client (e.g. the web UI) — connect over the token-gated TCP API
-mdkb-web --remote 127.0.0.1:7820 --token "$MDKB_TOKEN"   # http://127.0.0.1:7878
+# from a client — point the desktop app (Settings → Remote daemon) or the CLI/MCP at it
+mdkb search --remote 127.0.0.1:7820 --token "$MDKB_TOKEN" "…"
 ```
 
 See [`deploy/README.md`](./deploy/README.md) for the Kubernetes manifest and full cluster setup.

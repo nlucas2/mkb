@@ -77,7 +77,7 @@ metadata:
   name: mdkbd
   namespace: mdkb
 spec:
-  # LoadBalancer gives the daemon a stable address clients (desktop app / web UI) can reach.
+  # LoadBalancer gives the daemon a stable address clients (desktop app / CLI / MCP) can reach.
   # Works with any LB implementation (cloud, MetalLB, or k3s's built-in ServiceLB). Switch
   # to ClusterIP if you only consume it in-cluster.
   type: LoadBalancer

@@ -931,17 +931,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdkb-web"
-version = "0.1.0"
-dependencies = [
- "clap",
- "mdkb-core",
- "mdkb-protocol",
- "mdkb-view",
- "tempfile",
-]
-
-[[package]]
 name = "mdkbd"
 version = "0.1.0"
 dependencies = [

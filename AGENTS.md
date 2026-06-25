@@ -66,7 +66,7 @@ See `README.md` for the full overview and `docs/` for details.
 
 - **All** behavior that touches blocks, transclusion, indexing, search, parsing, or writes
   **MUST** live in `mdkb-core` and be invoked through the daemon/core API.
-- The **MCP server, the Tauri UI, the web UI, and the CLI are thin clients.** They contain
+- The **MCP server, the Tauri UI, and the CLI are thin clients.** They contain
   presentation and transport glue only — **never** a second copy of core behavior.
 - Rationale: if the same surface is implemented twice, a bug can be fixed in one and left
   broken in the other. A bug fixed once must be fixed everywhere. If you find yourself about
@@ -105,7 +105,6 @@ Only commit when **all** boxes are satisfied.
 | `crates/mdkb-mcp` | bin (`mdkb-mcp`) | MCP server (stdio); thin client that forwards tool calls to the daemon. |
 | `crates/mdkb-cli` | bin (`mdkb`) | CLI for scripting/manual ops, thin client. |
 | `crates/mdkb-view` | lib | Shared presentation: Markdown→HTML rendering + page templating for any UI. |
-| `crates/mdkb-web` | bin (`mdkb-web`) | Local web UI: thin HTTP server over the daemon + `mdkb-view`. |
 | `app/mdkb-tauri` | app | Desktop shell (Tauri); thin client over `mdkb-view` + daemon. *(separate workspace)* |
 
 If a piece of behavior doesn't clearly belong to transport or presentation, it belongs in

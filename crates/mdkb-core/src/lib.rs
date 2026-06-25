@@ -1,7 +1,7 @@
 //! `mdkb-core` — the shared engine for mdkb.
 //!
 //! All behavior that touches blocks, transclusion, indexing, search, parsing, or writes lives
-//! here. The daemon, MCP server, CLI, web UI, and Tauri app are **thin clients** of this crate
+//! here. The daemon, MCP server, CLI, and Tauri app are **thin clients** of this crate
 //! so a bug fixed once is fixed everywhere. See `AGENTS.md`.
 //!
 //! The model is **file-per-block**: each block is one file (`blocks/<ulid>.md`); `![[id]]`

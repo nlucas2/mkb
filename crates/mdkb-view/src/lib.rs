@@ -1,6 +1,6 @@
 //! Shared presentation layer for mdkb user interfaces.
 //!
-//! Every mdkb UI (the local web UI, a Tauri desktop shell, …) renders the *same* way by
+//! Every mdkb UI (the Tauri desktop shell, and any future renderer) renders the *same* way by
 //! using this crate: there is exactly one Markdown→HTML path and one page template, so the
 //! views can never drift apart (see `AGENTS.md`). UIs supply already-transclusion-resolved
 //! Markdown (from `mdkb_core::render_page` via the daemon); this crate turns it into HTML
@@ -75,7 +75,7 @@ fn decorate_wiki(html: String) -> String {
 }
 
 /// Rewrite the shared `mdkb:` link scheme onto a concrete navigation base for a client that
-/// uses plain hyperlinks (e.g. the web UI's `/page/<path>` routes). `mdkb:<path>#<id>` becomes
+/// uses plain hyperlinks (e.g. `/page/<path>` routes). `mdkb:<path>#<id>` becomes
 /// `<base><path>#<id>`; the unresolved sentinel is left inert (`#`). Clients that intercept
 /// clicks in JS (the desktop shell) can ignore this and parse `mdkb:` directly.
 pub fn rewrite_mdkb_links(html: &str, base: &str) -> String {

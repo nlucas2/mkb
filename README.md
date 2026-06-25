@@ -34,7 +34,7 @@ each client auto-starts it on first use and it self-reaps when idle.
 
 | If you want to… | Use | What it is |
 |---|---|---|
-| Read, edit, and browse the graph | **Desktop app** (or the local **web UI**) | a Markdown editor + knowledge-graph browser |
+| Read, edit, and browse the graph | **Desktop app** | a Markdown editor + knowledge-graph browser |
 | Script, search, or pipe from a terminal | **CLI** — `mdkb` | `mdkb search --vault ~/vault "how do I…"` |
 | Give an AI assistant your notes | **MCP server** — `mdkb-mcp` | a set of tools your MCP client calls |
 
@@ -49,9 +49,8 @@ desktop app together with the `mdkb` CLI and the `mdkb-mcp` server.
 
 **Portable binaries — no installer, or for servers.** Each platform also ships one archive that is
 the **complete product**: the desktop app plus every binary — `mdkb` (CLI), `mdkbd` (daemon),
-`mdkb-mcp` (MCP server), `mdkb-web` (web UI) — with offline semantic search **built into the
-daemon**, so it works out of the box. Extract it wherever you keep apps and put that folder on your
-`PATH`:
+`mdkb-mcp` (MCP server) — with offline semantic search **built into the daemon**, so it works out
+of the box. Extract it wherever you keep apps and put that folder on your `PATH`:
 
 ```sh
 # macOS / Linux (example: macos-arm64 — also: linux-amd64, linux-arm64-headless)
@@ -79,13 +78,13 @@ build`, see below), and the daemon container image covers running it as a server
 
 ### Install: with Rust (`cargo install`)
 
-**Use this if you have Rust and just want the binaries** (CLI/MCP/web/daemon) without an installer.
-Requires Rust (stable); the workspace pins `rust-version = 1.80`. This compiles locally, so on
-macOS the result is **not** quarantined and Gatekeeper never blocks it:
+**Use this if you have Rust and just want the headless tools** (CLI/MCP/daemon) without an
+installer. Requires Rust (stable); the workspace pins `rust-version = 1.80`. This compiles locally,
+so on macOS the result is **not** quarantined and Gatekeeper never blocks it:
 
 ```sh
-cargo install --git https://github.com/<you>/mdkb mdkbd mdkb-cli mdkb-mcp mdkb-web
-# installs: mdkbd (daemon), mdkb (CLI), mdkb-mcp, mdkb-web — onto ~/.cargo/bin (put it on PATH)
+cargo install --git https://github.com/<you>/mdkb mdkbd mdkb-cli mdkb-mcp
+# installs: mdkbd (daemon), mdkb (CLI), mdkb-mcp — onto ~/.cargo/bin (put it on PATH)
 ```
 
 Zero-to-running from there:
@@ -101,15 +100,29 @@ The first command may take a few seconds while the daemon starts and indexes; la
 (Advanced: build with `--no-default-features` to leave the embedded model out and fall back to the
 offline hash embedder.)
 
-### Build from a checkout (contributors)
+### Build everything from a checkout (`just`)
 
-Clone the repo, then run any interface straight from the source tree — each command auto-starts the
-daemon:
+Want the **whole product** — the desktop app *and* the daemon/CLI/MCP — from source? Clone the
+repo and use the [`just`](https://github.com/casey/just) recipes (this is also how arm64 Linux,
+which has no prebuilt desktop release, gets the app):
+
+```sh
+just install        # headless tools onto PATH + build & install the desktop app
+just install-cli    # only the headless tools (daemon + CLI + MCP)
+just app            # just build the desktop app bundle
+just --list         # all recipes (build, test, check, docs, …)
+```
+
+`just install` needs the Tauri toolchain (`cargo install tauri-cli` + your platform's webkit/GTK
+dev libs) — see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md). On macOS, building the
+app from source yields one that opens without the Gatekeeper "damaged" prompt (unlike the
+downloaded `.dmg`, which is unsigned and needs a one-time `xattr` unquarantine).
+
+Prefer raw cargo? Each interface runs straight from the tree — each auto-starts the daemon:
 
 ```sh
 cargo build --workspace                                # build everything
 cargo run -p mdkb-cli -- list --vault ./my-vault       # CLI
-cargo run -p mdkb-web -- --vault ./my-vault            # web UI → http://127.0.0.1:7878
 cargo run -p mdkb-mcp -- --vault ./my-vault            # MCP server (stdio)
 
 cargo test --workspace                                 # the suite (green before every commit)
@@ -119,12 +132,6 @@ Working *inside* the repo against the repo's own `vault/`? The daemon's index is
 vault's absolute path and lives outside the vault, so it won't pollute your checkout. If you also
 want `cargo`'s build output elsewhere (e.g. to avoid a huge in-tree `target/`), set
 `CARGO_TARGET_DIR=~/.cache/mdkb-target` (or any path) before building.
-
-The desktop app lives in its own workspace and needs the Tauri toolchain — see
-[`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md). On macOS, building it from source with
-`cargo tauri build` likewise yields an app that opens without the Gatekeeper "damaged" prompt; the
-downloaded `.dmg` from a Release is unsigned and needs a one-time `xattr` unquarantine (documented
-in that app README).
 
 ### Install: container
 
@@ -138,8 +145,8 @@ docker run -d --name mdkb -p 127.0.0.1:7820:7820 \
   -v ~/mdkb-vault:/vault \
   <registry>/mdkb:latest --vault /vault --listen 0.0.0.0:7820 --token "$MDKB_TOKEN"
 
-# from a client (e.g. the web UI) — connect over the token-gated TCP API
-mdkb-web --remote 127.0.0.1:7820 --token "$MDKB_TOKEN"   # http://127.0.0.1:7878
+# from a client — point the desktop app (Settings → Remote daemon) or the CLI/MCP at it
+mdkb search --remote 127.0.0.1:7820 --token "$MDKB_TOKEN" "…"
 ```
 
 See [`deploy/README.md`](./deploy/README.md) for the Kubernetes manifest and full cluster setup.
@@ -211,8 +218,8 @@ The design follows from a few rules, each stated once in its own block and reuse
 **block = file = page** with `![[embed]]` for live reuse and `[[ref]]` for links (the intro and
 `docs/SPEC.md`); and **one shared core** behind thin clients (the Contributing rules below).
 
-You and the AI **co-manage the same vault** — you in the desktop app (or the web UI for a
-headless/remote daemon), the AI over MCP — and you decide what it may change: toggle a block
+You and the AI **co-manage the same vault** — you in the desktop app, the AI over MCP — and you
+decide what it may change: toggle a block
 **🔒 human-only** from the app and AI clients can read it but never modify it.
 
 ## Using mdkb
@@ -265,10 +272,11 @@ For guidance on using mdkb *well* as an AI client — the DRY/transclusion princ
 for adding knowledge, and effective search patterns — see the example skill at
 [`docs/skills/mdkb-knowledge/SKILL.md`](./docs/skills/mdkb-knowledge/SKILL.md).
 
-### Desktop app & web UI
+### Desktop app
 
-Two front-ends share the same `mdkb-view` rendering layer (so they can't drift apart), and both
-connect either way — a **local** socket or a **remote** TCP daemon.
+The desktop app is the human surface — a full **editor and graph browser**, not just a viewer. It
+connects either way: a **local** vault (auto-starting its daemon) or a **remote** TCP daemon
+`host:port` + token, and renders through the shared `mdkb-view` layer.
 
 <table>
   <tr>
@@ -297,13 +305,6 @@ connect either way — a **local** socket or a **remote** TCP daemon.
   **human-only** (🔒 — AI clients can read it but not modify it), and **Settings** (choose a Local
   vault or a Remote daemon `host:port` + token, no env vars; restart the daemon). Point Settings → Local vault at your vault and
   go; see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
-
-- **Local web UI** (`mdkb-web`) — the same views in a browser:
-
-  ```sh
-  mdkb-web --vault ~/my-vault                                 # local → http://127.0.0.1:7878
-  mdkb-web --remote mdkbd.example:7820 --token "$MDKB_TOKEN"  # a remote daemon
-  ```
 
 ## Configuration: choosing an embedder (`config.json`)
 
@@ -355,7 +356,7 @@ The Markdown vault is the source of truth either way; what changes is *where the
 *how clients reach it*.
 
 - **Local (default).** `mdkbd` owns the vault and a local socket — a **Unix-domain socket** on
-  Linux/macOS, a **named pipe** on Windows — and the CLI, MCP server, web UI, and desktop app all
+  Linux/macOS, a **named pipe** on Windows — and the CLI, MCP server, and desktop app all
   connect to it. No configuration; clients auto-start it. To work across machines, **sync only the
   Markdown** (OneDrive, etc.) — each machine runs its own daemon and keeps its own local index.
 - **Remote / shared.** One `mdkbd` runs centrally (e.g. a `replicas: 1` Deployment in k3s) and
@@ -403,7 +404,7 @@ grace by default) and **reaps itself** once it has been idle that long **and no 
 is attached** — freeing its process and embedder RAM so an unused vault doesn't leak a daemon. Any
 request (including a liveness ping) defers the timer.
 
-Long-lived interactive clients (the desktop app, the web UI) hold a renewable **lease**: they
+Long-lived interactive clients (the desktop app) hold a renewable **lease**: they
 heartbeat the daemon periodically, and it will not reap while any lease is active. A lease carries
 a TTL and lapses if its client stops heartbeating, so a crashed or closed client can never pin the
 daemon open — the lease expires and the idle grace then applies. Momentary clients (the CLI, MCP)
@@ -426,7 +427,6 @@ transparently respawns it — at most a brief cold start.
 | `crates/mdkb-mcp` | bin (`mdkb-mcp`) | MCP server (stdio); thin client that forwards tool calls to the daemon. |
 | `crates/mdkb-cli` | bin (`mdkb`) | CLI for scripting/manual ops, thin client. |
 | `crates/mdkb-view` | lib | Shared presentation: Markdown→HTML rendering + page templating for any UI. |
-| `crates/mdkb-web` | bin (`mdkb-web`) | Local web UI: thin HTTP server over the daemon + `mdkb-view`. |
 | `app/mdkb-tauri` | app | Desktop shell (Tauri); thin client over `mdkb-view` + daemon. *(separate workspace)* |
 
 If a piece of behavior doesn't clearly belong to transport or presentation, it belongs in
@@ -548,8 +548,8 @@ README are all generated from blocks in the vault.
   protocol, `mdkbd` with a local-socket server and `notify` file watcher.
 - **Phase 5 — MCP server** *(done)*: `mdkb-mcp` exposes search / get / render / upsert /
   link / stats as MCP tools over stdio; thin client of the daemon.
-- **Phase 6 — Frontends** *(done)*: shared `mdkb-view` (Markdown→HTML), runnable
-  `mdkb-web` local UI, and a `app/mdkb-tauri` desktop shell over the same view layer.
+- **Phase 6 — Frontends** *(done)*: shared `mdkb-view` (Markdown→HTML) and a `app/mdkb-tauri`
+  desktop shell over that view layer.
 - **Phase 7 — Sync UX & packaging** *(done)*: cloud-sync conflict detection (surfaced, not
   indexed), index `rebuild`, token-gated TCP transport for cluster deploy, Dockerfile + k8s
   manifest + example MCP config (`deploy/`).
@@ -626,7 +626,7 @@ the **same blocks** embedded below — so editing a rule once updates both.
 
 - **All** behavior that touches blocks, transclusion, indexing, search, parsing, or writes
   **MUST** live in `mdkb-core` and be invoked through the daemon/core API.
-- The **MCP server, the Tauri UI, the web UI, and the CLI are thin clients.** They contain
+- The **MCP server, the Tauri UI, and the CLI are thin clients.** They contain
   presentation and transport glue only — **never** a second copy of core behavior.
 - Rationale: if the same surface is implemented twice, a bug can be fixed in one and left
   broken in the other. A bug fixed once must be fixed everywhere. If you find yourself about

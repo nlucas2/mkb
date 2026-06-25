@@ -17,8 +17,8 @@ tags: [doc, readme]
   protocol, `mdkbd` with a local-socket server and `notify` file watcher.
 - **Phase 5 — MCP server** *(done)*: `mdkb-mcp` exposes search / get / render / upsert /
   link / stats as MCP tools over stdio; thin client of the daemon.
-- **Phase 6 — Frontends** *(done)*: shared `mdkb-view` (Markdown→HTML), runnable
-  `mdkb-web` local UI, and a `app/mdkb-tauri` desktop shell over the same view layer.
+- **Phase 6 — Frontends** *(done)*: shared `mdkb-view` (Markdown→HTML) and a `app/mdkb-tauri`
+  desktop shell over that view layer.
 - **Phase 7 — Sync UX & packaging** *(done)*: cloud-sync conflict detection (surfaced, not
   indexed), index `rebuild`, token-gated TCP transport for cluster deploy, Dockerfile + k8s
   manifest + example MCP config (`deploy/`).

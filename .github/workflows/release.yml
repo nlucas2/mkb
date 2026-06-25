@@ -100,7 +100,7 @@ jobs:
         run: |
           set -eux
           cargo build --release --target ${{ matrix.target }} -p mdkbd
-          cargo build --release --target ${{ matrix.target }} -p mdkb-cli -p mdkb-mcp -p mdkb-web
+          cargo build --release --target ${{ matrix.target }} -p mdkb-cli -p mdkb-mcp
 
       # ── Desktop app (Tauri) ──────────────────────────────────────────────────────
       # Build the desktop app + its native installer on this same runner so the release for
@@ -200,7 +200,7 @@ jobs:
               sum "mdkb-$V-$N.deb" ;;
           esac
 
-      # ONE complete archive per platform: the desktop app + every CLI (mdkb, mdkb-mcp, mdkb-web)
+      # ONE complete archive per platform: the desktop app + every CLI (mdkb, mdkb-mcp)
       # + the daemon. The daemon is self-contained — the embedding model is compiled into the
       # binary — so no model files ship alongside. Every download is the full product, never a
       # split. macOS ships the .app; Linux ships the runnable .AppImage (a bare mdkb-tauri binary
@@ -214,7 +214,7 @@ jobs:
           D="target/${{ matrix.target }}/release"
           B="app/mdkb-tauri/src-tauri/target/${{ matrix.target }}/release/bundle"
           rm -rf dist && mkdir -p dist
-          cp "$D/mdkbd" "$D/mdkb" "$D/mdkb-mcp" "$D/mdkb-web" dist/
+          cp "$D/mdkbd" "$D/mdkb" "$D/mdkb-mcp" dist/
           for lib in "$D"/libonnxruntime*.so* "$D"/libonnxruntime*.dylib; do
             [ -e "$lib" ] && cp "$lib" dist/ || true
           done
@@ -237,7 +237,7 @@ jobs:
           V="${{ github.ref_name }}"; N="${{ matrix.name }}"
           D="target/${{ matrix.target }}/release"
           rm -rf dist && mkdir -p dist
-          cp "$D/mdkbd" "$D/mdkb" "$D/mdkb-mcp" "$D/mdkb-web" dist/
+          cp "$D/mdkbd" "$D/mdkb" "$D/mdkb-mcp" dist/
           for lib in "$D"/libonnxruntime*.so*; do
             [ -e "$lib" ] && cp "$lib" dist/ || true
           done
@@ -256,7 +256,7 @@ jobs:
           Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path dist/bin | Out-Null
           Copy-Item "$APPREL/mdkb-tauri.exe" dist/
-          Copy-Item "$D/mdkbd.exe","$D/mdkb.exe","$D/mdkb-mcp.exe","$D/mdkb-web.exe" dist/
+          Copy-Item "$D/mdkbd.exe","$D/mdkb.exe","$D/mdkb-mcp.exe" dist/
           Get-ChildItem "$D" -Filter "onnxruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination dist/
           Copy-Item "$D/mdkbd.exe","$D/mdkb-mcp.exe" dist/bin/
           Copy-Item "$D/mdkb.exe" dist/bin/mdkb-cli.exe

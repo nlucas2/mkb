@@ -10,9 +10,8 @@ desktop app together with the `mdkb` CLI and the `mdkb-mcp` server.
 
 **Portable binaries — no installer, or for servers.** Each platform also ships one archive that is
 the **complete product**: the desktop app plus every binary — `mdkb` (CLI), `mdkbd` (daemon),
-`mdkb-mcp` (MCP server), `mdkb-web` (web UI) — with offline semantic search **built into the
-daemon**, so it works out of the box. Extract it wherever you keep apps and put that folder on your
-`PATH`:
+`mdkb-mcp` (MCP server) — with offline semantic search **built into the daemon**, so it works out
+of the box. Extract it wherever you keep apps and put that folder on your `PATH`:
 
 ```sh
 # macOS / Linux (example: macos-arm64 — also: linux-amd64, linux-arm64-headless)

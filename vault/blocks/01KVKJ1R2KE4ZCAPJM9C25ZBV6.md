@@ -9,7 +9,7 @@ The Markdown vault is the source of truth either way; what changes is *where the
 *how clients reach it*.
 
 - **Local (default).** `mdkbd` owns the vault and a local socket — a **Unix-domain socket** on
-  Linux/macOS, a **named pipe** on Windows — and the CLI, MCP server, web UI, and desktop app all
+  Linux/macOS, a **named pipe** on Windows — and the CLI, MCP server, and desktop app all
   connect to it. No configuration; clients auto-start it. To work across machines, **sync only the
   Markdown** (OneDrive, etc.) — each machine runs its own daemon and keeps its own local index.
 - **Remote / shared.** One `mdkbd` runs centrally (e.g. a `replicas: 1` Deployment in k3s) and

@@ -123,7 +123,7 @@ jobs:
             # model is compiled into the binary — so semantic search works straight out of the
             # tarball with no model files alongside.
             tar -C out/$arch -czf mdkb-${{ steps.ver.outputs.version }}-linux-$arch-headless.tar.gz \
-              mdkbd mdkb mdkb-mcp mdkb-web
+              mdkbd mdkb mdkb-mcp
           done
           # Per-arch checksum files so each arch artifact is self-contained.
           sha256sum mdkb-${{ steps.ver.outputs.version }}-linux-amd64-headless.tar.gz > SHA256SUMS-amd64.txt
@@ -232,7 +232,7 @@ jobs:
           cp "$SDK/pathcch.lib"  "$HOME/winlibs/PathCch.lib"
           cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkbd
           # The thin clients never need the embedder.
-          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkb-cli -p mdkb-mcp -p mdkb-web
+          cargo xwin build --release --target x86_64-pc-windows-msvc -p mdkb-cli -p mdkb-mcp
 
       - name: Cross-compile desktop app (Tauri — raw .exe + NSIS installer)
         run: |
@@ -257,14 +257,14 @@ jobs:
           REL=target/x86_64-pc-windows-msvc/release
           APPREL=app/mdkb-tauri/src-tauri/target/x86_64-pc-windows-msvc/release
 
-          # ONE complete archive: the desktop app + every CLI (mdkb, mdkb-mcp, mdkb-web) + the
+          # ONE complete archive: the desktop app + every CLI (mdkb, mdkb-mcp) + the
           # daemon. The daemon is self-contained — the embedding model is compiled into the
           # binary — so no model files ship alongside. bin/ mirrors the app's bundled-resource
           # layout so launching mdkb-tauri.exe portably can auto-start its daemon. Every download
           # is the full product.
           rm -rf dist && mkdir -p dist/bin
           cp "$APPREL/mdkb-tauri.exe" dist/
-          cp "$REL/mdkbd.exe" "$REL/mdkb.exe" "$REL/mdkb-mcp.exe" "$REL/mdkb-web.exe" dist/
+          cp "$REL/mdkbd.exe" "$REL/mdkb.exe" "$REL/mdkb-mcp.exe" dist/
           cp "$REL/mdkbd.exe" "$REL/mdkb-mcp.exe" dist/bin/
           cp "$REL/mdkb.exe" dist/bin/mdkb-cli.exe
           ( cd dist && zip -qr "../mdkb-$V-windows-x64.zip" . )

@@ -1,12 +1,13 @@
 ---
-title: "README: Desktop app & web UI"
+title: "README: Desktop app"
 tags: [doc, readme]
 ---
 
-### Desktop app & web UI
+### Desktop app
 
-Two front-ends share the same `mdkb-view` rendering layer (so they can't drift apart), and both
-connect either way — a **local** socket or a **remote** TCP daemon.
+The desktop app is the human surface — a full **editor and graph browser**, not just a viewer. It
+connects either way: a **local** vault (auto-starting its daemon) or a **remote** TCP daemon
+`host:port` + token, and renders through the shared `mdkb-view` layer.
 
 <table>
   <tr>
@@ -35,10 +36,3 @@ connect either way — a **local** socket or a **remote** TCP daemon.
   **human-only** (🔒 — AI clients can read it but not modify it), and **Settings** (choose a Local
   vault or a Remote daemon `host:port` + token, no env vars; restart the daemon). Point Settings → Local vault at your vault and
   go; see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
-
-- **Local web UI** (`mdkb-web`) — the same views in a browser:
-
-  ```sh
-  mdkb-web --vault ~/my-vault                                 # local → http://127.0.0.1:7878
-  mdkb-web --remote mdkbd.example:7820 --token "$MDKB_TOKEN"  # a remote daemon
-  ```

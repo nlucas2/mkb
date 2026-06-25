@@ -1,7 +1,7 @@
 //! mdkb desktop shell (Tauri).
 //!
 //! A **thin client**: every command fetches data from the daemon via `mdkb-protocol` and
-//! renders through the shared `mdkb-view` layer — the same presentation path as the web UI,
+//! renders through the shared `mdkb-view` layer — the same shared presentation path,
 //! so the two front-ends cannot diverge (see `AGENTS.md`). No knowledge-base behavior (block
 //! parsing, transclusion, indexing, the link graph) lives here; that is all in `mdkb-core`
 //! and reached over the wire. This file is connection management + command glue only.
@@ -71,7 +71,7 @@ impl AppState {
 
 /// A block prepared for the front-end: stable id, display title, raw Markdown (for editing),
 /// and rendered HTML (children expanded, references as chips). HTML is produced by the shared
-/// `mdkb-view` renderer so the desktop and web UIs cannot diverge.
+/// `mdkb-view` renderer so any UI renders identically.
 #[derive(Serialize)]
 struct BlockView {
     id: String,

@@ -82,7 +82,7 @@ impl Default for Activity {
 const MIN_LEASE_TTL: Duration = Duration::from_secs(1);
 const MAX_LEASE_TTL: Duration = Duration::from_secs(300);
 
-/// Active **interactive leases**. A long-lived client (the desktop app / web UI) holds a lease to
+/// Active **interactive leases**. A long-lived client (the desktop app) holds a lease to
 /// keep an auto-started daemon alive while it is open; momentary clients (CLI/MCP) don't need one.
 ///
 /// A lease is acquired-or-renewed by a heartbeat and expires `ttl` after the last heartbeat, so a
@@ -171,7 +171,7 @@ pub fn serve(
     // vault's daemon reaps itself instead of leaking. Every request (local or network) touches
     // the shared tracker. `None` (manual/remote daemon) → no tracker, runs forever.
     //
-    // An interactive client (desktop app / web UI) holds a lease that keeps the daemon alive
+    // An interactive client (desktop app) holds a lease that keeps the daemon alive
     // while it's open; the watchdog only reaps when idle **and** no lease is held. Momentary
     // clients (CLI/MCP) don't lease — their request activity already defers the timer. The lease
     // registry exists regardless (it's cheap); only the watchdog consults it.

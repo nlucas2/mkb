@@ -184,7 +184,7 @@ pub enum Request {
         token: String,
     },
     /// Acquire-or-renew an **interactive lease** that keeps an auto-started daemon alive while a
-    /// long-lived client (the desktop app / web UI) is open. The `lease` id is chosen by the
+    /// long-lived client (the desktop app) is open. The `lease` id is chosen by the
     /// client and stable for its lifetime, so this op is idempotent (acquire and renew are one).
     /// The lease expires `ttl_ms` after the last heartbeat, so a crashed client never pins the
     /// daemon. Handled by the daemon's lifecycle layer, not core. Momentary clients (CLI/MCP)
@@ -526,7 +526,7 @@ impl Client {
     /// - else `MDKB_SOCKET=/path` → that Unix socket.
     /// - else the local socket for `MDKB_VAULT` (or the default vault).
     ///
-    /// This is the single connection-resolution path shared by the desktop app, the web UI,
+    /// This is the single connection-resolution path shared by the desktop app
     /// and any other client, so they cannot drift apart.
     pub fn from_env() -> Result<Client, String> {
         if let Some(remote) = std::env::var_os("MDKB_REMOTE") {

@@ -22,7 +22,7 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Reuse the shared mdkb crates so the desktop UI renders identically to the web UI and can
+# Reuse the shared mdkb crates so the desktop UI renders through the shared view layer and can
 # never diverge from the rest of the product.
 mdkb-core = { path = "../../../crates/mdkb-core", features = ["serde"] }
 mdkb-protocol = { path = "../../../crates/mdkb-protocol" }

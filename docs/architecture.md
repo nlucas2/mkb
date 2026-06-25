@@ -28,7 +28,7 @@ These hold throughout the design:
 - **Files on disk are the single source of truth.** The index is a rebuildable cache, never
   authoritative.
 - **One shared core.** All block / transclusion / index / search / parsing / write behavior lives
-  in `mdkb-core` and is reached through the daemon; the CLI, MCP server, web UI, and desktop app
+  in `mdkb-core` and is reached through the daemon; the CLI, MCP server, and desktop app
   are thin clients, so a bug fixed once is fixed everywhere. (Enforced by the contributing rules
   in [`AGENTS.md`](../AGENTS.md).)
 - **Pluggable seams are traits** (`Index`, `Embedder`, `IdCodec`, transport) — program to the
@@ -149,7 +149,7 @@ source of truth; on any doubt, rebuild from files.
 
 ```
         ┌───────────── thin clients (transport/presentation only) ─────────────┐
-        │   mdkb-cli      mdkb-mcp (MCP)     mdkb-web (HTTP)     mdkb-tauri (app) │
+        │   mdkb-cli          mdkb-mcp (MCP)              mdkb-tauri (app)        │
         └───────────────────────────────┬──────────────────────────────────────┘
                                          │  mdkb-protocol (JSON over local socket / TCP+token)
                                 ┌────────▼────────┐
@@ -170,7 +170,7 @@ source of truth; on any doubt, rebuild from files.
   a remote one. Connection config is shared (`ConnectionConfig` / `connect` / `ensure_daemon` in
   `mdkb-protocol`). The single-daemon-per-vault and idle-shutdown guarantees are below.
 - **Presentation is shared** via `mdkb-view` (Markdown→HTML, wikilink/embed decoration, XSS
-  neutralization), so the web UI and desktop UI render through the exact same path.
+  neutralization), so any current or future UI renders through the exact same path.
 
 ## Single daemon per vault
 
@@ -189,7 +189,7 @@ grace by default) and **reaps itself** once it has been idle that long **and no 
 is attached** — freeing its process and embedder RAM so an unused vault doesn't leak a daemon. Any
 request (including a liveness ping) defers the timer.
 
-Long-lived interactive clients (the desktop app, the web UI) hold a renewable **lease**: they
+Long-lived interactive clients (the desktop app) hold a renewable **lease**: they
 heartbeat the daemon periodically, and it will not reap while any lease is active. A lease carries
 a TTL and lapses if its client stops heartbeating, so a crashed or closed client can never pin the
 daemon open — the lease expires and the idle grace then applies. Momentary clients (the CLI, MCP)
