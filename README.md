@@ -26,21 +26,6 @@ source of truth; the index is a rebuildable cache.
 
 ## Getting started
 
-### Pick your interface
-
-mdkb is one knowledge base with three front-ends — pick whichever fits the moment. They all
-read and write the same vault *through the daemon*, and **you never start the daemon yourself**:
-each client auto-starts it on first use and it self-reaps when idle.
-
-| If you want to… | Use | What it is |
-|---|---|---|
-| Read, edit, and browse the graph | **Desktop app** | a Markdown editor + knowledge-graph browser |
-| Script, search, or pipe from a terminal | **CLI** — `mdkb` | `mdkb search --vault ~/vault "how do I…"` |
-| Give an AI assistant your notes | **MCP server** — `mdkb-mcp` | a set of tools your MCP client calls |
-
-Everything works with AI turned off; semantic search runs entirely on a local model built into the
-daemon (see *Configuration* below).
-
 ### Install
 
 The fastest complete install is one command from a checkout, via
@@ -73,37 +58,12 @@ Every client (CLI, MCP, desktop app) acts on **one vault at a time**, resolved i
 
 1. an explicit `--vault <dir>` flag (the CLI/MCP also accept `--remote`/`--socket`);
 2. the `MDKB_VAULT` environment variable;
-3. the **default** in your vault registry (see below);
+3. the **default** in your vault registry;
 4. the built-in fallback `~/mdkb-vault`.
 
 So you can always be explicit (`mdkb search --vault ~/notes "…"`), or set a default once and drop
-the flag entirely (`mdkb search "…"`).
-
-**The registry file (optional).** Clients read a small per-user JSON file listing your vaults and
-which is the default. You don't need to create it — if it's absent, the built-in `~/mdkb-vault`
-default is used. The desktop app writes it for you when you pick a vault in its settings, and you
-can also hand-edit it like any dotfile. It lives at:
-
-- macOS: `~/Library/Application Support/mdkb/vaults.json`
-- Linux: `~/.config/mdkb/vaults.json` (or `$XDG_CONFIG_HOME/mdkb/`)
-- Windows: `%APPDATA%\mdkb\vaults.json`
-- override the directory with `$MDKB_CONFIG_DIR`.
-
-The format is a list of named vaults plus the `default` to use when no vault is specified:
-
-```json
-{
-  "vaults": [
-    { "name": "notes", "connection": { "mode": "local", "vault": "~/notes" } },
-    { "name": "work",  "connection": { "mode": "remote", "host": "10.0.0.5:7820", "token": "…" } }
-  ],
-  "default": "notes"
-}
-```
-
-A `local` vault is a directory (a leading `~` is expanded, so the same file works across machines);
-a `remote` vault is a token-gated `mdkbd --listen` over TCP. If `default` names a vault that isn't
-in the list, mdkb falls back to the built-in default rather than guessing.
+the flag entirely (`mdkb search "…"`). Naming several vaults and choosing the default lives in the
+**[configuration guide](docs/CONFIGURATION.md)**.
 
 ### Where your vault lives — local or synced
 
@@ -139,6 +99,22 @@ decide what it may change: toggle a block
 **🔒 human-only** from the app and AI clients can read it but never modify it.
 
 ## Using mdkb
+
+### One vault, many interfaces
+
+mdkb is one knowledge base with three front-ends, and a full install gives you all of them — reach
+for whichever fits the task. They all
+read and write the same vault *through the daemon*, and **you never start the daemon yourself**:
+each client auto-starts it on first use and it self-reaps when idle.
+
+| If you want to… | Use | What it is |
+|---|---|---|
+| Read, edit, and browse the graph | **Desktop app** | a Markdown editor + knowledge-graph browser |
+| Script, search, or pipe from a terminal | **CLI** — `mdkb` | `mdkb search --vault ~/vault "how do I…"` |
+| Give an AI assistant your notes | **MCP server** — `mdkb-mcp` | a set of tools your MCP client calls |
+
+Everything works with AI turned off; semantic search runs entirely on a local model built into the
+daemon (see the **[configuration guide](docs/CONFIGURATION.md)**).
 
 ### Command line (`mdkb`)
 
@@ -184,10 +160,6 @@ auto-starts a daemon for the given vault.
 }
 ```
 
-For guidance on using mdkb *well* as an AI client — the DRY/transclusion principle, the process
-for adding knowledge, and effective search patterns — see the example skill at
-[`docs/skills/mdkb-knowledge/SKILL.md`](./docs/skills/mdkb-knowledge/SKILL.md).
-
 ### Desktop app
 
 The desktop app is the human surface — a full **editor and graph browser**, not just a viewer. It
@@ -222,39 +194,7 @@ connects either way: a **local** vault (auto-starting its daemon) or a **remote*
   vault or a Remote daemon `host:port` + token, no env vars; restart the daemon). Point Settings → Local vault at your vault and
   go; see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md).
 
-## Configuration: choosing an embedder (`config.json`)
-
-The embedder backend is configurable per vault via an optional `config.json` in the vault's
-machine-local index directory (the same dir as the index/socket — see the SPEC layout; set
-`$MDKB_INDEX_DIR` to relocate it).
-The model is **never downloaded at runtime** — the default neural model is compiled into the
-daemon, and any other local model is loaded from disk. The `embedder` block selects the source:
-
-```jsonc
-// 1. default / file absent → the model compiled into the daemon (real neural semantic search,
-//    offline, zero config); falls back to the offline hash embedder only when the daemon was
-//    built without the embedded model (`--no-default-features`).
-{ "embedder": { "kind": "bundled" } }
-
-// 2. a different ONNX model directory on disk (ONNX weights + tokenizer files)
-{ "embedder": { "kind": "local", "path": "/models/bge-large", "dim": 1024 } }
-
-// 3. a remote OpenAI-compatible /v1/embeddings endpoint (vLLM, LM Studio, llama.cpp, TEI,
-//    OpenAI). Build the daemon with the `remote` feature. The API key, if any, is read from
-//    the named environment variable so it never lives in config.json.
-{ "embedder": { "kind": "remote", "url": "http://vllm:8000/v1/embeddings",
-                "model": "bge-m3", "api_key_env": "MDKB_EMBED_KEY", "dim": 1024 } }
-
-// 4. force the offline, dependency-free hash embedder (no model)
-{ "embedder": { "kind": "hash" } }
-```
-
-For `bundled`, a model directory on disk **overrides** the compiled-in one: set
-`$MDKB_BUNDLED_MODEL_DIR` (or place a `model/` directory beside the binary) to point at a
-different/newer model. Any misconfiguration (missing model, unreachable endpoint) logs a warning
-and falls back to the hash embedder, so the tool always keeps working. The local neural model
-(ONNX engine + vendored weights) is built in by default; the `remote` (HTTP endpoint) backend is
-an opt-in cargo feature that adds a TLS client.
+Optional, advanced setup — choosing a different embedder and managing multiple vaults — lives in the **[configuration guide](docs/CONFIGURATION.md)**.
 
 ## Deployment
 
@@ -262,6 +202,16 @@ See [`deploy/README.md`](./deploy/README.md). In short: run `mdkbd --vault <dir>
 or deploy the daemon to k3s/Kubernetes as a single writer (`replicas: 1`) serving a
 token-gated TCP API (`deploy/k8s.yaml`, `Dockerfile`). Sync only the Markdown vault across
 machines; each daemon keeps its own local, rebuildable index.
+
+### Skills to reference
+
+Reference **skills** ship in [`docs/skills/`](./docs/skills/) — drop them into your AI agent as-is, or treat them as a starting point to fork and tailor to how *you* use mdkb:
+
+- **Using mdkb well** — the DRY/transclusion principle, the search-before-write process, embed-vs-reference, and effective search patterns: [from an AI client (MCP)](./docs/skills/mdkb-knowledge/SKILL.md) · [from the CLI](./docs/skills/mdkb-cli/SKILL.md).
+- **Keeping the graph clean** — the dedup & audit discipline that finds and repairs near-duplicates: [MCP](./docs/skills/mdkb-dedup-mcp/SKILL.md) · [CLI](./docs/skills/mdkb-dedup/SKILL.md).
+- **Editing mdkb's own docs** — the [docs-as-data workflow](./docs/skills/mdkb-docs-as-data/SKILL.md): edit the source block, then regenerate.
+
+They're plain Markdown with simple frontmatter, so adapt the wording, trim a section, or compose them into a larger skill of your own — a foundation to build on, not a fixed contract.
 
 ## Development
 

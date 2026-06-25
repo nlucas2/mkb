@@ -1,10 +1,12 @@
 ---
 title: "README: Pick your interface"
+updated: 2026-06-25T10:03:47Z
 ---
 
-### Pick your interface
+### One vault, many interfaces
 
-mdkb is one knowledge base with three front-ends — pick whichever fits the moment. They all
+mdkb is one knowledge base with three front-ends, and a full install gives you all of them — reach
+for whichever fits the task. They all
 read and write the same vault *through the daemon*, and **you never start the daemon yourself**:
 each client auto-starts it on first use and it self-reaps when idle.
 
@@ -15,4 +17,4 @@ each client auto-starts it on first use and it self-reaps when idle.
 | Give an AI assistant your notes | **MCP server** — `mdkb-mcp` | a set of tools your MCP client calls |
 
 Everything works with AI turned off; semantic search runs entirely on a local model built into the
-daemon (see *Configuration* below).
+daemon (see the **[configuration guide](docs/CONFIGURATION.md)**).

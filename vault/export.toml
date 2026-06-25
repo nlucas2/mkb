@@ -63,3 +63,8 @@ block = "Dedup skill page (MCP)"
 [[doc]]
 path  = "docs/skills/mdkb-docs-as-data/SKILL.md"
 block = "Docs-as-data skill page"
+
+# Optional, advanced configuration (the README links here).
+[[doc]]
+path  = "docs/CONFIGURATION.md"
+block = "CONFIGURATION page"
