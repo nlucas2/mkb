@@ -162,6 +162,12 @@ enum Command {
     Stats,
     /// Cloud-sync conflict files.
     Conflicts,
+    /// List orphaned assets (files under `assets/` no block references); `--prune` deletes them.
+    Assets {
+        /// Delete the orphaned assets instead of only listing them.
+        #[arg(long)]
+        prune: bool,
+    },
     /// Create a block (body from stdin); prints the new id.
     Create {
         /// Optional block title.
@@ -315,6 +321,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Links { id } => cmd_links(g, &id, false),
         Command::Stats => cmd_stats(g),
         Command::Conflicts => cmd_conflicts(g),
+        Command::Assets { prune } => cmd_assets(g, prune),
         Command::Create { title } => cmd_create(g, title.as_deref()),
         Command::Update { id, title, force } => cmd_update(g, &id, title.as_deref(), force),
         Command::SetTags { id, tags } => cmd_set_tags(g, &id, tags),
@@ -545,6 +552,31 @@ fn cmd_conflicts(g: &GlobalArgs) -> Result<(), String> {
     }
     for f in files {
         println!("{f}");
+    }
+    Ok(())
+}
+
+fn cmd_assets(g: &GlobalArgs, prune: bool) -> Result<(), String> {
+    let c = g.connect()?;
+    let orphans = c.orphan_assets().map_err(|e| e.to_string())?;
+    if orphans.is_empty() {
+        println!("(no orphaned assets)");
+        return Ok(());
+    }
+    if prune {
+        for path in &orphans {
+            c.remove_asset(path).map_err(|e| e.to_string())?;
+            println!("removed {path}");
+        }
+        println!("pruned {} orphaned asset(s)", orphans.len());
+    } else {
+        for path in &orphans {
+            println!("{path}");
+        }
+        eprintln!(
+            "{} orphaned asset(s); re-run with --prune to delete them",
+            orphans.len()
+        );
     }
     Ok(())
 }

@@ -14,7 +14,9 @@ use crate::blockfile::write_block;
 use crate::embed::Embedder;
 use crate::id::BlockId;
 use crate::index::{block_links, BlockRecord, Index, IndexError, SearchHit, SearchQuery};
-use crate::vault::{block_rel_path, read_block_files, Vault, BLOCKS_DIR};
+use crate::vault::{
+    block_rel_path, read_block_files, sanitize_asset_filename, Vault, ASSETS_DIR, BLOCKS_DIR,
+};
 
 /// Result of a reconcile pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -212,7 +214,75 @@ impl<I: Index> SyncEngine<I> {
         Ok(id)
     }
 
-    /// Overwrite a block's body (+ optional title), persisting to its file. The block's managed
+    /// Write binary asset `bytes` into the vault's `assets/` directory under a safe filename
+    /// derived from `suggested_name`, returning the **vault-relative** path (e.g. `assets/x.png`)
+    /// to drop into a Markdown image. The name is sanitised to a single safe component and made
+    /// unique against existing files (`name.ext`, then `name-1.ext`, …) so an import never
+    /// silently overwrites an existing asset. Assets are not indexed — this just lands a file in
+    /// the vault for a block to reference.
+    pub fn add_asset(&self, suggested_name: &str, bytes: &[u8]) -> Result<String, IndexError> {
+        let dir = self.root.join(ASSETS_DIR);
+        std::fs::create_dir_all(&dir).map_err(io_err)?;
+        let safe = sanitize_asset_filename(suggested_name);
+        let (stem, ext) = match safe.rsplit_once('.') {
+            Some((s, e)) => (s.to_string(), Some(e.to_string())),
+            None => (safe.clone(), None),
+        };
+        let mut name = safe.clone();
+        let mut n = 0u32;
+        while dir.join(&name).exists() {
+            n += 1;
+            name = match &ext {
+                Some(ext) => format!("{stem}-{n}.{ext}"),
+                None => format!("{stem}-{n}"),
+            };
+        }
+        std::fs::write(dir.join(&name), bytes).map_err(io_err)?;
+        Ok(format!("{ASSETS_DIR}/{name}"))
+    }
+
+    /// List **orphaned assets**: files under the vault's `assets/` directory that no block
+    /// references. Each is returned as a vault-relative path (e.g. `assets/old.png`), sorted.
+    ///
+    /// Reference detection is deliberately conservative — an asset counts as referenced if *any*
+    /// block body contains its path as a substring (so `![](assets/x.png)`, `![](./assets/x.png)`
+    /// and `[](/assets/x.png)` all keep it). This errs toward keeping a file; cleanup is never
+    /// automatic. Only `assets/` is scanned, so unrelated files elsewhere in the vault are untouched.
+    pub fn orphan_assets(&self) -> Vec<String> {
+        let mut assets = Vec::new();
+        collect_files_rel(&self.root.join(ASSETS_DIR), ASSETS_DIR, &mut assets);
+        let bodies: Vec<&str> = self
+            .vault
+            .blocks()
+            .iter()
+            .map(|b| b.body.as_str())
+            .collect();
+        let mut orphans: Vec<String> = assets
+            .into_iter()
+            .filter(|rel| !bodies.iter().any(|body| body.contains(rel.as_str())))
+            .collect();
+        orphans.sort();
+        orphans
+    }
+
+    /// Delete an asset by its vault-relative path (as returned by [`SyncEngine::orphan_assets`]).
+    /// The path is confined to the vault's `assets/` directory: traversal is rejected and any path
+    /// outside `assets/` is refused, so this can only remove files mdkb manages as assets.
+    pub fn remove_asset(&self, rel: &str) -> Result<(), IndexError> {
+        let clean = crate::vault::safe_relative_path(rel).map_err(io_err)?;
+        let prefix = format!("{ASSETS_DIR}/");
+        if !clean.starts_with(&prefix) {
+            return Err(io_err(format!(
+                "not an asset path (must be under {ASSETS_DIR}/): {rel}"
+            )));
+        }
+        let abs = self.root.join(&clean);
+        match std::fs::remove_file(&abs) {
+            Ok(()) => Ok(()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io_err(e)),
+        }
+    }
     /// frontmatter `tags:`, its `locked:` flag, and its arbitrary `props` are **preserved** across
     /// the edit (each is changed via its own op — [`SyncEngine::set_tags`] / [`SyncEngine::set_lock`]
     /// / [`SyncEngine::set_props`] — not by a body edit, so editing prose never drops tags, silently
@@ -482,6 +552,28 @@ fn conflict_file_names(root: &Path) -> Vec<String> {
     out
 }
 
+/// Recursively collect files under `dir`, returning each as a forward-slash path prefixed with
+/// `rel_prefix` (the vault-relative directory). Used to enumerate `assets/` for the orphan sweep.
+/// A missing directory yields nothing; symlinks are followed only as the OS metadata reports.
+fn collect_files_rel(dir: &Path, rel_prefix: &str, out: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let rel = format!("{rel_prefix}/{name}");
+        if entry.path().is_dir() {
+            collect_files_rel(&entry.path(), &rel, out);
+        } else {
+            out.push(rel);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +595,52 @@ mod tests {
             e.vault().block(&id).unwrap().title.as_deref(),
             Some("Title")
         );
+    }
+
+    #[test]
+    fn add_asset_writes_file_and_uniquifies() {
+        let (dir, e) = engine();
+        let rel = e.add_asset("diagram.png", b"PNGDATA").unwrap();
+        assert_eq!(rel, "assets/diagram.png");
+        let p = dir.path().join(&rel);
+        assert_eq!(std::fs::read(&p).unwrap(), b"PNGDATA");
+        // A second import of the same name does not overwrite — it gets a unique suffix.
+        let rel2 = e.add_asset("diagram.png", b"OTHER").unwrap();
+        assert_eq!(rel2, "assets/diagram-1.png");
+        assert_eq!(std::fs::read(dir.path().join(&rel)).unwrap(), b"PNGDATA");
+        // A path-like name is reduced to a safe filename inside assets/ (no traversal).
+        let rel3 = e.add_asset("../../evil.sh", b"x").unwrap();
+        assert_eq!(rel3, "assets/evil.sh");
+        assert!(dir.path().join("assets/evil.sh").exists());
+        // assets/ is not indexed.
+        assert_eq!(e.index().stats().unwrap().blocks, 0);
+    }
+
+    #[test]
+    fn orphan_assets_lists_unreferenced_and_remove_deletes() {
+        let (dir, mut e) = engine();
+        let used = e.add_asset("used.png", b"a").unwrap();
+        let orphan = e.add_asset("orphan.png", b"b").unwrap();
+        // A block references `used.png` (relative form with ./ still counts).
+        e.create_block(None, &format!("see ![pic](./{used})\n"))
+            .unwrap();
+
+        let orphans = e.orphan_assets();
+        assert_eq!(
+            orphans,
+            vec![orphan.clone()],
+            "only the unreferenced asset is an orphan"
+        );
+
+        // Removing the orphan deletes the file; the referenced one stays.
+        e.remove_asset(&orphan).unwrap();
+        assert!(!dir.path().join(&orphan).exists());
+        assert!(dir.path().join(&used).exists());
+        assert!(e.orphan_assets().is_empty());
+
+        // Confinement: a non-asset / traversal path is refused.
+        assert!(e.remove_asset("blocks/whatever.md").is_err());
+        assert!(e.remove_asset("../secret").is_err());
     }
 
     #[test]

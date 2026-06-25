@@ -12,9 +12,7 @@ use std::time::Duration;
 
 use mdkb_core::{BlockId, GraphData, SearchQuery};
 use mdkb_protocol::{connect, Client, ConnectionConfig, DaemonPaths};
-use mdkb_view::{
-    block_title, markdown_to_html, markdown_to_html_with_assets, search_results_html, ResultRow,
-};
+use mdkb_view::{block_title, markdown_to_html_with_assets, search_results_html, ResultRow};
 use serde::Serialize;
 use tauri::Manager;
 
@@ -201,8 +199,11 @@ fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockVi
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("block not found: {id}"))?;
     let html = match &*state.cfg.lock().map_err(|_| "state poisoned")? {
-        ConnectionConfig::Local { vault } => markdown_to_html_with_assets(&rb.rendered, vault),
-        _ => markdown_to_html(&rb.rendered),
+        ConnectionConfig::Local { vault } => {
+            markdown_to_html_with_assets(&rb.rendered, Some(vault))
+        }
+        // Remote vault: no local files to serve, but external images are still blocked.
+        _ => markdown_to_html_with_assets(&rb.rendered, None),
     };
     Ok(BlockView {
         html,
@@ -320,6 +321,47 @@ fn create_block(
         .create_block(title.as_deref(), &body)
         .map(|id| id.to_string())
         .map_err(|e| e.to_string())
+}
+
+/// Largest asset the app will import in one go. Kept comfortably under the daemon's 8 MiB
+/// request-line cap once base64-expanded (~33%), so an oversized drop fails fast with a clear
+/// message instead of a wire error.
+const MAX_ASSET_BYTES: usize = 5 * 1024 * 1024;
+
+/// Import a dropped/pasted image (or other file) into the vault's `assets/` directory via the
+/// daemon, returning the vault-relative path (`assets/<name>`) to insert into a block.
+#[tauri::command]
+fn add_asset(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    data: Vec<u8>,
+) -> Result<String, String> {
+    if data.is_empty() {
+        return Err("empty file".to_string());
+    }
+    if data.len() > MAX_ASSET_BYTES {
+        return Err(format!(
+            "file is too large ({:.1} MB); the limit is {} MB",
+            data.len() as f64 / (1024.0 * 1024.0),
+            MAX_ASSET_BYTES / (1024 * 1024)
+        ));
+    }
+    let client = state.connected()?;
+    client.add_asset(&name, &data).map_err(|e| e.to_string())
+}
+
+/// List orphaned assets (files under `assets/` referenced by no block) for the cleanup UI.
+#[tauri::command]
+fn orphan_assets(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    let client = state.connected()?;
+    client.orphan_assets().map_err(|e| e.to_string())
+}
+
+/// Delete an asset by its vault-relative `assets/…` path (orphan-sweep cleanup).
+#[tauri::command]
+fn remove_asset(state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
+    let client = state.connected()?;
+    client.remove_asset(&path).map_err(|e| e.to_string())
 }
 
 /// Carve the selected byte range of a parent's body into a new child (replace in place).
@@ -572,6 +614,9 @@ pub fn run() {
             search,
             save_block,
             create_block,
+            add_asset,
+            orphan_assets,
+            remove_asset,
             carve_selection,
             delete_block,
             link_blocks,

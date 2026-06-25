@@ -448,6 +448,31 @@ impl<I: Index> Service<I> {
         self.engine.create_block(title, body)
     }
 
+    /// List orphaned assets — files under `assets/` referenced by no block. Read-only.
+    pub fn orphan_assets(&self, ctx: &RequestContext) -> Result<Vec<String>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(self.engine.orphan_assets())
+    }
+
+    /// Delete an asset by its vault-relative `assets/…` path. Requires [`Capability::Write`].
+    pub fn remove_asset(&self, ctx: &RequestContext, rel: &str) -> Result<(), IndexError> {
+        ctx.authorize(Capability::Write)?;
+        self.engine.remove_asset(rel)
+    }
+
+    /// Import a binary asset (image, etc.) into the vault's `assets/` directory under a safe,
+    /// unique filename, returning the vault-relative path to reference from a block. Requires the
+    /// [`Capability::Write`] capability. Assets are not indexed.
+    pub fn add_asset(
+        &self,
+        ctx: &RequestContext,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<String, IndexError> {
+        ctx.authorize(Capability::Write)?;
+        self.engine.add_asset(name, bytes)
+    }
+
     /// Overwrite a block's title + body.
     ///
     /// `update_block` replaces the **entire** body, so a caller that sends a truncated or empty

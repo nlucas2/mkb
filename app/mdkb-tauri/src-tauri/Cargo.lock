@@ -1720,6 +1720,7 @@ dependencies = [
 name = "mdkb-protocol"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "interprocess",
  "mdkb-core",
  "serde",

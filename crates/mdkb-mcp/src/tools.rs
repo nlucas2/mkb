@@ -413,6 +413,7 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
         Response::Ok => Ok("ok".to_string()),
         Response::Text(t) => Ok(t.clone().unwrap_or_else(|| "(not found)".to_string())),
         Response::BlockId(id) => Ok(id.to_string()),
+        Response::Path(p) => Ok(p.clone()),
         Response::Linked(o) => Ok(match o {
             mdkb_core::LinkOutcome::Reference => "linked (reference)".to_string(),
             mdkb_core::LinkOutcome::Transclusion => "linked (transclusion)".to_string(),

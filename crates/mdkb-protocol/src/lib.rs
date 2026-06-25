@@ -95,6 +95,21 @@ pub enum Request {
         /// Markdown body.
         body: String,
     },
+    /// Import a binary asset (image, etc.) into the vault's `assets/` directory. The bytes are
+    /// base64-encoded so they travel as a single JSON string within the line-length cap.
+    AddAsset {
+        /// Suggested filename (sanitised + made unique server-side).
+        name: String,
+        /// Asset bytes, base64 (standard alphabet, no line breaks).
+        data_base64: String,
+    },
+    /// List orphaned assets: files under `assets/` that no block references.
+    OrphanAssets,
+    /// Delete an asset by its vault-relative `assets/…` path (e.g. an orphan being swept).
+    RemoveAsset {
+        /// Vault-relative path under `assets/`.
+        path: String,
+    },
     /// Overwrite a block's title + body. `force` overrides the destructive-update guard (which
     /// refuses an edit that would empty a block or strip most of its content).
     UpdateBlock {
@@ -253,6 +268,8 @@ pub enum Response {
     Links(Vec<LinkRow>),
     /// An affected block id (e.g. after create/carve).
     BlockId(BlockId),
+    /// A vault-relative path (e.g. an imported asset's `assets/<name>`).
+    Path(String),
     /// The outcome of a link/embed write (may report a cycle-avoiding downgrade).
     Linked(LinkOutcome),
     /// Success with no payload.
@@ -324,6 +341,15 @@ fn handle<I: Index>(
                 .create_block(ctx, title.as_deref(), &body)
                 .map_err(to_str)?,
         ),
+        Request::AddAsset { name, data_base64 } => {
+            let bytes = base64_decode(&data_base64).map_err(|e| e.to_string())?;
+            Response::Path(service.add_asset(ctx, &name, &bytes).map_err(to_str)?)
+        }
+        Request::OrphanAssets => Response::Names(service.orphan_assets(ctx).map_err(to_str)?),
+        Request::RemoveAsset { path } => {
+            service.remove_asset(ctx, &path).map_err(to_str)?;
+            Response::Ok
+        }
         Request::UpdateBlock {
             id,
             title,
@@ -433,6 +459,18 @@ pub fn decode_request(line: &str) -> serde_json::Result<Request> {
 /// Decode a response from a JSON line.
 pub fn decode_response(line: &str) -> serde_json::Result<Response> {
     serde_json::from_str(line.trim())
+}
+
+/// Base64-encode bytes (standard alphabet, no line breaks) for transport as a JSON string.
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Decode a base64 (standard alphabet) string back to bytes.
+fn base64_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.decode(s)
 }
 
 /// Write a request (newline-terminated) to a stream and flush.
@@ -767,6 +805,37 @@ impl Client {
         }
     }
 
+    /// Convenience: import a binary asset into the vault's `assets/` directory. Returns the
+    /// vault-relative path (e.g. `assets/<name>`) to reference from a block. The bytes are
+    /// base64-encoded on the wire.
+    pub fn add_asset(&self, name: &str, bytes: &[u8]) -> io::Result<String> {
+        match self.call(&Request::AddAsset {
+            name: name.to_string(),
+            data_base64: base64_encode(bytes),
+        })? {
+            Response::Path(p) => Ok(p),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: list orphaned assets (files under `assets/` no block references).
+    pub fn orphan_assets(&self) -> io::Result<Vec<String>> {
+        match self.call(&Request::OrphanAssets)? {
+            Response::Names(v) => Ok(v),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: delete an asset by its vault-relative `assets/…` path.
+    pub fn remove_asset(&self, path: &str) -> io::Result<()> {
+        match self.call(&Request::RemoveAsset {
+            path: path.to_string(),
+        })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// Convenience: update a block. `force` bypasses the destructive-update guard (an edit that
     /// would empty the block or strip most of its content); pass `false` for ordinary edits.
     pub fn update_block(
@@ -991,6 +1060,90 @@ mod tests {
             Response::Stats(s) => assert_eq!(s.blocks, 1),
             other => panic!("expected stats, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dispatch_add_asset_writes_file_and_returns_path() {
+        let (dir, mut svc) = service();
+        let ctx = RequestContext::local();
+        let rel = match dispatch(
+            &mut svc,
+            &ctx,
+            Request::AddAsset {
+                name: "pic.png".into(),
+                data_base64: base64_encode(b"\x89PNG\r\n\x1a\n"),
+            },
+        ) {
+            Response::Path(p) => p,
+            other => panic!("expected path, got {other:?}"),
+        };
+        assert_eq!(rel, "assets/pic.png");
+        assert_eq!(
+            std::fs::read(dir.path().join(&rel)).unwrap(),
+            b"\x89PNG\r\n\x1a\n"
+        );
+        // Not indexed.
+        match dispatch(&mut svc, &ctx, Request::Stats) {
+            Response::Stats(s) => assert_eq!(s.blocks, 0),
+            other => panic!("expected stats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_orphan_and_remove_assets() {
+        let (dir, mut svc) = service();
+        let ctx = RequestContext::local();
+        // Two assets; one is referenced by a block, one is not.
+        for name in ["used.png", "orphan.png"] {
+            dispatch(
+                &mut svc,
+                &ctx,
+                Request::AddAsset {
+                    name: name.into(),
+                    data_base64: base64_encode(b"x"),
+                },
+            );
+        }
+        dispatch(
+            &mut svc,
+            &ctx,
+            Request::CreateBlock {
+                title: None,
+                body: "![p](assets/used.png)".into(),
+            },
+        );
+        match dispatch(&mut svc, &ctx, Request::OrphanAssets) {
+            Response::Names(v) => assert_eq!(v, vec!["assets/orphan.png".to_string()]),
+            other => panic!("expected names, got {other:?}"),
+        }
+        match dispatch(
+            &mut svc,
+            &ctx,
+            Request::RemoveAsset {
+                path: "assets/orphan.png".into(),
+            },
+        ) {
+            Response::Ok => {}
+            other => panic!("expected ok, got {other:?}"),
+        }
+        assert!(!dir.path().join("assets/orphan.png").exists());
+        assert!(dir.path().join("assets/used.png").exists());
+    }
+
+    #[test]
+    fn dispatch_add_asset_is_refused_without_write_capability() {
+        let (_dir, mut svc) = service();
+        let ctx = RequestContext::remote("agent");
+        // A read-only remote context (no Write capability) must not be able to write assets.
+        let resp = dispatch(
+            &mut svc,
+            &ctx,
+            Request::AddAsset {
+                name: "x.png".into(),
+                data_base64: base64_encode(b"data"),
+            },
+        );
+        assert!(matches!(resp, Response::Error { .. }), "got {resp:?}");
     }
 
     #[test]

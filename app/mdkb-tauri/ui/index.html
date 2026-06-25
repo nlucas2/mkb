@@ -126,12 +126,16 @@
 
       .content > :first-child { margin-top:.2rem; }
       .content { cursor:text; }
+      /* Vault images: never overflow the reading pane; scale down, keep aspect ratio. */
+      .content img { max-width:100%; height:auto; border-radius:6px; }
       /* Clean reading view: embeds dissolved inline, references as subtle links, no chrome. */
       .reading { cursor:default; line-height:1.75; font-size:15.5px; }
       .reading .wikilink { background:none; border:none; padding:0; color:var(--fg); text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:2px; white-space:normal; }
       .reading .wikilink:hover { color:var(--accent); }
       .reading .wikilink.unresolved { color:var(--bad); text-decoration-style:dashed; }
       .editarea { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--accent); border-radius:6px; padding:.5rem .6rem; font:14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; resize:vertical; }
+      .editarea.dropping { outline:2px dashed var(--accent); outline-offset:2px; }
+      .mdkb-extern-img { display:inline-flex; gap:.35rem; align-items:center; padding:.1rem .5rem; border:1px dashed var(--border); border-radius:6px; color:var(--muted); font-size:.9em; cursor:help; }
       .titleedit { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.45rem .6rem; margin-bottom:.5rem; font:inherit; }
       .editbar { display:flex; gap:.5rem; align-items:center; margin:.4rem 0 0; }
       .editbar .muted { margin-left:auto; }
@@ -619,13 +623,18 @@
           <div class="editbar">
             <button class="primary" id="save">Save</button>
             <button id="carve" title="Extract the selected text into its own reusable block">⑂ Carve selection</button>
-            <span class="muted" id="msg">Type <code>[[</code> to link/embed a block.</span>
+            <button id="attach" title="Add an image to the vault and insert it here">🖼 Add image</button>
+            <input type="file" id="imgfile" accept="image/*" multiple hidden />
+            <span class="muted" id="msg">Type <code>[[</code> to link/embed · drag, paste, or add an image.</span>
           </div>
           <div class="reflegend" id="reflegend"></div>`;
         body.querySelector("#t").value = title || "";
         const ta = body.querySelector("#b");
         ta.value = src; attachPicker(ta);
         const legend = body.querySelector("#reflegend");
+        // Ensure the block index is loaded so the legend resolves ULID targets to titles instead
+        // of showing raw ids (the index is otherwise loaded lazily by the [[ picker).
+        await getIndex();
         renderLegend(legend, ta.value);
         ta.addEventListener("input", () => renderLegend(legend, ta.value));
         body.querySelector("#save").onclick = async () => {
@@ -644,6 +653,67 @@
             invalidate(); await loadBlocks(id); openBlock(id);
           } catch (e) { body.querySelector("#msg").textContent = String(e); }
         };
+        // Image import: button, drag-and-drop, and paste all funnel through the shared wiring.
+        wireImageImport(ta, body.querySelector("#msg"), body.querySelector("#imgfile"), body.querySelector("#attach"));
+      }
+
+      // Wire image import onto a textarea: the optional Add-image button + hidden file input, plus
+      // drag-and-drop and paste. Each path calls importImages, which writes files into the vault
+      // (assets/) via the daemon and inserts a Markdown image at the caret. Shared by the block
+      // editor and the new-block draft so both behave identically (one place to fix).
+      function wireImageImport(ta, msg, fileInput, attachBtn) {
+        if (attachBtn && fileInput) {
+          attachBtn.onclick = () => fileInput.click();
+          fileInput.onchange = () => { importImages(ta, fileInput.files, msg); fileInput.value = ""; };
+        }
+        ta.addEventListener("dragover", (e) => { e.preventDefault(); ta.classList.add("dropping"); });
+        ta.addEventListener("dragleave", () => ta.classList.remove("dropping"));
+        ta.addEventListener("drop", (e) => {
+          e.preventDefault(); ta.classList.remove("dropping");
+          if (e.dataTransfer && e.dataTransfer.files.length) importImages(ta, e.dataTransfer.files, msg);
+        });
+        ta.addEventListener("paste", (e) => {
+          const files = [...(e.clipboardData?.items || [])]
+            .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+            .map((it) => it.getAsFile())
+            .filter(Boolean);
+          if (files.length) { e.preventDefault(); importImages(ta, files, msg); }
+        });
+      }
+
+      // Map an image MIME type to a file extension for paste/screenshot files that arrive unnamed.
+      const IMG_EXT = { "image/png":"png","image/jpeg":"jpg","image/gif":"gif","image/webp":"webp","image/svg+xml":"svg","image/bmp":"bmp","image/avif":"avif" };
+
+      // Import one or more image files into the vault and insert ![](assets/…) at the caret. Each
+      // file's bytes go to the daemon (which writes assets/ and returns the vault-relative path);
+      // non-image files are skipped. Errors are surfaced in the editor status line.
+      async function importImages(ta, fileList, msg) {
+        const files = [...fileList].filter((f) => !f.type || f.type.startsWith("image/"));
+        if (!files.length) { if (msg) msg.textContent = "Only image files can be added."; return; }
+        for (const file of files) {
+          try {
+            if (msg) msg.textContent = `Adding ${file.name || "image"}…`;
+            const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+            const name = file.name || `pasted-${Date.now()}.${IMG_EXT[file.type] || "png"}`;
+            const rel = await invoke("add_asset", { name, data: bytes });
+            const alt = (file.name || "image").replace(/\.[^.]+$/, "");
+            insertAtCursor(ta, `![${alt}](${rel})\n`);
+            if (msg) msg.textContent = `Added ${rel}`;
+          } catch (e) {
+            if (msg) msg.textContent = `Could not add image: ${e}`;
+          }
+        }
+      }
+
+      // Insert text at the textarea's caret (replacing any selection) and keep the caret after it,
+      // firing an input event so the reference legend refreshes.
+      function insertAtCursor(ta, text) {
+        const s = ta.selectionStart ?? ta.value.length, e = ta.selectionEnd ?? ta.value.length;
+        ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
+        const pos = s + text.length;
+        ta.selectionStart = ta.selectionEnd = pos;
+        ta.focus();
+        ta.dispatchEvent(new Event("input"));
       }
 
       async function renderRefs(body, id) {
@@ -913,10 +983,13 @@
           <div class="editbar">
             <button class="primary" id="save">Create block</button>
             <button id="cancel">Cancel</button>
-            <span class="muted" id="msg">New block — nothing is saved until you create it. Type <code>[[</code> to link.</span>
+            <button id="attach" title="Add an image to the vault and insert it here">🖼 Add image</button>
+            <input type="file" id="imgfile" accept="image/*" multiple hidden />
+            <span class="muted" id="msg">New block — nothing is saved until you create it. Type <code>[[</code> to link · drag, paste, or add an image.</span>
           </div>`;
         const tt = body.querySelector("#t"), ta = body.querySelector("#b");
         attachPicker(ta);
+        wireImageImport(ta, body.querySelector("#msg"), body.querySelector("#imgfile"), body.querySelector("#attach"));
         const discard = () => { mode = "read"; loadBlocks(); if (active) openBlock(active); else mainEl.innerHTML = `<div class="pad"><p class="muted">Select or create a block.</p></div>`; };
         const create = async () => {
           const title = tt.value.trim() || null;
@@ -1059,6 +1132,10 @@
             <label>Daemon</label>
             <p class="hint">Restart the background <code>mdkbd</code> — it shuts down and a fresh one starts on the next action. Use this after updating the app so a still-running older daemon is replaced.</p>
             <div class="row"><button id="restartd">Restart daemon</button><span class="muted" id="restartmsg"></span></div>
+            <hr style="border:none;border-top:1px solid var(--border);margin:1.4rem 0"/>
+            <label>Unused images</label>
+            <p class="hint">Images under <code>assets/</code> that no block references. Deleting one removes the file from the vault; this is never automatic, since an image can be shared by several blocks.</p>
+            <div id="orphans"><span class="muted">Scanning…</span></div>
           </div>`;
         mainEl.querySelectorAll("input[name=mode]").forEach((r) => (r.onchange = () => {
           const local = mainEl.querySelector("input[name=mode]:checked").value === "local";
@@ -1090,6 +1167,36 @@
             invalidate(); await refreshStatus(); await loadBlocks();
             toast("Daemon restarted.");
           } catch (e) { msg.textContent = String(e); toast(String(e), "error"); }
+        };
+        loadOrphans();
+      }
+
+      // Populate the Settings "Unused images" list with assets no block references; each row can be
+      // deleted individually, with a "Remove all" shortcut. Re-scans after any deletion so the list
+      // stays accurate.
+      async function loadOrphans() {
+        const box = mainEl.querySelector("#orphans");
+        if (!box) return;
+        let orphans;
+        try { orphans = await invoke("orphan_assets"); }
+        catch (e) { box.innerHTML = `<span class="muted">${esc(e)}</span>`; return; }
+        if (!orphans.length) { box.innerHTML = `<span class="muted">No unused images.</span>`; return; }
+        box.innerHTML =
+          `<ul class="taglist">${orphans.map((p) =>
+            `<li><span>${esc(p)}</span><button class="del-orphan" data-p="${esc(p)}" style="margin-left:auto" title="Delete this image">Delete</button></li>`
+          ).join("")}</ul>` +
+          `<div class="row" style="margin-top:.5rem"><button id="prune-all">Remove all (${orphans.length})</button><span class="muted" id="orphmsg"></span></div>`;
+        box.querySelectorAll(".del-orphan").forEach((b) => (b.onclick = async () => {
+          try { await invoke("remove_asset", { path: b.dataset.p }); loadOrphans(); }
+          catch (e) { mainEl.querySelector("#orphmsg").textContent = String(e); }
+        }));
+        box.querySelector("#prune-all").onclick = async () => {
+          const ok = await confirmModal(`Delete ${orphans.length} unused image(s) from the vault? This cannot be undone.`, { confirmLabel: "Delete all", danger: true });
+          if (!ok) return;
+          try {
+            for (const p of orphans) await invoke("remove_asset", { path: p });
+            toast(`Removed ${orphans.length} unused image(s).`); loadOrphans();
+          } catch (e) { mainEl.querySelector("#orphmsg").textContent = String(e); }
         };
       }
 
@@ -1127,6 +1234,14 @@
       document.getElementById("tabRoots").onclick = () => { if (navScope !== "roots") { navScope = "roots"; loadBlocks(active); } };
       document.getElementById("tabAll").onclick = () => { if (navScope !== "all") { navScope = "all"; loadBlocks(active); } };
       window.__mdkb = { settings: showSettings };
+
+      // Global drop guard: dropping a file anywhere that isn't an editor textarea would otherwise
+      // make the WebView navigate to it (a blank/404 page). Swallow drops by default; the editor's
+      // own textarea handlers still run (and import the image) before this bubbles up.
+      window.addEventListener("dragover", (e) => { e.preventDefault(); });
+      window.addEventListener("drop", (e) => {
+        if (!(e.target instanceof HTMLTextAreaElement)) e.preventDefault();
+      });
 
       // Intercept clicks on shared `mdkb:` reference links (chips + embed-card headers) to navigate.
       mainEl.addEventListener("click", (e) => {

@@ -20,7 +20,12 @@ tags: [spec, doc]
 Only `blocks/` is indexed. Anything else in the vault — an `assets/` directory of images, other
 attachments — is carried along by sync but ignored by the index; a block displays such a file with
 a normal Markdown image/link using a **vault-relative** path (`![](assets/diagram.png)`), which the
-desktop app loads from disk.
+desktop app loads from disk. **External** image URLs (`https:`, `data:`, `//host/…`) are **not**
+fetched — the app shows an inert placeholder instead, so an image source in an AI-written block can
+never act as a tracking or exfiltration request. Assets are never deleted automatically (an image
+may be shared by several blocks); **orphans** — files under `assets/` that no block references —
+are surfaced for explicit cleanup (`mdkb assets`, `--prune` to delete; or the desktop app's
+Settings → *Unused images*).
 
 The index, socket, lock, and log are **machine-local** and live **outside** the vault, in a
 per-vault directory under the OS local-data location — so a cloud-synced vault never syncs the

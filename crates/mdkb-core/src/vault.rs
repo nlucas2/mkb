@@ -16,6 +16,11 @@ use crate::id::BlockId;
 /// The directory (relative to the vault root) that holds block files.
 pub const BLOCKS_DIR: &str = "blocks";
 
+/// The directory (relative to the vault root) that holds non-block assets — images and other
+/// files a block references with a normal Markdown `![](assets/…)` / `[](assets/…)` link. Assets
+/// are carried by sync but never indexed (only `BLOCKS_DIR` is scanned for content).
+pub const ASSETS_DIR: &str = "assets";
+
 /// An in-memory collection of block files with id/title resolution.
 #[derive(Debug, Clone, Default)]
 pub struct Vault {
@@ -213,6 +218,48 @@ pub fn safe_relative_path(rel: &str) -> Result<String, String> {
     Ok(clean.join("/"))
 }
 
+/// Reduce a caller-supplied asset filename to a single safe `stem.ext` component.
+///
+/// Only the final path component is kept (any directories in `name` are dropped), then characters
+/// are restricted to `[A-Za-z0-9._-]` (others become `-`), leading dots/dashes are trimmed, and a
+/// single extension is preserved. An empty or extension-only result falls back to `file`. The
+/// result is always a safe relative filename — it can never contain a path separator, `..`, or a
+/// drive/scheme `:` — so joining it under the vault's assets dir cannot escape the vault.
+pub fn sanitize_asset_filename(name: &str) -> String {
+    let base = name
+        .replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let (stem, ext) = match base.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() && !e.is_empty() => (s, Some(e)),
+        _ => (base.as_str(), None),
+    };
+    let clean = |s: &str| -> String {
+        let mapped: String = s
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        mapped.trim_matches(['.', '-', ' ']).to_string()
+    };
+    let mut stem = clean(stem);
+    if stem.is_empty() {
+        stem = "file".to_string();
+    }
+    match ext.map(clean).filter(|e| !e.is_empty()) {
+        Some(ext) => format!("{stem}.{ext}"),
+        None => stem,
+    }
+}
+
 /// Read every `blocks/<ulid>.md` file under `root`, returning `(id, abs path, source)`.
 /// Files whose stem is not a valid ULID are skipped (they are not mdkb blocks).
 pub fn read_block_files(root: &Path) -> io::Result<Vec<(BlockId, std::path::PathBuf, String)>> {
@@ -291,5 +338,22 @@ mod tests {
         assert_eq!(v.children(&s), vec![t.clone()]);
         assert_eq!(v.referenced_by(&t), vec![s.clone()]);
         assert_eq!(v.transcluded_by(&t), vec![s]);
+    }
+
+    #[test]
+    fn sanitize_asset_filename_keeps_safe_names_and_neutralises_paths() {
+        assert_eq!(sanitize_asset_filename("diagram.png"), "diagram.png");
+        assert_eq!(sanitize_asset_filename("My Photo.JPG"), "My-Photo.JPG");
+        // Directory components and traversal are stripped to a single safe filename.
+        assert_eq!(sanitize_asset_filename("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_asset_filename("a/b/c.png"), "c.png");
+        assert_eq!(sanitize_asset_filename("C:\\temp\\x.png"), "x.png");
+        // No separators, `..`, or scheme `:` can survive.
+        for tricky in ["..", "/", ".hidden", "  .png", ""] {
+            let out = sanitize_asset_filename(tricky);
+            assert!(!out.is_empty());
+            assert!(!out.contains('/') && !out.contains('\\') && !out.contains(':'));
+            assert_ne!(out, "..");
+        }
     }
 }

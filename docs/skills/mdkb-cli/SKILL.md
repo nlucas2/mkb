@@ -126,6 +126,7 @@ mdkb backlinks --vault <vault> <id>          # blocks that reference/embed <id> 
 mdkb links --vault <vault> <id>              # outgoing links/embeds from <id>
 mdkb stats --vault <vault>                   # index statistics
 mdkb conflicts --vault <vault>               # cloud-sync conflict files, if any
+mdkb assets --vault <vault>                  # orphaned assets (no block references); --prune to delete
 mdkb ping --vault <vault>                    # confirm the daemon is reachable
 ```
 

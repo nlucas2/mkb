@@ -45,3 +45,13 @@ tags: [doc, readme]
 - **Desktop app — light theme** *(planned)*: the app currently ships a single dark theme. Add a
   light theme and a theme toggle (follow the OS appearance by default), so the editor, graph, and
   block cards read well on a light background. Until then, the README screenshots are dark-only.
+- **Limited inline HTML rendering** *(planned)*: `mdkb-view` currently neutralises **all** raw HTML
+  in a block (re-emitting it as escaped text) to close the stored-XSS vector — safe, but it means
+  hand-written layout (image grids, captions, `<details>`) shows as literal markup. Move to a
+  GitHub-style **sanitize-by-allowlist** model: parse the HTML and keep a vetted set of tags and
+  attributes (`table`/`tr`/`td`, `img`, `sub`/`sup`, `details`/`summary`, `a[href]`…) while
+  stripping `script`/`style`/`on*=`/`javascript:` — e.g. via the `ammonia` crate. Since blocks are
+  AI-writable, the allowlist must stay tight and is a deliberate security-posture change to record
+  in `docs/SPEC.md`. Relative `<img src>` in raw HTML would need the same vault-relative→asset
+  resolution (and external `<img>` the same inert-placeholder treatment) the Markdown image path
+  already applies.
