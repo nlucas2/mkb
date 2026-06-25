@@ -21,8 +21,8 @@ pub use paths::DaemonPaths;
 
 use mdkb_core::export::{ExportRequest, PlannedDoc};
 use mdkb_core::{
-    BlockId, BlockRecord, GraphData, Index, IndexStats, LinkOutcome, LinkRow, RenderedBlock,
-    RequestContext, SearchHit, SearchQuery, Service, TagCount,
+    BlockId, BlockRecord, GraphData, Index, IndexStats, LinkOutcome, LinkRow, PageView,
+    RenderedBlock, RequestContext, SearchHit, SearchQuery, Service, TagCount,
 };
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +60,28 @@ pub enum Request {
     GetBlock {
         /// Block id.
         id: BlockId,
+    },
+    /// Rich, self-contained read of a block: content (raw, rendered, or a line range) plus its
+    /// lineage and its incoming/outgoing relationships. Folds together [`GetBlock`],
+    /// [`RenderBlock`], [`GetBlockSourceRange`], [`LinksFrom`] and [`Backlinks`].
+    ///
+    /// [`GetBlock`]: Request::GetBlock
+    /// [`RenderBlock`]: Request::RenderBlock
+    /// [`GetBlockSourceRange`]: Request::GetBlockSourceRange
+    /// [`LinksFrom`]: Request::LinksFrom
+    /// [`Backlinks`]: Request::Backlinks
+    GetBlockView {
+        /// Block id.
+        id: BlockId,
+        /// Resolve transclusions (inline children) in the returned body.
+        #[serde(default)]
+        rendered: bool,
+        /// First line (1-based, inclusive) when slicing the raw body; `None` = from the start.
+        #[serde(default)]
+        start: Option<usize>,
+        /// Last line (1-based, inclusive) when slicing the raw body; `None` = to the end.
+        #[serde(default)]
+        end: Option<usize>,
     },
     /// Raw Markdown body of a block (for editing).
     GetBlockSource {
@@ -296,6 +318,8 @@ pub enum Response {
     Hits(Vec<SearchHit>),
     /// A single (optional) block record.
     Block(Option<BlockRecord>),
+    /// A single (optional) rich page view (block + lineage + relationships).
+    Page(Option<PageView>),
     /// A single (optional) rendered block.
     Rendered(Option<RenderedBlock>),
     /// Optional text (block source / rendered block).
@@ -357,6 +381,16 @@ fn handle<I: Index>(
         }
         Request::Search { query } => Response::Hits(service.search(ctx, query).map_err(to_str)?),
         Request::GetBlock { id } => Response::Block(service.get_block(ctx, &id).map_err(to_str)?),
+        Request::GetBlockView {
+            id,
+            rendered,
+            start,
+            end,
+        } => Response::Page(
+            service
+                .page_view(ctx, &id, rendered, start, end)
+                .map_err(to_str)?,
+        ),
         Request::GetBlockSource { id } => {
             Response::Text(service.get_block_source(ctx, &id).map_err(to_str)?)
         }
@@ -791,6 +825,26 @@ impl Client {
     pub fn get_block(&self, id: BlockId) -> io::Result<Option<BlockRecord>> {
         match self.call(&Request::GetBlock { id })? {
             Response::Block(b) => Ok(b),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: a rich page view (block + lineage + relationships). `rendered` inlines
+    /// children; `start`/`end` (1-based, inclusive) slice the raw body instead.
+    pub fn get_block_view(
+        &self,
+        id: BlockId,
+        rendered: bool,
+        start: Option<usize>,
+        end: Option<usize>,
+    ) -> io::Result<Option<PageView>> {
+        match self.call(&Request::GetBlockView {
+            id,
+            rendered,
+            start,
+            end,
+        })? {
+            Response::Page(p) => Ok(p),
             other => Err(unexpected(other)),
         }
     }

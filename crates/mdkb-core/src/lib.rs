@@ -32,8 +32,8 @@ pub use export::{plan_doc, plan_exports, ExportEntry, Manifest, PlannedDoc, GENE
 pub use id::{BlockId, IdCodec, IdError, MarkerMatch, NativeIdCodec};
 pub use index::{
     block_links, link_graph, reciprocal_rank_fusion, transclusion_reaches, BlockRecord, GraphData,
-    GraphEdge, GraphNode, Index, IndexError, IndexStats, LinkKind, LinkOutcome, LinkRow, SearchHit,
-    SearchQuery, TagCount,
+    GraphEdge, GraphNode, Index, IndexError, IndexStats, LinkCrumb, LinkKind, LinkOutcome, LinkRow,
+    PageView, SearchHit, SearchQuery, TagCount,
 };
 pub use link::{extract_references, Reference};
 pub use render::{render_block, render_flat, rendered_block, RenderedBlock};

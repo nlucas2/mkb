@@ -13,7 +13,7 @@
 use crate::id::BlockId;
 use crate::index::{
     block_links, link_graph, transclusion_reaches, BlockRecord, GraphData, Index, IndexError,
-    IndexStats, LinkOutcome, LinkRow, SearchHit, SearchQuery, TagCount,
+    IndexStats, LinkCrumb, LinkOutcome, LinkRow, PageView, SearchHit, SearchQuery, TagCount,
 };
 use crate::link::extract_references;
 use crate::render::{
@@ -277,6 +277,88 @@ impl<I: Index> Service<I> {
             self.overlay_metadata(rec);
         }
         Ok(record)
+    }
+
+    /// Display title for a neighbour block (falls back to its id when untitled/absent).
+    fn crumb_title(&self, id: &BlockId) -> String {
+        self.engine
+            .vault()
+            .block(id)
+            .map(|b| b.display_title())
+            .unwrap_or_else(|| id.as_str().to_string())
+    }
+
+    /// A rich, self-contained read of a block: its record plus where it lives (`lineage`) and its
+    /// direct relationships in both directions. This is the one read that answers "show me this
+    /// block and everything around it", folding together [`get_block`], [`render_block`],
+    /// [`block_source_range`], [`backlinks`], and [`links_from`].
+    ///
+    /// The returned `block.content` reflects the requested view of the body:
+    /// - `rendered` → transclusions resolved (children inlined);
+    /// - else `start`/`end` (1-based, inclusive) → that line range only;
+    /// - else the raw body verbatim.
+    ///
+    /// [`get_block`]: Service::get_block
+    /// [`render_block`]: Service::render_block
+    /// [`block_source_range`]: Service::block_source_range
+    /// [`backlinks`]: Service::backlinks
+    /// [`links_from`]: Service::links_from
+    pub fn page_view(
+        &self,
+        ctx: &RequestContext,
+        id: &BlockId,
+        rendered: bool,
+        start: Option<usize>,
+        end: Option<usize>,
+    ) -> Result<Option<PageView>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        let mut block = match self.engine.index().block(id)? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        self.overlay_metadata(&mut block);
+        // Shape the body to the requested view, reusing the same primitives the dedicated
+        // read tools use so behavior can never diverge.
+        if rendered {
+            if let Some(r) = render_block(self.engine.vault(), id) {
+                block.content = r;
+            }
+        } else if start.is_some() || end.is_some() {
+            let s = start.unwrap_or(1);
+            let e = end.unwrap_or(usize::MAX);
+            block.content = crate::slice_lines(&block.content, s, e);
+        }
+        let lineage = self.engine.vault().lineage(id);
+        let backlinks = self
+            .engine
+            .index()
+            .backlinks(id)?
+            .into_iter()
+            .map(|r| LinkCrumb {
+                title: self.crumb_title(&r.source_id),
+                id: r.source_id,
+                kind: r.kind,
+            })
+            .collect();
+        let links_out = self
+            .engine
+            .index()
+            .links_from(id)?
+            .into_iter()
+            .filter_map(|r| {
+                r.target_id.map(|t| LinkCrumb {
+                    title: self.crumb_title(&t),
+                    id: t,
+                    kind: r.kind,
+                })
+            })
+            .collect();
+        Ok(Some(PageView {
+            block,
+            lineage,
+            backlinks,
+            links_out,
+        }))
     }
 
     /// The raw Markdown body of a block (for editing).
@@ -1105,6 +1187,70 @@ mod tests {
         );
         let rendered = svc.render_block(&ctx, &host).unwrap().unwrap();
         assert!(rendered.contains("StormEvents | take 10"));
+    }
+
+    #[test]
+    fn page_view_folds_content_lineage_and_relationships() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let child = svc
+            .create_block(&ctx, Some("Child"), "line one\nline two\nline three")
+            .unwrap();
+        let parent = svc.create_block(&ctx, Some("Parent"), "Parent:").unwrap();
+        let sibling = svc.create_block(&ctx, Some("See also"), "ref:").unwrap();
+        // parent ![[child]] (embed), sibling [[child]] (reference).
+        svc.link_blocks(&ctx, &parent, &child, true).unwrap();
+        svc.link_blocks(&ctx, &sibling, &child, false).unwrap();
+
+        // Default: raw body + lineage + both backlink kinds, no outgoing.
+        let pv = svc
+            .page_view(&ctx, &child, false, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pv.block.content, "line one\nline two\nline three");
+        assert!(!pv.lineage.is_root, "child is embedded, so not a root");
+        let roots: Vec<_> = pv.lineage.roots.iter().map(|c| c.id.clone()).collect();
+        assert!(roots.contains(&parent), "parent is the embed root");
+        assert!(pv
+            .backlinks
+            .iter()
+            .any(|c| c.id == parent && c.kind == crate::LinkKind::Transcludes));
+        assert!(pv
+            .backlinks
+            .iter()
+            .any(|c| c.id == sibling && c.kind == crate::LinkKind::References));
+        assert!(pv.links_out.is_empty(), "child points at nothing");
+
+        // The parent's outgoing edge resolves to the child.
+        let pp = svc
+            .page_view(&ctx, &parent, false, None, None)
+            .unwrap()
+            .unwrap();
+        assert!(pp
+            .links_out
+            .iter()
+            .any(|c| c.id == child && c.kind == crate::LinkKind::Transcludes));
+
+        // Line range slices the raw body.
+        let ranged = svc
+            .page_view(&ctx, &child, false, Some(2), Some(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(ranged.block.content, "line two\n");
+
+        // rendered=true inlines the embedded child into the parent body.
+        let rendered = svc
+            .page_view(&ctx, &parent, true, None, None)
+            .unwrap()
+            .unwrap();
+        assert!(rendered.block.content.contains("line one"));
+
+        // A missing block is None, not an error.
+        assert!(svc
+            .page_view(&ctx, &BlockId::generate(), false, None, None)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

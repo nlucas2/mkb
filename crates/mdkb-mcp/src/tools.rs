@@ -19,8 +19,40 @@ pub struct ToolDef {
     pub schema: Value,
 }
 
-/// All tools the server exposes.
+/// Power tools kept out of the default surface to keep the agent's tool list lean. They are
+/// advertised only when `MDKB_MCP_TOOLS=full` (or `all`); the daemon can still execute them if
+/// called. Structural/metadata operations a routine read-write-search loop rarely needs.
+const ADVANCED_TOOLS: &[&str] = &["set_props", "unset_props", "carve_block", "flatten_block"];
+
+/// Whether the advanced tier is opted into via `MDKB_MCP_TOOLS=full` / `=all`.
+fn advanced_enabled() -> bool {
+    std::env::var("MDKB_MCP_TOOLS")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "full" || v == "all"
+        })
+        .unwrap_or(false)
+}
+
+/// The tools advertised to clients: the lean core surface, plus the advanced tier when
+/// `MDKB_MCP_TOOLS=full`. Diagnostics (graph/stats/conflicts/rebuild) and the read primitives that
+/// [`get_block`](Request::GetBlockView) now folds in (render/line-range/backlinks/links) are
+/// CLI-only — they don't earn a slot in an agent's per-turn tool budget.
 pub fn tool_definitions() -> Vec<ToolDef> {
+    tool_definitions_for(advanced_enabled())
+}
+
+/// The tier-filtered surface for a given advanced-mode flag (env-free, for testing).
+fn tool_definitions_for(advanced: bool) -> Vec<ToolDef> {
+    all_tool_definitions()
+        .into_iter()
+        .filter(|t| advanced || !ADVANCED_TOOLS.contains(&t.name))
+        .collect()
+}
+
+/// Every tool the server can build a request for, regardless of tier. Used for request building
+/// and tests; clients see the tier-filtered [`tool_definitions`].
+pub fn all_tool_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "search",
@@ -43,59 +75,32 @@ pub fn tool_definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_block",
-            description: "Fetch a single block by id: its title, tags, properties, timestamps (created — free from the id — and updated), and Markdown body.",
+            description: "Read a block in full by id: its title, tags, properties, timestamps (created — free from the id — and updated) and Markdown body, PLUS where it lives (lineage: its root page(s) and the blocks that embed it) and its relationships (backlinks in / links out, each tagged embed vs reference). One call replaces separate read/render/backlink lookups. Options: rendered=true inlines child ![[embeds]]; start/end (1-based, inclusive) return only that line range of the raw body (for a large block).",
             schema: json!({
                 "type": "object",
-                "properties": {"id": {"type": "string"}},
-                "required": ["id"]
-            }),
-        },
-        ToolDef {
-            name: "render_block",
-            description: "Render a block with all child transclusions (![[id]]) resolved inline.",
-            schema: json!({
-                "type": "object",
-                "properties": {"id": {"type": "string"}},
+                "properties": {
+                    "id": {"type": "string"},
+                    "rendered": {"type": "boolean", "description": "Resolve child ![[embeds]] inline in the returned body (default false)"},
+                    "start": {"type": "integer", "description": "First body line to return, 1-based inclusive (default: from the start)"},
+                    "end": {"type": "integer", "description": "Last body line to return, 1-based inclusive (default: to the end)"}
+                },
                 "required": ["id"]
             }),
         },
         ToolDef {
             name: "list_blocks",
-            description: "List all block ids in the vault.",
-            schema: json!({"type": "object", "properties": {}}),
-        },
-        ToolDef {
-            name: "list_roots",
-            description: "List root block ids (top-level entries that nothing transcludes).",
-            schema: json!({"type": "object", "properties": {}}),
-        },
-        ToolDef {
-            name: "graph",
-            description: "The block-level knowledge graph (nodes = blocks, edges = references/transclusions).",
-            schema: json!({"type": "object", "properties": {}}),
+            description: "List block ids in the vault. Set roots_only=true for just root blocks (top-level pages that nothing transcludes).",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "roots_only": {"type": "boolean", "description": "Only root blocks (default false = every block)"}
+                }
+            }),
         },
         ToolDef {
             name: "list_tags",
             description: "List all tags in the vault with how many blocks carry each (tag discovery). Use a returned tag with search's `tags` filter to scope a domain.",
             schema: json!({"type": "object", "properties": {}}),
-        },
-        ToolDef {
-            name: "backlinks",
-            description: "List blocks that reference or transclude a given block id.",
-            schema: json!({
-                "type": "object",
-                "properties": {"id": {"type": "string"}},
-                "required": ["id"]
-            }),
-        },
-        ToolDef {
-            name: "links_from",
-            description: "List outgoing links/transclusions from a given block id.",
-            schema: json!({
-                "type": "object",
-                "properties": {"id": {"type": "string"}},
-                "required": ["id"]
-            }),
         },
         ToolDef {
             name: "create_block",
@@ -111,7 +116,7 @@ pub fn tool_definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "update_block",
-            description: "Overwrite a block's Markdown body, by id, optionally changing its title. This replaces the ENTIRE body, so read the current body first (get_block) and send the full revised text — don't send a fragment. The block's tags, lock state, and properties are preserved. Omit `title` (or send an empty string) to keep the current title — a body-only edit never drops it; send a non-empty `title` to change it. An edit that would empty the block or strip most of its content is refused unless force=true (use that only for a deliberate rewrite).",
+            description: "Overwrite a block's whole body by id (optionally retitling). Read the current body first (get_block) and send the FULL revised text — never a fragment. Tags, lock state and properties are kept; omit or empty `title` to keep the title, send a non-empty one to change it. An edit that empties or guts the block is refused unless force=true. For a small change prefer replace_in_block; to add at the end, append_to_block.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -125,7 +130,7 @@ pub fn tool_definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "replace_in_block",
-            description: "Make a SMALL, targeted edit to a block's body: replace an exact substring (`old`) with `new`. This is the partial-edit op — prefer it over update_block when changing a line or phrase, since you don't resend the whole body. `old` must occur exactly `expect_count` times (default 1) or nothing changes and an error is returned (so an ambiguous or stale anchor is a safe no-op — include enough surrounding text to make `old` unique). `new` may be empty to delete the matched text. Operates on the raw Markdown, so `![[embeds]]`/`[[refs]]` are literal text. Tags, title, lock state, and properties are preserved. To add text to the END of a block (with no anchor), use append_to_block instead.",
+            description: "Targeted partial edit: replace the exact substring `old` with `new` in a block's body, without resending the whole body. `old` must occur exactly `expect_count` times (default 1) or nothing changes (a stale/ambiguous anchor is a safe no-op — include enough surrounding text to be unique). `new` may be empty to delete the match. Operates on raw Markdown, so ![[embeds]]/[[refs]] are literal text. Title, tags, lock state and properties are preserved.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -140,7 +145,7 @@ pub fn tool_definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "append_to_block",
-            description: "Append text to the END of a block's body (it starts on a fresh line). Use this to add a new line/paragraph/list-item when there is no existing anchor to target with replace_in_block. Purely additive — it never removes content. Include a leading newline in `text` for a blank-line separation (e.g. before a new heading). Tags, title, lock state, and properties are preserved.",
+            description: "Append `text` to the END of a block's body, on a fresh line — to add a line/paragraph/list-item when there is no anchor to target with replace_in_block. Additive only; never removes content. Lead `text` with a newline for a blank-line gap (e.g. before a heading). Title, tags, lock state and properties are preserved.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -148,19 +153,6 @@ pub fn tool_definitions() -> Vec<ToolDef> {
                     "text": {"type": "string", "description": "Text to append (starts on a new line)"}
                 },
                 "required": ["id", "text"]
-            }),
-        },
-        ToolDef {
-            name: "get_block_lines",
-            description: "Read a line range of a block's raw Markdown body (1-based, inclusive) — useful for viewing part of a large block without fetching the whole thing. Returns the requested lines.",
-            schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "start": {"type": "integer", "description": "First line, 1-based inclusive"},
-                    "end": {"type": "integer", "description": "Last line, 1-based inclusive"}
-                },
-                "required": ["id", "start", "end"]
             }),
         },
         ToolDef {
@@ -257,21 +249,6 @@ pub fn tool_definitions() -> Vec<ToolDef> {
                 "required": ["source_id", "target_id", "embed"]
             }),
         },
-        ToolDef {
-            name: "stats",
-            description: "Index statistics: block, root, and embedding counts.",
-            schema: json!({"type": "object", "properties": {}}),
-        },
-        ToolDef {
-            name: "rebuild",
-            description: "Rebuild the entire search index from the block files (the source of truth).",
-            schema: json!({"type": "object", "properties": {}}),
-        },
-        ToolDef {
-            name: "conflicts",
-            description: "List cloud-sync conflict files detected in the vault (surfaced, not indexed).",
-            schema: json!({"type": "object", "properties": {}}),
-        },
     ]
 }
 
@@ -362,23 +339,30 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             }
             Request::Search { query: q }
         }
-        "get_block" => Request::GetBlock { id: req_id("id")? },
-        "get_block_lines" => Request::GetBlockSourceRange {
+        "get_block" => Request::GetBlockView {
             id: req_id("id")?,
-            start: args.get("start").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
-            end: args
-                .get("end")
+            rendered: args
+                .get("rendered")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            start: args
+                .get("start")
                 .and_then(|v| v.as_u64())
-                .map(|n| n as usize)
-                .unwrap_or(usize::MAX),
+                .map(|n| n as usize),
+            end: args.get("end").and_then(|v| v.as_u64()).map(|n| n as usize),
         },
-        "render_block" => Request::RenderBlock { id: req_id("id")? },
-        "list_blocks" => Request::ListBlocks,
-        "list_roots" => Request::ListRoots,
-        "graph" => Request::Graph,
+        "list_blocks" => {
+            if args
+                .get("roots_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                Request::ListRoots
+            } else {
+                Request::ListBlocks
+            }
+        }
         "list_tags" => Request::ListTags,
-        "backlinks" => Request::Backlinks { id: req_id("id")? },
-        "links_from" => Request::LinksFrom { id: req_id("id")? },
         "create_block" => Request::CreateBlock {
             title: s("title"),
             body: req_s("body")?,
@@ -467,9 +451,6 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             target_id: req_id("target_id")?,
             embed: args.get("embed").and_then(|v| v.as_bool()).unwrap_or(false),
         },
-        "stats" => Request::Stats,
-        "rebuild" => Request::Rebuild,
-        "conflicts" => Request::Conflicts,
         other => return Err(format!("unknown tool: {other}")),
     })
 }
@@ -495,6 +476,7 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
         Response::Names(n) => to_json(n),
         Response::Hits(h) => to_json(h),
         Response::Block(b) => to_json(b),
+        Response::Page(p) => to_json(p),
         Response::Rendered(b) => to_json(b),
         Response::Links(l) => to_json(l),
         Response::Stats(s) => to_json(s),
@@ -514,7 +496,7 @@ mod tests {
 
     #[test]
     fn all_tools_have_unique_names_and_object_schemas() {
-        let defs = tool_definitions();
+        let defs = all_tool_definitions();
         let mut names = std::collections::HashSet::new();
         for d in &defs {
             assert!(names.insert(d.name), "duplicate tool name: {}", d.name);
@@ -528,15 +510,53 @@ mod tests {
     }
 
     #[test]
+    fn lean_surface_is_default_full_surface_is_opt_in() {
+        let lean: std::collections::HashSet<&str> =
+            tool_definitions_for(false).iter().map(|t| t.name).collect();
+        let full: std::collections::HashSet<&str> =
+            tool_definitions_for(true).iter().map(|t| t.name).collect();
+        // Advanced power tools are hidden by default, shown with MDKB_MCP_TOOLS=full.
+        for adv in ADVANCED_TOOLS {
+            assert!(!lean.contains(adv), "{adv} must be hidden by default");
+            assert!(full.contains(adv), "{adv} must appear in the full surface");
+        }
+        // Core read/write/search stays in the lean surface.
+        for core in [
+            "search",
+            "get_block",
+            "list_blocks",
+            "update_block",
+            "create_block",
+        ] {
+            assert!(lean.contains(core), "{core} must be in the lean surface");
+        }
+        // Diagnostics and folded-in read primitives are CLI-only — gone from MCP entirely.
+        for gone in [
+            "graph",
+            "stats",
+            "conflicts",
+            "rebuild",
+            "render_block",
+            "get_block_lines",
+            "backlinks",
+            "links_from",
+            "list_roots",
+        ] {
+            assert!(!full.contains(gone), "{gone} must not be an MCP tool");
+        }
+    }
+
+    #[test]
     fn every_tool_name_builds_a_request() {
         let id = BlockId::generate().to_string();
         let args = json!({
             "query": "q", "id": id, "source_id": id, "target_id": id, "parent_id": id,
             "child_id": id, "title": "T", "body": "b", "embed": true, "tags": ["x"],
             "props": [{"key": "source", "value": "git"}], "keys": ["source"],
-            "old": "b", "new": "c", "text": "more", "start": 1, "end": 2
+            "old": "b", "new": "c", "text": "more", "start": 1, "end": 2,
+            "rendered": true, "roots_only": true
         });
-        for d in tool_definitions() {
+        for d in all_tool_definitions() {
             build_request(d.name, &args)
                 .unwrap_or_else(|e| panic!("tool {} failed to build: {e}", d.name));
         }
@@ -709,3 +729,4 @@ mod tests {
         assert_eq!(format_response(&resp).unwrap_err(), "boom");
     }
 }
+

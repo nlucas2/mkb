@@ -146,6 +146,39 @@ pub struct LinkRow {
     pub kind: LinkKind,
 }
 
+/// A resolved neighbour of a block (one end of an edge), with a display title and the edge kind.
+/// Used by [`PageView`] to describe a block's incoming (`backlinks`) and outgoing (`links_out`)
+/// relationships without making the caller issue separate lookups.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct LinkCrumb {
+    /// The neighbour block's id.
+    pub id: BlockId,
+    /// The neighbour's display title (falls back to its id when untitled).
+    pub title: String,
+    /// Whether the edge is an embed (`![[…]]`) or a plain reference (`[[…]]`).
+    pub kind: LinkKind,
+}
+
+/// A rich, self-contained read of a single block: its record (content + metadata), where it lives
+/// (`lineage`), and its direct relationships in both directions (`backlinks` in, `links_out` out).
+/// One `PageView` answers "show me this block and everything around it" so clients don't need
+/// separate read/render/lineage/backlink calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PageView {
+    /// The block record. `content` reflects the requested view (raw body, a rendered
+    /// transclusion-resolved render, or a line range).
+    pub block: BlockRecord,
+    /// Where the block sits in the embed DAG: whether it is a root, its depth, direct embed
+    /// parents, and the root page(s) it ultimately lives on.
+    pub lineage: crate::vault::Lineage,
+    /// Blocks that point **at** this one (incoming embeds + references), kind-tagged.
+    pub backlinks: Vec<LinkCrumb>,
+    /// Blocks this one points **to** (outgoing embeds + references that resolved), kind-tagged.
+    pub links_out: Vec<LinkCrumb>,
+}
+
 /// A keyword/tag/lang search request.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
