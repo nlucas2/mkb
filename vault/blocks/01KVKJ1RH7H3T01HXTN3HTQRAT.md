@@ -1,7 +1,7 @@
 ---
 title: "README: Roadmap"
 tags: [doc, readme]
-updated: 2026-06-25T10:13:15Z
+updated: 2026-06-25T19:06:34Z
 ---
 
 ## Roadmap
@@ -97,3 +97,13 @@ updated: 2026-06-25T10:13:15Z
   change events from the daemon's `notify` watcher so clients invalidate their in-memory caches
   (sidebar list, graph, link previews — none of which currently refresh on an out-of-band edit) and
   reflect co-edits live.
+
+- **Validate the Windows-native `justfile`** *(planned)*: `just` runs recipe lines with `sh`, which
+  Windows lacks, and several recipes used bash-only constructs (`uname`/`case`/`osascript`) and Unix
+  coreutils (`mkdir -p`/`cp`). The justfile now sets `windows-shell` to PowerShell for the plain
+  `cargo` recipes and ships `[windows]` variants of `install` / `app` / `icons` / `app-dev` (the
+  macOS/Linux recipes are unchanged), but that path was **written from macOS and has not run on a
+  Windows host**. Verify on Windows that `just install` builds the bundles and launches the NSIS
+  `*-setup.exe`, that the staged `bin\*.exe` names match the Tauri `resources` globs (`bin/mdkbd*`,
+  `bin/mdkb-mcp*`, `bin/mdkb-cli*`), and that the plain recipes run under `powershell.exe`; fix path
+  separators / quoting as needed.

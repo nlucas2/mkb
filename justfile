@@ -6,6 +6,13 @@
 app_dir := "app/mdkb-tauri"
 tauri   := app_dir / "src-tauri"
 
+# `just` runs recipe lines with `sh` on every OS, but Windows has no `sh`. Point Windows at
+# PowerShell so the plain `cargo …` recipes run there; the platform-specific recipes below use
+# [unix]/[windows] variants with native tooling (osascript/dpkg vs. the NSIS installer).
+# NOTE: the Windows variants are best-effort and have NOT yet been validated on a Windows host
+# (see the roadmap); the macOS/Linux paths are the tested ones.
+set windows-shell := ["powershell.exe", "-NoProfile", "-Command"]
+
 # List the available recipes (default when you just run `just`).
 default:
     @just --list
@@ -30,6 +37,7 @@ check:
 # an AI client uses all share one vault — so the default install gives you all of it. (Daemon-only
 # is the container deployment, not this.)
 # Install mdkb — the desktop app, the daemon, the CLI, and the MCP server.
+[unix]
 install: install-cli app
     #!/usr/bin/env bash
     set -euo pipefail
@@ -63,18 +71,24 @@ install: install-cli app
         else
           echo "Built bundles are under $bundle — install the .deb or .AppImage manually."
         fi ;;
-      MINGW*|MSYS*|CYGWIN*|Windows_NT)
-        setup=$(ls "$bundle"/nsis/*-setup.exe 2>/dev/null | head -1 || true)
-        if [ -n "$setup" ]; then
-          echo "Running $setup (silent)"
-          "$setup" /S
-          echo "Installed mdkb (Start menu)."
-        else
-          echo "Built installer is under $bundle\\nsis — run the *-setup.exe to install."
-        fi ;;
       *)
         echo "Built installer is under $bundle — run it to install." ;;
     esac
+
+# Windows variant: run the NSIS installer the `app` recipe produced (best-effort; untested host).
+[windows]
+install: install-cli app
+    #!powershell
+    $ErrorActionPreference = 'Stop'
+    $bundle = '{{tauri}}/target/release/bundle'
+    $setup = Get-ChildItem -Path (Join-Path $bundle 'nsis') -Filter '*-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($setup) {
+      Write-Host "Running $($setup.Name) (silent)"
+      Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
+      Write-Host 'Installed mdkb (Start menu).'
+    } else {
+      Write-Host "Built installer is under $bundle\nsis — run the *-setup.exe to install."
+    }
 
 # Semantic search is compiled in, so this works offline. The desktop app is added by `just install`.
 # Install the headless tools (daemon + CLI + MCP) onto ~/.cargo/bin.
@@ -85,13 +99,22 @@ install-cli:
 
 # icons/ is git-ignored build output that `tauri::generate_context!` needs to compile.
 # Generate the desktop app's icon set from the tracked source app-icon.png.
+[unix]
 icons:
     cd {{app_dir}} && cargo tauri icon app-icon.png
+
+[windows]
+icons:
+    #!powershell
+    $ErrorActionPreference = 'Stop'
+    Set-Location '{{app_dir}}'
+    cargo tauri icon app-icon.png
 
 # Builds the headless release binaries, generates icons, stages the daemon + CLIs as bundled
 # resources, then bundles. Output lands under `{{tauri}}/target/release/bundle/`. Requires the
 # Tauri toolchain (`cargo install tauri-cli` + the platform's webkit/GTK dev libs).
 # Build the desktop app (Tauri) from source for the host platform.
+[unix]
 app: icons
     # Release binaries the app bundles as resources (auto-start daemon + in-app "install CLI tools").
     cargo build --release -p mdkbd -p mdkb-cli -p mdkb-mcp
@@ -102,9 +125,31 @@ app: icons
     cp target/release/mdkb     {{tauri}}/bin/mdkb-cli
     cd {{tauri}} && cargo tauri build
 
+[windows]
+app: icons
+    #!powershell
+    # Release binaries the app bundles as resources; the bundle globs (bin/mdkbd*, …) match the .exe.
+    $ErrorActionPreference = 'Stop'
+    cargo build --release -p mdkbd -p mdkb-cli -p mdkb-mcp
+    New-Item -ItemType Directory -Force -Path '{{tauri}}/bin' | Out-Null
+    Copy-Item 'target/release/mdkbd.exe'    '{{tauri}}/bin/mdkbd.exe'    -Force
+    Copy-Item 'target/release/mdkb-mcp.exe' '{{tauri}}/bin/mdkb-mcp.exe' -Force
+    # The CLI is staged as `mdkb-cli` so the bundle glob is unambiguous; it installs as `mdkb`.
+    Copy-Item 'target/release/mdkb.exe'     '{{tauri}}/bin/mdkb-cli.exe' -Force
+    Set-Location '{{tauri}}'
+    cargo tauri build
+
 # Run the desktop app in dev mode (hot-reload shell) against your configured vault.
+[unix]
 app-dev: icons
     cd {{tauri}} && cargo tauri dev
+
+[windows]
+app-dev: icons
+    #!powershell
+    $ErrorActionPreference = 'Stop'
+    Set-Location '{{tauri}}'
+    cargo tauri dev
 
 # Regenerate the docs that are generated from vault blocks (docs-as-data), then verify no drift.
 docs:
@@ -114,4 +159,4 @@ docs:
 # Remove build artifacts (both workspaces).
 clean:
     cargo clean
-    cd {{tauri}} && cargo clean
+    cargo clean --manifest-path {{tauri}}/Cargo.toml
