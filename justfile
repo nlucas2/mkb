@@ -24,9 +24,7 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
-# Builds the app from source and installs it (macOS → /Applications, Linux → .deb or a ~/.local
-# AppImage, Windows → run the generated installer). The app bundles the daemon + CLIs, so it's the
-# Installs the WHOLE product: the headless tools (daemon, CLI, MCP server, web) onto ~/.cargo/bin,
+# Installs the WHOLE product: the headless tools (daemon, CLI, MCP server) onto ~/.cargo/bin,
 # AND the desktop app (macOS → /Applications, Linux → .deb or a ~/.local AppImage, Windows → the
 # NSIS installer, silent). mdkb is one product — the app, the daemon it drives, and the MCP server
 # an AI client uses all share one vault — so the default install gives you all of it. (Daemon-only

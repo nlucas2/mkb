@@ -149,11 +149,11 @@ source of truth; on any doubt, rebuild from files.
 
 ```
         ┌───────────── thin clients (transport/presentation only) ─────────────┐
-        │   mdkb-cli          mdkb-mcp (MCP)              mdkb-tauri (app)        │
-        └───────────────────────────────┬──────────────────────────────────────┘
+        │   mdkb-cli          mdkb-mcp (MCP)          mdkb-tauri (app)         │
+        └────────────────────────────────┬─────────────────────────────────────┘
                                          │  mdkb-protocol (JSON over local socket / TCP+token)
                                 ┌────────▼────────┐
-                                │      mdkbd       │  single writer: owns watcher + index + writes
+                                │      mdkbd      │  single writer: owns watcher + index + writes
                                 │  mdkb-core::Service (capability-gated dispatch)
                                 └────────┬────────┘
                           ┌──────────────┼───────────────┐
