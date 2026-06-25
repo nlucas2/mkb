@@ -11,5 +11,5 @@ embeds it updates at once.)*
   (under the OS local-data dir, or `$MDKB_INDEX_DIR`), so a cloud-synced vault never syncs them.
 - The daemon serves a local socket by default. To connect over the network, run it
   with `--listen <host:port> --token <token>` and point clients at that.
-- Clients (CLI, MCP, web, desktop) never write files directly — they go through the
+- Clients (CLI, MCP, desktop app) never write files directly — they go through the
   daemon, the single writer.

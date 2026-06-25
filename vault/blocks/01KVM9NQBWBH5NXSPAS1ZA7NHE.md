@@ -2,7 +2,7 @@
 title: "README: Install — container"
 ---
 
-### Install: container
+## Container / Kubernetes
 
 Run the daemon as a networked, token-gated service — the daemon has the embedding model
 compiled in, so semantic search works offline. Thin clients reach it over TCP with `MDKB_REMOTE` +

@@ -18,4 +18,4 @@ The Markdown vault is the source of truth either way; what changes is *where the
   Network access is opt-in and fails closed without a valid token.
 
 Either way the daemon is the **single writer**: clients never touch `blocks/` files directly, and
-the `.mdkb/` index is a rebuildable cache.
+the machine-local index is a rebuildable cache.

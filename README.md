@@ -41,121 +41,26 @@ each client auto-starts it on first use and it self-reaps when idle.
 Everything works with AI turned off; semantic search runs entirely on a local model built into the
 daemon (see *Configuration* below).
 
-### Install: prebuilt (recommended)
+### Install
 
-**The installer — easiest.** Download the installer for your OS from the **Releases** page and run
-it: `.dmg` (macOS), `…-setup.exe` (Windows), `.deb` or `.AppImage` (Linux). It installs the
-desktop app together with the `mdkb` CLI and the `mdkb-mcp` server.
-
-**Portable binaries — no installer, or for servers.** Each platform also ships one archive that is
-the **complete product**: the desktop app plus every binary — `mdkb` (CLI), `mdkbd` (daemon),
-`mdkb-mcp` (MCP server) — with offline semantic search **built into the daemon**, so it works out
-of the box. Extract it wherever you keep apps and put that folder on your `PATH`:
+The fastest complete install is one command from a checkout, via
+[`just`](https://github.com/casey/just) — it builds and installs the **whole product**: the
+desktop app, the daemon, the CLI, and the MCP server.
 
 ```sh
-# macOS / Linux (example: macos-arm64 — also: linux-amd64, linux-arm64-headless)
-mkdir -p ~/Applications/mdkb
-tar -xzf mdkb-<version>-macos-arm64.tar.gz -C ~/Applications/mdkb
-# add it to PATH permanently (pick your shell's rc file)
-echo 'export PATH="$HOME/Applications/mdkb:$PATH"' >> ~/.zprofile   # or ~/.bashrc / ~/.profile
-exec "$SHELL" -l        # reload, then:
-mdkb --help
+just install        # everything: desktop app + daemon + CLI + MCP server
+just install-cli    # headless only (daemon + CLI + MCP), no GUI
 ```
 
-On Windows, download `mdkb-<version>-windows-amd64.zip` and extract it; add that folder to your
-`PATH` (Settings → *Edit environment variables*) to run `mdkb` from any terminal.
-
-The daemon has the embedding model **compiled in**, so semantic search works with zero config and
-nothing extra to place. (Advanced: to use a different/newer model, set `MDKB_BUNDLED_MODEL_DIR` to
-a model directory on disk — it overrides the compiled-in one.)
-
-**Prebuilt availability.** The complete archive (with the desktop app) is published for
-**Linux amd64**, **macOS** (Apple Silicon), and **Windows x64**. We don't currently publish a
-**prebuilt Linux arm64 desktop** binary — arm64 ships a `…-linux-arm64-headless.tar.gz` (daemon
-+ CLIs) and the multi-arch daemon container image. This is only about prebuilt
-*releases*: the desktop app builds and runs fine on arm64 Linux from source (`cargo tauri
-build`, see below), and the daemon container image covers running it as a server (see `deploy/`).
-
-### Install: with Rust (`cargo install`)
-
-**Use this if you have Rust and just want the headless tools** (CLI/MCP/daemon) without an
-installer. Requires Rust (stable); the workspace pins `rust-version = 1.80`. This compiles locally,
-so on macOS the result is **not** quarantined and Gatekeeper never blocks it:
-
-```sh
-cargo install --git https://github.com/<you>/mdkb mdkbd mdkb-cli mdkb-mcp
-# installs: mdkbd (daemon), mdkb (CLI), mdkb-mcp — onto ~/.cargo/bin (put it on PATH)
-```
-
-Zero-to-running from there:
-
-```sh
-echo "# First note" | mdkb create --vault ~/notes --title "First note"   # auto-starts the daemon
-mdkb search --vault ~/notes "first note"
-```
-
-Semantic search is built in: the neural model (BGE-small) is compiled into the daemon, so
-`cargo install` "just works" fully offline — real semantic embeddings, no model files, no download.
-The first command may take a few seconds while the daemon starts and indexes; later ones are warm.
-(Advanced: build with `--no-default-features` to leave the embedded model out and fall back to the
-offline hash embedder.)
-
-### Build everything from a checkout (`just`)
-
-Want the **whole product** — the desktop app *and* the daemon/CLI/MCP — from source? Clone the
-repo and use the [`just`](https://github.com/casey/just) recipes (this is also how arm64 Linux,
-which has no prebuilt desktop release, gets the app):
-
-```sh
-just install        # headless tools onto PATH + build & install the desktop app
-just install-cli    # only the headless tools (daemon + CLI + MCP)
-just app            # just build the desktop app bundle
-just --list         # all recipes (build, test, check, docs, …)
-```
-
-`just install` needs the Tauri toolchain (`cargo install tauri-cli` + your platform's webkit/GTK
-dev libs) — see [`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md). On macOS, building the
-app from source yields one that opens without the Gatekeeper "damaged" prompt (unlike the
-downloaded `.dmg`, which is unsigned and needs a one-time `xattr` unquarantine).
-
-Prefer raw cargo? Each interface runs straight from the tree — each auto-starts the daemon:
-
-```sh
-cargo build --workspace                                # build everything
-cargo run -p mdkb-cli -- list --vault ./my-vault       # CLI
-cargo run -p mdkb-mcp -- --vault ./my-vault            # MCP server (stdio)
-
-cargo test --workspace                                 # the suite (green before every commit)
-```
-
-Working *inside* the repo against the repo's own `vault/`? The daemon's index is keyed by the
-vault's absolute path and lives outside the vault, so it won't pollute your checkout. If you also
-want `cargo`'s build output elsewhere (e.g. to avoid a huge in-tree `target/`), set
-`CARGO_TARGET_DIR=~/.cache/mdkb-target` (or any path) before building.
-
-### Install: container
-
-Run the daemon as a networked, token-gated service — the daemon has the embedding model
-compiled in, so semantic search works offline. Thin clients reach it over TCP with `MDKB_REMOTE` +
-`MDKB_TOKEN`.
-
-```sh
-# on the host (set a real token; replace <registry>)
-docker run -d --name mdkb -p 127.0.0.1:7820:7820 \
-  -v ~/mdkb-vault:/vault \
-  <registry>/mdkb:latest --vault /vault --listen 0.0.0.0:7820 --token "$MDKB_TOKEN"
-
-# from a client — point the desktop app (Settings → Remote daemon) or the CLI/MCP at it
-mdkb search --remote 127.0.0.1:7820 --token "$MDKB_TOKEN" "…"
-```
-
-See [`deploy/README.md`](./deploy/README.md) for the Kubernetes manifest and full cluster setup.
+Prefer not to build? Grab a **prebuilt release** (installer or portable archive) from the
+**Releases** page, run it as a **container**, or `cargo install` just the headless tools — all
+detailed in the **[install guide](docs/INSTALL.md)**.
 
 ### Choosing your vault
 
-Every client (CLI, MCP, web, desktop app) acts on **one vault at a time**, resolved in this order:
+Every client (CLI, MCP, desktop app) acts on **one vault at a time**, resolved in this order:
 
-1. an explicit `--vault <dir>` flag (the CLI/MCP/web also accept `--remote`/`--socket`);
+1. an explicit `--vault <dir>` flag (the CLI/MCP also accept `--remote`/`--socket`);
 2. the `MDKB_VAULT` environment variable;
 3. the **default** in your vault registry (see below);
 4. the built-in fallback `~/mdkb-vault`.
@@ -308,7 +213,9 @@ connects either way: a **local** vault (auto-starting its daemon) or a **remote*
 
 ## Configuration: choosing an embedder (`config.json`)
 
-The embedder backend is configurable per vault via an optional `<vault>/.mdkb/config.json`.
+The embedder backend is configurable per vault via an optional `config.json` in the vault's
+machine-local index directory (the same dir as the index/socket — see the SPEC layout; set
+`$MDKB_INDEX_DIR` to relocate it).
 The model is **never downloaded at runtime** — the default neural model is compiled into the
 daemon, and any other local model is loaded from disk. The `embedder` block selects the source:
 
@@ -365,7 +272,7 @@ The Markdown vault is the source of truth either way; what changes is *where the
   Network access is opt-in and fails closed without a valid token.
 
 Either way the daemon is the **single writer**: clients never touch `blocks/` files directly, and
-the `.mdkb/` index is a rebuildable cache.
+the machine-local index is a rebuildable cache.
 
 ### Running the daemon manually
 
@@ -390,12 +297,12 @@ without the embedded model (`--no-default-features`).
 ## Single daemon per vault
 
 A vault is owned by **at most one daemon at a time**. On startup the daemon takes an
-**exclusive advisory lock** on `.mdkb/mdkbd.lock` (held for its whole lifetime, released by the
-OS on exit — even on crash/kill, so it never goes stale). A second daemon launched for the same
-vault fails to take the lock and exits immediately. This guarantees there is never more than one
-writer/watcher for a vault, even if the socket file is removed out from under a running daemon.
-Clients (UI, MCP, CLI) reuse a live daemon by pinging its socket and only spawn one when none
-answers.
+**exclusive advisory lock** on `mdkbd.lock` (in the machine-local index directory, held for its
+whole lifetime, released by the OS on exit — even on crash/kill, so it never goes stale). A second
+daemon launched for the same vault fails to take the lock and exits immediately. This guarantees
+there is never more than one writer/watcher for a vault, even if the socket file is removed out
+from under a running daemon. Clients (the app, MCP, CLI) reuse a live daemon by pinging its socket
+and only spawn one when none answers.
 
 ## Daemon lifetime: idle self-shutdown
 
@@ -656,6 +563,6 @@ Only commit when **all** boxes are satisfied.
 ### Commit hygiene
 
 - Small, focused commits. One logical change each.
-- Never commit secrets, the local `.mdkb/` index, or `/target`.
+- Never commit secrets, the machine-local index, or `/target`.
 - The vault's Markdown is the source of truth; the index is always rebuildable — never treat
   the index as authoritative in code.

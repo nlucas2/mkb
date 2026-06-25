@@ -30,6 +30,11 @@ block = "AGENTS page"
 path  = "README.md"
 block = "README page"
 
+# Detailed install methods (the README links here).
+[[doc]]
+path  = "docs/INSTALL.md"
+block = "INSTALL page"
+
 # Design rationale for the file-per-block model.
 [[doc]]
 path  = "docs/architecture.md"

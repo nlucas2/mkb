@@ -5,7 +5,9 @@ tags: [doc, readme]
 
 ## Configuration: choosing an embedder (`config.json`)
 
-The embedder backend is configurable per vault via an optional `<vault>/.mdkb/config.json`.
+The embedder backend is configurable per vault via an optional `config.json` in the vault's
+machine-local index directory (the same dir as the index/socket — see the SPEC layout; set
+`$MDKB_INDEX_DIR` to relocate it).
 The model is **never downloaded at runtime** — the default neural model is compiled into the
 daemon, and any other local model is loaded from disk. The `embedder` block selects the source:
 

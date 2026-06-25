@@ -5,9 +5,9 @@ tags: [doc, readme]
 
 ### Choosing your vault
 
-Every client (CLI, MCP, web, desktop app) acts on **one vault at a time**, resolved in this order:
+Every client (CLI, MCP, desktop app) acts on **one vault at a time**, resolved in this order:
 
-1. an explicit `--vault <dir>` flag (the CLI/MCP/web also accept `--remote`/`--socket`);
+1. an explicit `--vault <dir>` flag (the CLI/MCP also accept `--remote`/`--socket`);
 2. the `MDKB_VAULT` environment variable;
 3. the **default** in your vault registry (see below);
 4. the built-in fallback `~/mdkb-vault`.

@@ -2,7 +2,7 @@
 title: "README: Install — prebuilt"
 ---
 
-### Install: prebuilt (recommended)
+## Prebuilt release (no build)
 
 **The installer — easiest.** Download the installer for your OS from the **Releases** page and run
 it: `.dmg` (macOS), `…-setup.exe` (Windows), `.deb` or `.AppImage` (Linux). It installs the
