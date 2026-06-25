@@ -1254,6 +1254,17 @@
         if (id) openBlock(id);
       }, true);
 
+      // Live refresh: the daemon advances a content "generation" on every block change; the app's
+      // heartbeat (in the Rust shell) polls it and fires `vault-changed` when it moves — i.e. an
+      // edit from the CLI, an MCP client, or another editor. Re-sync so the human sees current
+      // content (and stale caches don't drive a clobbering save).
+      window.__TAURI__.event.listen("vault-changed", async () => {
+        invalidate();
+        previewCache.clear();
+        await loadBlocks();
+        if (active) await openBlock(active, true);
+      });
+
       loadBlocks();
     </script>
   </body>

@@ -14,7 +14,7 @@ use mdkb_core::{BlockId, GraphData, SearchQuery};
 use mdkb_protocol::{connect, Client, ConnectionConfig, DaemonPaths};
 use mdkb_view::{block_title, markdown_to_html_with_assets, search_results_html, ResultRow};
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Best-effort diagnostic line to stderr. A GUI build opts into the Windows "windows"
 /// subsystem (no console), which leaves stderr as an invalid handle — and `eprintln!` would
@@ -595,11 +595,23 @@ pub fn run() {
             // pids don't collide across concurrently running processes.
             let lease = format!("mdkb-app-{}", std::process::id());
             let handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                if let Ok(client) = handle.state::<AppState>().connected() {
-                    let _ = client.heartbeat(&lease, LEASE_TTL_MS);
+            std::thread::spawn(move || {
+                // The daemon returns its vault-content generation on each heartbeat. The first beat
+                // sets a baseline; after that, any change means a block was edited out-of-band
+                // (CLI/MCP/another editor) — tell the WebView to refresh. (An old daemon reports 0,
+                // which never moves, so this simply no-ops.)
+                let mut last_gen: Option<u64> = None;
+                loop {
+                    if let Ok(client) = handle.state::<AppState>().connected() {
+                        if let Ok(generation) = client.heartbeat(&lease, LEASE_TTL_MS) {
+                            if last_gen.is_some_and(|prev| prev != generation) {
+                                let _ = handle.emit("vault-changed", generation);
+                            }
+                            last_gen = Some(generation);
+                        }
+                    }
+                    std::thread::sleep(Duration::from_secs(HEARTBEAT_SECS));
                 }
-                std::thread::sleep(Duration::from_secs(HEARTBEAT_SECS));
             });
             Ok(())
         })

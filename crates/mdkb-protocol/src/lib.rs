@@ -296,7 +296,61 @@ pub enum Request {
     Shutdown,
 }
 
-/// A response from the daemon.
+impl Request {
+    /// Whether applying this request **mutates vault content** (a block or asset file), so the
+    /// daemon should advance its content generation after it succeeds. A write through the daemon
+    /// updates the file *and* the index together, so the watcher's later reconcile is a no-op and
+    /// can't be relied on to signal it — hence this explicit classification.
+    ///
+    /// Exhaustive on purpose: a newly added request variant won't compile until it is classified
+    /// here as a write (bumps the generation) or a read/lifecycle op (doesn't).
+    pub fn mutates(&self) -> bool {
+        match self {
+            Request::CreateBlock { .. }
+            | Request::AddAsset { .. }
+            | Request::RemoveAsset { .. }
+            | Request::UpdateBlock { .. }
+            | Request::ReplaceInBlock { .. }
+            | Request::AppendToBlock { .. }
+            | Request::DeleteBlock { .. }
+            | Request::SetTags { .. }
+            | Request::SetProps { .. }
+            | Request::UnsetProps { .. }
+            | Request::CarveBlock { .. }
+            | Request::CarveSelection { .. }
+            | Request::FlattenBlock { .. }
+            | Request::LinkBlocks { .. }
+            | Request::SetLock { .. } => true,
+            Request::Ping
+            | Request::Stats
+            | Request::ListBlocks
+            | Request::ListRoots
+            | Request::Graph
+            | Request::ListTags
+            | Request::PlanExports { .. }
+            | Request::Search { .. }
+            | Request::GetBlock { .. }
+            | Request::GetBlockView { .. }
+            | Request::GetBlockSource { .. }
+            | Request::GetBlockSourceRange { .. }
+            | Request::RenderBlock { .. }
+            | Request::RenderedBlock { .. }
+            | Request::RenderFlat { .. }
+            | Request::LinksFrom { .. }
+            | Request::Backlinks { .. }
+            | Request::Dangling
+            | Request::OrphanAssets
+            | Request::Reconcile
+            | Request::Rebuild
+            | Request::Conflicts
+            | Request::Authenticate { .. }
+            | Request::Heartbeat { .. }
+            | Request::ReleaseLease { .. }
+            | Request::AnnounceApp
+            | Request::Shutdown => false,
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum Response {
@@ -320,6 +374,15 @@ pub enum Response {
     Block(Option<BlockRecord>),
     /// A single (optional) rich page view (block + lineage + relationships).
     Page(Option<PageView>),
+    /// Reply to [`Request::Heartbeat`]: the lease is renewed, and `generation` is the daemon's
+    /// monotonic vault-content counter — it advances whenever a block changes (any write, or an
+    /// external edit the watcher reconciles). A long-lived client compares it across heartbeats
+    /// and refreshes when it moves. (Old daemons reply [`Response::Ok`]; clients treat that as
+    /// generation `0` — no live-refresh, graceful degradation.)
+    Heartbeat {
+        /// The daemon's current vault-content generation.
+        generation: u64,
+    },
     /// A single (optional) rendered block.
     Rendered(Option<RenderedBlock>),
     /// Optional text (block source / rendered block).
@@ -1107,13 +1170,17 @@ impl Client {
 
     /// Convenience: acquire-or-renew an interactive lease (keeps an auto-started daemon alive
     /// while a long-lived client is open). Idempotent in `lease`; call periodically (every
-    /// ~`ttl_ms`/3) as a heartbeat.
-    pub fn heartbeat(&self, lease: &str, ttl_ms: u64) -> io::Result<()> {
+    /// ~`ttl_ms`/3) as a heartbeat. Returns the daemon's current vault-content **generation** —
+    /// a monotonic counter that advances whenever a block changes — so a long-lived client can
+    /// compare it across beats and refresh when it moves. An older daemon that replies `Ok`
+    /// (no generation) is reported as `0`, which never advances → live-refresh simply no-ops.
+    pub fn heartbeat(&self, lease: &str, ttl_ms: u64) -> io::Result<u64> {
         match self.call(&Request::Heartbeat {
             lease: lease.to_string(),
             ttl_ms,
         })? {
-            Response::Ok => Ok(()),
+            Response::Heartbeat { generation } => Ok(generation),
+            Response::Ok => Ok(0),
             other => Err(unexpected(other)),
         }
     }
@@ -1146,6 +1213,76 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = SyncEngine::new(dir.path(), SqliteIndex::open_in_memory().unwrap());
         (dir, Service::new(engine))
+    }
+
+    #[test]
+    fn mutates_classifies_writes_and_reads() {
+        let id = mdkb_core::BlockId::generate();
+        // A representative set of writes — each must advance the generation.
+        let writes = [
+            Request::CreateBlock {
+                title: None,
+                body: "b".into(),
+            },
+            Request::UpdateBlock {
+                id: id.clone(),
+                title: None,
+                body: "b".into(),
+                force: false,
+            },
+            Request::ReplaceInBlock {
+                id: id.clone(),
+                old: "a".into(),
+                new: "b".into(),
+                expect_count: 1,
+                force: false,
+            },
+            Request::AppendToBlock {
+                id: id.clone(),
+                text: "x".into(),
+            },
+            Request::DeleteBlock { id: id.clone() },
+            Request::SetTags {
+                id: id.clone(),
+                tags: vec![],
+            },
+            Request::LinkBlocks {
+                source_id: id.clone(),
+                target_id: id.clone(),
+                embed: true,
+            },
+            Request::SetLock {
+                id: id.clone(),
+                locked: true,
+            },
+        ];
+        for w in writes {
+            assert!(w.mutates(), "{w:?} should be a write");
+        }
+        // Reads / liveness / lifecycle must NOT advance the generation.
+        let reads = [
+            Request::Ping,
+            Request::Search {
+                query: SearchQuery::default(),
+            },
+            Request::GetBlock { id: id.clone() },
+            Request::GetBlockView {
+                id: id.clone(),
+                rendered: false,
+                start: None,
+                end: None,
+            },
+            Request::ListBlocks,
+            Request::Backlinks { id: id.clone() },
+            Request::Heartbeat {
+                lease: "x".into(),
+                ttl_ms: 1000,
+            },
+            Request::Rebuild,
+        ];
+        for r in reads {
+            assert!(!r.mutates(), "{r:?} should not be a write");
+        }
     }
 
     #[test]

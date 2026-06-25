@@ -36,6 +36,30 @@ const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
 /// is trusted and left without a timeout.
 const TCP_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// A monotonic counter that advances whenever the vault's **content** changes — any write the
+/// daemon applies, or an external edit its watcher reconciles. Shared (via `Arc`) between the
+/// watcher (which bumps it) and the connection handlers (which report it on each heartbeat), it is
+/// the cheap "something changed underneath you" signal a long-lived client polls to refresh.
+#[derive(Clone, Default)]
+pub struct Generation(Arc<AtomicU64>);
+
+impl Generation {
+    /// A fresh counter at generation `0`.
+    pub fn new() -> Self {
+        Generation(Arc::new(AtomicU64::new(0)))
+    }
+
+    /// The current generation.
+    pub fn current(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// Advance the generation (returns the new value). Called after a content change.
+    pub fn bump(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::Relaxed) + 1
+    }
+}
+
 /// Tracks the time of the most recent request so an idle daemon can reap itself.
 ///
 /// Shared (via `Arc`) between every connection handler and the idle watchdog. A monotonic
@@ -166,6 +190,7 @@ pub fn serve(
     net: Option<NetConfig>,
     service: SharedService,
     idle_timeout: Option<Duration>,
+    generation: Generation,
 ) -> io::Result<()> {
     // When a client auto-starts us it passes an idle timeout; arm a watchdog so an unused
     // vault's daemon reaps itself instead of leaking. Every request (local or network) touches
@@ -193,10 +218,11 @@ pub fn serve(
         let addr = net.addr.clone();
         let act = activity.clone();
         let lz = leases.clone();
+        let gen = generation.clone();
         match TcpListener::bind(&addr) {
             Ok(listener) => {
                 eprintln!("mdkbd: network listener on {addr} (token auth required)");
-                thread::spawn(move || serve_tcp(listener, net, svc, act, lz));
+                thread::spawn(move || serve_tcp(listener, net, svc, act, lz, gen));
             }
             Err(e) => eprintln!("mdkbd: failed to bind network listener {addr}: {e}"),
         }
@@ -219,6 +245,7 @@ pub fn serve(
                 let act = activity.clone();
                 let lz = leases.clone();
                 let sock = sock.clone();
+                let gen = generation.clone();
                 thread::spawn(move || {
                     // `&Stream` is both Read and Write, so one stream serves reader and writer.
                     if let Err(e) = handle(
@@ -229,6 +256,7 @@ pub fn serve(
                         svc,
                         act.as_ref(),
                         &lz,
+                        &gen,
                         Some(sock.clone()),
                     ) {
                         eprintln!("mdkbd: connection error: {e}");
@@ -247,6 +275,7 @@ fn serve_tcp(
     service: SharedService,
     activity: Option<Activity>,
     leases: Leases,
+    generation: Generation,
 ) {
     for stream in listener.incoming() {
         match stream {
@@ -255,6 +284,7 @@ fn serve_tcp(
                 let token = net.token.clone();
                 let act = activity.clone();
                 let lz = leases.clone();
+                let gen = generation.clone();
                 let peer = stream
                     .peer_addr()
                     .map(|a| a.to_string())
@@ -278,6 +308,7 @@ fn serve_tcp(
                         svc,
                         act.as_ref(),
                         &lz,
+                        &gen,
                         None,
                     ) {
                         eprintln!("mdkbd: tcp connection error: {e}");
@@ -303,6 +334,7 @@ fn handle(
     service: SharedService,
     activity: Option<&Activity>,
     leases: &Leases,
+    generation: &Generation,
     socket: Option<PathBuf>,
 ) -> io::Result<()> {
     let mut reader = BufReader::new(reader);
@@ -347,7 +379,12 @@ fn handle(
                     a.touch();
                 }
                 leases.heartbeat(&lease, Duration::from_millis(ttl_ms));
-                Response::Ok
+                // Hand back the current vault-content generation so a long-lived client (the
+                // desktop app) can notice out-of-band edits and refresh, on the beat it already
+                // makes — no extra request, no server push.
+                Response::Heartbeat {
+                    generation: generation.current(),
+                }
             }
             Ok(Request::ReleaseLease { lease }) => {
                 if let Some(a) = activity {
@@ -383,8 +420,18 @@ fn handle(
                 if let Some(a) = activity {
                     a.touch();
                 }
+                let mutates = req.mutates();
                 let mut guard = service.lock().unwrap_or_else(|p| p.into_inner());
-                dispatch(&mut guard, &ctx, req)
+                let response = dispatch(&mut guard, &ctx, req);
+                drop(guard);
+                // A successful write advances the generation immediately. The watcher won't do it
+                // for daemon-applied writes — the request path already updated the index, so its
+                // later reconcile finds no diff; the watcher's bump is reserved for genuinely
+                // external edits (where the index was stale).
+                if mutates && !matches!(response, Response::Error { .. }) {
+                    generation.bump();
+                }
+                response
             }
             Err(e) => Response::Error {
                 message: format!("invalid request: {e}"),
@@ -496,5 +543,17 @@ mod tests {
         // Idle past the grace BUT a lease is held → keep (interactive client attached).
         leases.heartbeat("app", Duration::from_secs(60));
         assert!(!should_reap(Duration::from_secs(121), timeout, &leases));
+    }
+
+    #[test]
+    fn generation_starts_at_zero_bumps_and_shares() {
+        let g = Generation::new();
+        assert_eq!(g.current(), 0, "a fresh generation is 0");
+        assert_eq!(g.bump(), 1);
+        assert_eq!(g.current(), 1);
+        // A clone shares the counter (the watcher's clone and the server's must agree).
+        let g2 = g.clone();
+        assert_eq!(g2.bump(), 2);
+        assert_eq!(g.current(), 2, "clones observe each other's bumps");
     }
 }

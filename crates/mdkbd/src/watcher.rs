@@ -13,20 +13,22 @@ use std::time::Duration;
 use mdkb_core::RequestContext;
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 
+use crate::server::Generation;
 use crate::SharedService;
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
-/// Spawn the watcher thread. It owns the `notify` watcher for its lifetime.
-pub fn spawn(vault: PathBuf, service: SharedService) {
+/// Spawn the watcher thread. It owns the `notify` watcher for its lifetime. A reconcile that
+/// actually changes something bumps `generation`, the signal long-lived clients poll to refresh.
+pub fn spawn(vault: PathBuf, service: SharedService, generation: Generation) {
     thread::spawn(move || {
-        if let Err(e) = run(vault, service) {
+        if let Err(e) = run(vault, service, generation) {
             eprintln!("mdkbd: watcher stopped: {e}");
         }
     });
 }
 
-fn run(vault: PathBuf, service: SharedService) -> Result<(), String> {
+fn run(vault: PathBuf, service: SharedService, generation: Generation) -> Result<(), String> {
     let (tx, rx) = channel();
     let mut watcher = recommended_watcher(move |res| {
         let _ = tx.send(res);
@@ -54,8 +56,11 @@ fn run(vault: PathBuf, service: SharedService) -> Result<(), String> {
         let mut guard = service.lock().unwrap_or_else(|p| p.into_inner());
         match guard.reconcile(&ctx) {
             Ok(report) if !report.is_empty() => {
+                // The vault content changed on disk (an external/AI edit, or our own write the
+                // watcher observed) — advance the generation so heartbeating clients refresh.
+                let gen = generation.bump();
                 eprintln!(
-                    "mdkbd: watcher reconcile — {} changed, {} removed",
+                    "mdkbd: watcher reconcile — {} changed, {} removed (generation {gen})",
                     report.changed.len(),
                     report.removed.len()
                 );

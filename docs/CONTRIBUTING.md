@@ -279,7 +279,7 @@ transparently respawns it — at most a brief cold start.
   with "unknown variant". Add a `mdkb daemon restart`/`stop` command (shut down + let the next
   client respawn) to fix the dev loop without the GUI.
 
-- **Concurrent-edit safety — the app's full-overwrite write is a lost-update vector** *(planned)*:
+- **Concurrent-edit safety — the app's full-overwrite write is a lost-update vector** *(live-refresh shipped; lost-update prevention planned)*:
   the desktop app reads a block into its editor and saves with a **whole-body overwrite**
   (`save_block`), with no check that the block is unchanged since it was read. If an AI client (or
   the CLI) edits that block via MCP between the app opening it and the human saving, the app's save
@@ -290,8 +290,16 @@ transparently respawns it — at most a brief cold start.
   with the block's `updated` time (or a content hash) and have the daemon reject a write whose base
   no longer matches, surfacing the clash the way cloud-sync conflicts already are — and/or push
   change events from the daemon's `notify` watcher so clients invalidate their in-memory caches
-  (sidebar list, graph, link previews — none of which currently refresh on an out-of-band edit) and
+  (sidebar list, graph, link previews) and
   reflect co-edits live.
+  - *Update — live-refresh shipped (Phase 1):* the daemon now advances a monotonic content
+    **generation** on every change (a daemon-applied write, or a watcher-reconciled external edit),
+    and the desktop app reads it on its existing lease heartbeat; when it moves, the app invalidates
+    its caches and re-opens the current block, so an edit from the CLI, an MCP client, or another
+    editor shows within a heartbeat. Still open: **optimistic concurrency** to *prevent* a stale
+    full-overwrite save from clobbering (the live refresh narrows the race window but doesn't close
+    it), and **Phase 2** — true daemon-*pushed* change events instead of the heartbeat poll (lower
+    latency, no polling).
 
 - **Validate the Windows-native `justfile`** *(planned)*: `just` runs recipe lines with `sh`, which
   Windows lacks, and several recipes used bash-only constructs (`uname`/`case`/`osascript`) and Unix

@@ -94,8 +94,16 @@ fn run() -> Result<(), String> {
 
     let shared: SharedService = Arc::new(Mutex::new(service));
 
+    // The vault-content generation, shared between the watcher (which bumps it on a reconcile that
+    // changed something) and the server (which reports it on each heartbeat).
+    let generation = server::Generation::new();
+
     // Start the watcher (keeps the index in sync with external edits).
-    watcher::spawn(cfg.vault().to_path_buf(), Arc::clone(&shared));
+    watcher::spawn(
+        cfg.vault().to_path_buf(),
+        Arc::clone(&shared),
+        generation.clone(),
+    );
 
     // Optional network listener (opt-in, token-gated, fail-closed).
     let net = cfg.listen.as_ref().map(|addr| server::NetConfig {
@@ -104,6 +112,7 @@ fn run() -> Result<(), String> {
     });
 
     // Serve requests until interrupted (or, when armed, until idle self-shutdown).
-    server::serve(cfg.socket(), net, shared, cfg.idle_timeout).map_err(|e| e.to_string())?;
+    server::serve(cfg.socket(), net, shared, cfg.idle_timeout, generation)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
