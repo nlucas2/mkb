@@ -55,3 +55,10 @@ tags: [doc, readme]
   in `docs/SPEC.md`. Relative `<img src>` in raw HTML would need the same vault-relative→asset
   resolution (and external `<img>` the same inert-placeholder treatment) the Markdown image path
   already applies.
+- **Search match provenance** *(planned)*: hybrid search fuses a keyword/phrase (bm25) list and a
+  vector (semantic) list via reciprocal-rank fusion, but `reciprocal_rank_fusion` discards *which*
+  list each hit came from — only the fused `score` survives on `SearchHit`. Preserve that signal:
+  have fusion report per-result membership (keyword-only / vector-only / both) and add it to
+  `SearchHit` (e.g. a `MatchSource` flag), then surface it in the clients — so a `"quoted phrase"`
+  search visibly distinguishes an exact phrase/keyword hit from a result that only the semantic
+  side returned. Useful for trusting precision queries and for debugging ranking.

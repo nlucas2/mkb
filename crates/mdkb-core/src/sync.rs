@@ -526,7 +526,10 @@ impl<I: Index> SyncEngine<I> {
     pub fn search(&self, mut query: SearchQuery) -> Result<Vec<SearchHit>, IndexError> {
         if query.vector.is_none() {
             if let (Some(embedder), Some(text)) = (&self.embedder, &query.text) {
-                let vector = embedder.embed_one(text).map_err(IndexError::new)?;
+                // Double quotes are an FTS phrase directive, not content — strip them so the
+                // semantic vector embeds the natural-language text, not the quote characters.
+                let clean = text.replace('"', " ");
+                let vector = embedder.embed_one(&clean).map_err(IndexError::new)?;
                 query.vector = Some(vector);
                 query.vector_model = Some(embedder.model_id());
             }

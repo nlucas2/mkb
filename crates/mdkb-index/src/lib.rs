@@ -465,17 +465,38 @@ fn row_to_link(r: &rusqlite::Row<'_>) -> rusqlite::Result<LinkRow> {
     })
 }
 
-/// Turn arbitrary user text into a safe FTS5 MATCH expression: alphanumeric tokens, each
-/// quoted, joined by ` OR ` so a block matches when it contains *any* query term (ranked by
-/// bm25). Implicit AND (joining by space) makes paraphrased queries match nothing; quoting
-/// each token avoids FTS5 syntax errors from punctuation.
+/// Turn arbitrary user text into a safe FTS5 MATCH expression.
+///
+/// - **Bare words** are each alphanumeric-tokenised, quoted, and joined by ` OR `, so a block
+///   matches when it contains *any* term (ranked by bm25). Implicit AND (joining by space) makes
+///   paraphrased queries match nothing; quoting each token avoids FTS5 syntax errors from
+///   punctuation. This is the long-standing default (see the OR-vs-AND verdict in the design notes).
+/// - A **double-quoted span** becomes a single FTS5 **phrase** — its tokens must appear in sequence
+///   — so a sentence copied from the rendered view can be matched verbatim (`"exact phrase"`).
+///   Markdown markers in the stored text (`**bold**`) don't interfere: both sides tokenise the same.
+///
+/// A phrase and any surrounding bare words are OR-joined together, keeping bare-word behaviour
+/// unchanged. An unterminated quote treats the trailing text as a phrase.
 fn to_fts_query(text: &str) -> String {
-    let tokens: Vec<String> = text
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .map(|t| format!("\"{t}\""))
-        .collect();
-    tokens.join(" OR ")
+    let mut parts: Vec<String> = Vec::new();
+    // Splitting on '"' alternates: even segments are outside quotes, odd segments are inside.
+    for (i, segment) in text.split('"').enumerate() {
+        let tokens: Vec<&str> = segment
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            continue;
+        }
+        if i % 2 == 1 {
+            // Inside quotes → one ordered phrase term.
+            parts.push(format!("\"{}\"", tokens.join(" ")));
+        } else {
+            // Outside quotes → each token is its own OR'd term.
+            parts.extend(tokens.into_iter().map(|t| format!("\"{t}\"")));
+        }
+    }
+    parts.join(" OR ")
 }
 
 const SCHEMA: &str = r#"
@@ -569,6 +590,36 @@ mod tests {
     }
 
     #[test]
+    fn quoted_phrase_matches_sequence_only() {
+        // Two blocks contain all the same words, but only one has them in sequence.
+        let (idx, _v, ids) = indexed(&[
+            "the cat sat on the mat quietly\n",        // ordered
+            "the mat was where the cat finally sat\n", // same words, scattered
+        ]);
+        // A bare (OR) query matches both blocks.
+        let loose = idx
+            .search(&SearchQuery::text("cat sat on the mat"))
+            .unwrap();
+        assert_eq!(loose.len(), 2);
+        // The same query as a phrase matches only the in-order block.
+        let phrase = idx
+            .search(&SearchQuery::text("\"cat sat on the mat\""))
+            .unwrap();
+        assert_eq!(phrase.len(), 1);
+        assert_eq!(phrase[0].block.id, ids[0]);
+    }
+
+    #[test]
+    fn quoted_phrase_ignores_markdown_in_stored_text() {
+        // Stored text has bold markers; a phrase copied from the rendered view (no markers) matches.
+        let (idx, _v, _ids) = indexed(&["A fact lives in **exactly one block**.\n"]);
+        let hits = idx
+            .search(&SearchQuery::text("\"exactly one block\""))
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
     fn filters_by_tag_and_lang() {
         let (idx, _v, _ids) = indexed(&[
             "---\ntitle: A\ntags: [ops]\n---\n```kusto\nStormEvents\n```\n",
@@ -652,5 +703,26 @@ mod tests {
         );
         assert_eq!(to_fts_query("single"), "\"single\"");
         assert_eq!(to_fts_query("  -- ,. "), "");
+    }
+
+    #[test]
+    fn to_fts_query_supports_quoted_phrases() {
+        // A quoted span becomes one ordered FTS5 phrase, not OR'd tokens.
+        assert_eq!(
+            to_fts_query("\"a fact lives in exactly one block\""),
+            "\"a fact lives in exactly one block\""
+        );
+        // A phrase plus surrounding bare words: phrase stays intact, bare words OR-joined.
+        assert_eq!(
+            to_fts_query("\"exact phrase\" loose word"),
+            "\"exact phrase\" OR \"loose\" OR \"word\""
+        );
+        // An unterminated quote treats the trailing text as a phrase.
+        assert_eq!(to_fts_query("foo \"bar baz"), "\"foo\" OR \"bar baz\"");
+        // Markdown punctuation inside a phrase is tokenised the same way the stored text is.
+        assert_eq!(
+            to_fts_query("\"exactly **one** block\""),
+            "\"exactly one block\""
+        );
     }
 }

@@ -208,7 +208,9 @@ impl SearchQuery {
     ///
     /// Everything else becomes the free-text (FTS) part. A leading `#` is treated as a tag only
     /// when it looks like a tag token (`#word`), so Markdown headings pasted into the box still
-    /// search as text. Returns a query whose `text` is `None` when no free text remains.
+    /// search as text. A **double-quoted** span in the free text is preserved verbatim and becomes
+    /// an FTS5 *phrase* (its words must match in sequence); bare words keep their OR semantics.
+    /// Returns a query whose `text` is `None` when no free text remains.
     pub fn parse(input: &str) -> SearchQuery {
         let mut tags: Vec<String> = Vec::new();
         let mut lang: Option<String> = None;
