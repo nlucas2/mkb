@@ -1,7 +1,7 @@
 ---
 title: "README: Roadmap"
 tags: [doc, readme]
-updated: 2026-06-25T07:52:05Z
+updated: 2026-06-25T09:01:29Z
 ---
 
 ## Roadmap
@@ -75,3 +75,9 @@ updated: 2026-06-25T07:52:05Z
 - **Opt-in root-biased search** *(planned)*: `--roots-only` and `--root-bias <w>` as post-fusion
   knobs in the service (never the default, never inside RRF), for navigational queries that want
   the page rather than its embedded fragments.
+- **`mdkb daemon restart` / `stop` (CLI)** *(planned)*: only the desktop app can currently
+  restart the local daemon (Settings -> Restart daemon); from the CLI there is no way to replace a
+  running detached daemon, so after rebuilding `mdkbd` a stale daemon (e.g. the one bundled in the
+  installed app, which owns the vault socket) keeps serving the old binary and new requests fail
+  with "unknown variant". Add a `mdkb daemon restart`/`stop` command (shut down + let the next
+  client respawn) to fix the dev loop without the GUI.
