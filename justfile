@@ -11,7 +11,7 @@ tauri   := app_dir / "src-tauri"
 # [unix]/[windows] variants with native tooling (osascript/dpkg vs. the NSIS installer).
 # NOTE: the Windows variants are best-effort and have NOT yet been validated on a Windows host
 # (see the roadmap); the macOS/Linux paths are the tested ones.
-set windows-shell := ["powershell.exe", "-NoProfile", "-Command"]
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
 # List the available recipes (default when you just run `just`).
 default:
