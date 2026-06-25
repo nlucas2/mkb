@@ -277,6 +277,20 @@ transparently respawns it — at most a brief cold start.
   with "unknown variant". Add a `mdkb daemon restart`/`stop` command (shut down + let the next
   client respawn) to fix the dev loop without the GUI.
 
+- **Concurrent-edit safety — the app's full-overwrite write is a lost-update vector** *(planned)*:
+  the desktop app reads a block into its editor and saves with a **whole-body overwrite**
+  (`save_block`), with no check that the block is unchanged since it was read. If an AI client (or
+  the CLI) edits that block via MCP between the app opening it and the human saving, the app's save
+  silently **clobbers** the external edits — the classic lost-update problem, made likely by mdkb's
+  whole premise of a human and an AI co-editing one vault. The rendered body is *not* itself stale
+  (the app re-fetches on navigation/reload) and the daemon remains the single writer, so this is a
+  *concerning surface, not an active bug*. Close it with **optimistic concurrency**: stamp each read
+  with the block's `updated` time (or a content hash) and have the daemon reject a write whose base
+  no longer matches, surfacing the clash the way cloud-sync conflicts already are — and/or push
+  change events from the daemon's `notify` watcher so clients invalidate their in-memory caches
+  (sidebar list, graph, link previews — none of which currently refresh on an out-of-band edit) and
+  reflect co-edits live.
+
 ## Working rules
 
 These are mandatory; the canonical copy is [`AGENTS.md`](../AGENTS.md), generated from the same
