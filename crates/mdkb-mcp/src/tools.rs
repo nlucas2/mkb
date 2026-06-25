@@ -111,12 +111,12 @@ pub fn tool_definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "update_block",
-            description: "Overwrite a block's title + Markdown body, by id. This replaces the ENTIRE body, so read the current body first (get_block) and send the full revised text — don't send a fragment. An edit that would empty the block or strip most of its content is refused unless force=true (use that only for a deliberate rewrite).",
+            description: "Overwrite a block's Markdown body, by id, optionally changing its title. This replaces the ENTIRE body, so read the current body first (get_block) and send the full revised text — don't send a fragment. The block's tags, lock state, and properties are preserved. Omit `title` (or send an empty string) to keep the current title — a body-only edit never drops it; send a non-empty `title` to change it. An edit that would empty the block or strip most of its content is refused unless force=true (use that only for a deliberate rewrite).",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
-                    "title": {"type": "string"},
+                    "title": {"type": "string", "description": "Omit or leave empty to keep the current title; a non-empty value changes it"},
                     "body": {"type": "string"},
                     "force": {"type": "boolean", "description": "Bypass the destructive-update guard for an intentional rewrite (default false)"}
                 },
@@ -243,6 +243,11 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             .map(|v| v.to_string())
     };
     let req_s = |key: &str| s(key).ok_or_else(|| format!("missing required argument: {key}"));
+    // For the update_block title boundary: an agent that includes `"title": ""` (or whitespace)
+    // almost always means "I have no title to set", not "erase the existing title". Normalising
+    // empty/whitespace to `None` makes that a safe *preserve* rather than a silent wipe — title
+    // clearing over MCP is deliberately not the accidental path (set a non-empty title to change it).
+    let s_nonblank = |key: &str| s(key).filter(|v| !v.trim().is_empty());
     let req_id = |key: &str| -> Result<BlockId, String> {
         let v = s(key).ok_or_else(|| format!("missing required argument: {key}"))?;
         BlockId::parse(&v).map_err(|_| format!("invalid block id for {key}: {v}"))
@@ -331,7 +336,7 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
         },
         "update_block" => Request::UpdateBlock {
             id: req_id("id")?,
-            title: s("title"),
+            title: s_nonblank("title"),
             body: req_s("body")?,
             force: args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
         },
@@ -505,6 +510,25 @@ mod tests {
         assert!(build_request("set_props", &args).is_err());
         let args = json!({"id": id, "props": [{"value": "git"}]});
         assert!(build_request("set_props", &args).is_err());
+    }
+
+    #[test]
+    fn update_block_title_empty_string_preserves_not_clears() {
+        // An agent that sends `"title": ""` must NOT wipe the title — it normalises to None
+        // (preserve). A non-empty title still changes it; omitting it preserves.
+        let id = BlockId::generate().to_string();
+        for empty in ["", "   "] {
+            let args = json!({"id": id, "title": empty, "body": "new body"});
+            match build_request("update_block", &args).unwrap() {
+                Request::UpdateBlock { title, .. } => assert_eq!(title, None, "empty {empty:?}"),
+                _ => panic!("expected update_block"),
+            }
+        }
+        let args = json!({"id": id, "title": "Real", "body": "b"});
+        match build_request("update_block", &args).unwrap() {
+            Request::UpdateBlock { title, .. } => assert_eq!(title.as_deref(), Some("Real")),
+            _ => panic!("expected update_block"),
+        }
     }
 
     #[test]

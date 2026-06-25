@@ -178,7 +178,7 @@ enum Command {
     Update {
         /// Block id.
         id: String,
-        /// New title.
+        /// New title. Omit to keep the current title; pass an empty string ("") to clear it.
         #[arg(long)]
         title: Option<String>,
         /// Override the guard that refuses an emptying/truncating edit.

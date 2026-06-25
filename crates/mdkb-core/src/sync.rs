@@ -283,10 +283,15 @@ impl<I: Index> SyncEngine<I> {
             Err(e) => Err(io_err(e)),
         }
     }
-    /// frontmatter `tags:`, its `locked:` flag, and its arbitrary `props` are **preserved** across
-    /// the edit (each is changed via its own op — [`SyncEngine::set_tags`] / [`SyncEngine::set_lock`]
-    /// / [`SyncEngine::set_props`] — not by a body edit, so editing prose never drops tags, silently
-    /// unlocks a block, or strips its metadata).
+    /// Overwrite a block's body, persisting to its file, and optionally change its title. The
+    /// block's managed frontmatter `tags:`, its `locked:` flag, and its arbitrary `props` are
+    /// **preserved** across the edit (each is changed via its own op — [`SyncEngine::set_tags`] /
+    /// [`SyncEngine::set_lock`] / [`SyncEngine::set_props`] — not by a body edit, so editing prose
+    /// never drops tags, silently unlocks a block, or strips its metadata).
+    ///
+    /// `title` follows the same preserve-by-default rule: `None` keeps the existing title, `Some`
+    /// with a non-empty value sets it, and `Some("")` (an explicit empty title) clears it. So a
+    /// body-only edit never drops the title.
     pub fn update_block(
         &mut self,
         id: &BlockId,
@@ -300,8 +305,22 @@ impl<I: Index> SyncEngine<I> {
         let fm_tags = existing.fm_tags.clone();
         let locked = existing.locked;
         let props = existing.props.clone();
+        // Preserve the existing title unless the caller passed one. An explicit empty string
+        // clears it; otherwise `None` keeps whatever the block already had.
+        let resolved_title: Option<String> = match title {
+            None => existing.title.clone(),
+            Some(t) if t.trim().is_empty() => None,
+            Some(t) => Some(t.to_string()),
+        };
         let now = crate::clock::now_rfc3339();
-        let source = write_block(title, &fm_tags, locked, Some(now.as_str()), &props, body);
+        let source = write_block(
+            resolved_title.as_deref(),
+            &fm_tags,
+            locked,
+            Some(now.as_str()),
+            &props,
+            body,
+        );
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
         self.hashes
@@ -659,6 +678,27 @@ mod tests {
         let mut e2 = SyncEngine::new(dir.path(), MemIndex::default());
         e2.reconcile().unwrap();
         assert_eq!(e2.vault().block(&id).unwrap().body, "edited\n");
+    }
+
+    #[test]
+    fn update_preserves_title_unless_explicitly_changed() {
+        let (_dir, mut e) = engine();
+        let id = e.create_block(Some("Keep Me"), "original\n").unwrap();
+        // Body-only edit (title None) must NOT drop the title.
+        e.update_block(&id, None, "edited\n").unwrap();
+        assert_eq!(
+            e.vault().block(&id).unwrap().title.as_deref(),
+            Some("Keep Me")
+        );
+        // A non-empty title sets it.
+        e.update_block(&id, Some("New Title"), "edited2\n").unwrap();
+        assert_eq!(
+            e.vault().block(&id).unwrap().title.as_deref(),
+            Some("New Title")
+        );
+        // An explicit empty title clears it.
+        e.update_block(&id, Some(""), "edited3\n").unwrap();
+        assert_eq!(e.vault().block(&id).unwrap().title, None);
     }
 
     #[test]
