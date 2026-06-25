@@ -483,17 +483,19 @@ fn restart_daemon(state: tauri::State<'_, AppState>) -> Result<(), String> {
 }
 
 /// Open a native folder picker and return the chosen path (for local-vault selection).
+///
+/// This MUST be `async`: Tauri runs async commands off the main thread, so the native folder
+/// dialog can be dispatched to the main-thread event loop while this worker thread blocks on the
+/// result. A *synchronous* command runs on the main thread itself — blocking it to await the
+/// dialog deadlocks, because the event loop can then never pump to show the dialog or deliver its
+/// choice (the "browse hangs" bug). `blocking_pick_folder` is the documented pattern here.
 #[tauri::command]
-fn pick_vault(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn pick_vault(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.dialog().file().pick_folder(move |chosen| {
-        let path = chosen
-            .and_then(|fp| fp.into_path().ok())
-            .map(|p| p.display().to_string());
-        let _ = tx.send(path);
-    });
-    rx.recv().map_err(|e| e.to_string())
+    let chosen = app.dialog().file().blocking_pick_folder();
+    Ok(chosen
+        .and_then(|fp| fp.into_path().ok())
+        .map(|p| p.display().to_string()))
 }
 
 /// Entry point used by the generated binary.
