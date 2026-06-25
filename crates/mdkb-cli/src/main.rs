@@ -102,6 +102,14 @@ enum Command {
     Get {
         /// Block id.
         id: String,
+        /// Show only a line range `START:END` (1-based, inclusive), with line numbers.
+        #[arg(long, value_name = "START:END")]
+        lines: Option<String>,
+    },
+    /// Append text to a block's body (read from stdin); the text starts on a fresh line.
+    Append {
+        /// Block id.
+        id: String,
     },
     /// Search (keyword + semantic). The query also accepts inline operators
     /// (tag:<t> #<t> lang:<l> code:<l> created:before:<date> updated:after:<date> has:<k> missing:<k>).
@@ -135,6 +143,9 @@ enum Command {
         /// Require a property to be absent (repeatable).
         #[arg(long = "missing")]
         missing: Vec<String>,
+        /// Suppress the "embedded in" lineage line under each hit.
+        #[arg(long = "no-context")]
+        no_context: bool,
     },
     /// All tags with block counts.
     Tags,
@@ -181,6 +192,31 @@ enum Command {
         /// New title. Omit to keep the current title; pass an empty string ("") to clear it.
         #[arg(long)]
         title: Option<String>,
+        /// Override the guard that refuses an emptying/truncating edit.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Replace an exact string in a block's body (partial edit). The search string must occur
+    /// exactly `--expect-count` times or nothing is changed. Use the `*-file` options for text
+    /// with shell-hostile characters (backticks, `$`, `[[…]]`).
+    Replace {
+        /// Block id.
+        id: String,
+        /// Exact text to find. Required unless `--old-file` is given.
+        #[arg(long, conflicts_with = "old_file")]
+        old: Option<String>,
+        /// Replacement text (omit for an empty replacement, i.e. deletion).
+        #[arg(long, conflicts_with = "new_file")]
+        new: Option<String>,
+        /// Read the search text from a file instead of `--old`.
+        #[arg(long)]
+        old_file: Option<String>,
+        /// Read the replacement text from a file instead of `--new`.
+        #[arg(long)]
+        new_file: Option<String>,
+        /// Required number of occurrences of the search string (default 1).
+        #[arg(long, default_value_t = 1)]
+        expect_count: usize,
         /// Override the guard that refuses an emptying/truncating edit.
         #[arg(long)]
         force: bool,
@@ -287,7 +323,8 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Ping => cmd_ping(g),
         Command::List => cmd_list(g),
         Command::Render { id, flat } => cmd_render(g, &id, flat),
-        Command::Get { id } => cmd_get(g, &id),
+        Command::Get { id, lines } => cmd_get(g, &id, lines),
+        Command::Append { id } => cmd_append(g, &id),
         Command::Search {
             query,
             lang,
@@ -299,6 +336,7 @@ fn run(cli: Cli) -> Result<(), String> {
             updated_before,
             has,
             missing,
+            no_context,
         } => cmd_search(
             g,
             &query,
@@ -312,6 +350,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 updated_before,
                 has,
                 missing,
+                no_context,
             },
         ),
         Command::Tags => cmd_tags(g),
@@ -324,6 +363,15 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Assets { prune } => cmd_assets(g, prune),
         Command::Create { title } => cmd_create(g, title.as_deref()),
         Command::Update { id, title, force } => cmd_update(g, &id, title.as_deref(), force),
+        Command::Replace {
+            id,
+            old,
+            new,
+            old_file,
+            new_file,
+            expect_count,
+            force,
+        } => cmd_replace(g, &id, old, new, old_file, new_file, expect_count, force),
         Command::SetTags { id, tags } => cmd_set_tags(g, &id, tags),
         Command::SetProps { id, pairs } => cmd_set_props(g, &id, &pairs),
         Command::UnsetProps { id, keys } => cmd_unset_props(g, &id, keys),
@@ -391,16 +439,63 @@ fn cmd_render(g: &GlobalArgs, id: &str, flat: bool) -> Result<(), String> {
     }
 }
 
-fn cmd_get(g: &GlobalArgs, id: &str) -> Result<(), String> {
+fn cmd_get(g: &GlobalArgs, id: &str, lines: Option<String>) -> Result<(), String> {
     let c = g.connect()?;
     let id = parse_id(id)?;
-    match c.get_block_source(id).map_err(|e| e.to_string())? {
-        Some(src) => {
-            print!("{src}");
-            Ok(())
+    match lines {
+        None => match c.get_block_source(id).map_err(|e| e.to_string())? {
+            Some(src) => {
+                print!("{src}");
+                Ok(())
+            }
+            None => Err("block not found".to_string()),
+        },
+        Some(spec) => {
+            let (start, end) = parse_line_range(&spec)?;
+            match c
+                .get_block_source_range(id, start, end)
+                .map_err(|e| e.to_string())?
+            {
+                Some(src) => {
+                    // Number the lines starting at `start` so the output maps back to the block.
+                    for (i, line) in src.lines().enumerate() {
+                        println!("{:>5}  {line}", start + i);
+                    }
+                    Ok(())
+                }
+                None => Err("block not found".to_string()),
+            }
         }
-        None => Err("block not found".to_string()),
     }
+}
+
+/// Parse a `START:END` line range (1-based, inclusive). `END` may be omitted (`START:`) to read to
+/// the end, expressed as a large sentinel the server clamps.
+fn parse_line_range(spec: &str) -> Result<(usize, usize), String> {
+    let (a, b) = spec
+        .split_once(':')
+        .ok_or_else(|| format!("bad line range {spec:?}: use START:END (e.g. 10:20)"))?;
+    let start: usize = a
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad start line in {spec:?}"))?;
+    let end: usize = if b.trim().is_empty() {
+        usize::MAX
+    } else {
+        b.trim()
+            .parse()
+            .map_err(|_| format!("bad end line in {spec:?}"))?
+    };
+    Ok((start, end))
+}
+
+fn cmd_append(g: &GlobalArgs, id: &str) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
+    let text = read_stdin()?;
+    c.append_to_block(id, &text).map_err(|e| e.to_string())?;
+    println!("ok");
+    Ok(())
 }
 
 /// The optional filters for `search`, grouped so the handler signature stays small.
@@ -414,6 +509,7 @@ struct SearchFlags {
     updated_before: Option<String>,
     has: Vec<String>,
     missing: Vec<String>,
+    no_context: bool,
 }
 
 fn cmd_search(g: &GlobalArgs, query_text: &str, flags: SearchFlags) -> Result<(), String> {
@@ -459,8 +555,27 @@ fn cmd_search(g: &GlobalArgs, query_text: &str, flags: SearchFlags) -> Result<()
         let b = &h.block;
         let preview: String = b.content.replace('\n', " ").chars().take(100).collect();
         println!("{}  {}\n    {}", b.id, b.display_title(), preview);
+        if !flags.no_context {
+            if let Some(line) = lineage_line(h.lineage.as_ref()) {
+                println!("    {line}");
+            }
+        }
     }
     Ok(())
+}
+
+/// Render a one-line "where this block lives" hint from a hit's lineage: `[root]` for a top-level
+/// page, or `↑ embedded in: A · B` listing the distinct root pages an embedded block lives on.
+fn lineage_line(lineage: Option<&mdkb_core::Lineage>) -> Option<String> {
+    let lin = lineage?;
+    if lin.is_root {
+        return Some("[root]".to_string());
+    }
+    if lin.roots.is_empty() {
+        return None;
+    }
+    let pages: Vec<&str> = lin.roots.iter().map(|c| c.title.as_str()).collect();
+    Some(format!("↑ embedded in: {}", pages.join(" · ")))
 }
 
 fn parse_date_flag(d: &str) -> Result<String, String> {
@@ -598,6 +713,39 @@ fn cmd_update(g: &GlobalArgs, id: &str, title: Option<&str>, force: bool) -> Res
     c.update_block(id, title, &body, force)
         .map_err(|e| e.to_string())?;
     println!("ok");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_replace(
+    g: &GlobalArgs,
+    id: &str,
+    old: Option<String>,
+    new: Option<String>,
+    old_file: Option<String>,
+    new_file: Option<String>,
+    expect_count: usize,
+    force: bool,
+) -> Result<(), String> {
+    let old = match (old, old_file) {
+        (Some(s), _) => s,
+        (None, Some(p)) => std::fs::read_to_string(&p).map_err(|e| format!("reading {p}: {e}"))?,
+        (None, None) => return Err("provide --old or --old-file".to_string()),
+    };
+    // An absent --new/--new-file means an empty replacement (deletion).
+    let new = match (new, new_file) {
+        (Some(s), _) => s,
+        (None, Some(p)) => std::fs::read_to_string(&p).map_err(|e| format!("reading {p}: {e}"))?,
+        (None, None) => String::new(),
+    };
+    let c = g.connect()?;
+    let id = parse_id(id)?;
+    c.replace_in_block(id, &old, &new, expect_count, force)
+        .map_err(|e| e.to_string())?;
+    println!(
+        "ok (replaced {expect_count} occurrence{})",
+        if expect_count == 1 { "" } else { "s" }
+    );
     Ok(())
 }
 

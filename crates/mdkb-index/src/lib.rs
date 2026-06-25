@@ -118,6 +118,7 @@ impl SqliteIndex {
                 Ok(SearchHit {
                     block: row_to_record(r)?,
                     score: -rank,
+                    lineage: None,
                 })
             })
             .map_err(err)?;
@@ -157,7 +158,11 @@ impl SqliteIndex {
             .map(|(block, blob)| {
                 let candidate = mdkb_core::bytes_to_vector(&blob);
                 let score = mdkb_core::cosine_similarity(vector, &candidate) as f64;
-                SearchHit { block, score }
+                SearchHit {
+                    block,
+                    score,
+                    lineage: None,
+                }
             })
             .collect();
         scored.sort_by(|a, b| {
@@ -189,6 +194,7 @@ impl SqliteIndex {
                 Ok(SearchHit {
                     block: row_to_record(r)?,
                     score: 0.0,
+                    lineage: None,
                 })
             })
             .map_err(err)?;
@@ -299,7 +305,11 @@ impl Index for SqliteIndex {
                 Ok(fused
                     .into_iter()
                     .filter_map(|(id, score)| {
-                        records.remove(&id).map(|block| SearchHit { block, score })
+                        records.remove(&id).map(|block| SearchHit {
+                            block,
+                            score,
+                            lineage: None,
+                        })
                     })
                     .take(limit)
                     .collect())

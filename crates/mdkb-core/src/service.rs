@@ -241,6 +241,12 @@ impl<I: Index> Service<I> {
             hits.retain(|h| query.matches_dates(&h.block) && query.matches_props(&h.block));
             hits.truncate(limit);
         }
+        // Annotate each hit with its upward lineage (which page(s) it lives on) so a hit on a
+        // nested, embedded block isn't a context-free fragment. Build the reverse-edge map once.
+        let parents = self.engine.vault().embed_parent_map();
+        for hit in &mut hits {
+            hit.lineage = Some(self.engine.vault().lineage_with(&parents, &hit.block.id));
+        }
         Ok(hits)
     }
 
@@ -503,6 +509,85 @@ impl<I: Index> Service<I> {
             }
         }
         self.engine.update_block(id, title, body)
+    }
+
+    /// Apply an exact, count-checked string replacement to a block's **body** — the partial-edit
+    /// primitive (the others all replace the whole body). `old` must occur exactly `expect_count`
+    /// times in the raw body or the call errors and nothing is written, so an ambiguous or stale
+    /// anchor is a safe no-op. The resulting body still passes through the destructive-update guard
+    /// (unless `force`), preserves title/tags/lock/props, and stamps `updated:` like any other edit.
+    pub fn replace_in_block(
+        &mut self,
+        ctx: &RequestContext,
+        id: &BlockId,
+        old: &str,
+        new: &str,
+        expect_count: usize,
+        force: bool,
+    ) -> Result<(), IndexError> {
+        ctx.authorize(Capability::Write)?;
+        self.ensure_writable(id)?;
+        let old_body = self
+            .engine
+            .vault()
+            .block(id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?
+            .body
+            .clone();
+        let new_body = crate::exact_replace(&old_body, old, new, expect_count)?;
+        if new_body == old_body {
+            return Ok(());
+        }
+        if !force {
+            if let Some(reason) = destructive_update_reason(&old_body, &new_body) {
+                return Err(IndexError::new(format!(
+                    "refusing to edit {id}: {reason}. If this is an intentional rewrite, retry \
+                     with force."
+                )));
+            }
+        }
+        // Title None preserves the existing title (and tags/lock/props are kept by update_block).
+        self.engine.update_block(id, None, &new_body)
+    }
+
+    /// Append `text` to a block's body (it starts on a fresh line). Purely additive — it never
+    /// removes content, so the destructive guard doesn't apply — but it is still a write: it
+    /// requires the [`Capability::Write`] capability, is refused on a locked block, preserves
+    /// title/tags/lock/props, and stamps `updated:`.
+    pub fn append_to_block(
+        &mut self,
+        ctx: &RequestContext,
+        id: &BlockId,
+        text: &str,
+    ) -> Result<(), IndexError> {
+        ctx.authorize(Capability::Write)?;
+        self.ensure_writable(id)?;
+        let old_body = self
+            .engine
+            .vault()
+            .block(id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?
+            .body
+            .clone();
+        let new_body = crate::append_text(&old_body, text);
+        self.engine.update_block(id, None, &new_body)
+    }
+
+    /// Return lines `start..=end` (1-based, inclusive) of a block's raw source body, or `None` if
+    /// the block doesn't exist. A read-only convenience for viewing a slice of a large block.
+    pub fn block_source_range(
+        &self,
+        ctx: &RequestContext,
+        id: &BlockId,
+        start: usize,
+        end: usize,
+    ) -> Result<Option<String>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(self
+            .engine
+            .vault()
+            .block(id)
+            .map(|b| crate::slice_lines(&b.body, start, end)))
     }
 
     /// Set a block's managed (frontmatter) `tags:` to exactly `tags`. Inline `#hashtag`

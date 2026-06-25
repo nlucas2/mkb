@@ -124,6 +124,46 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "replace_in_block",
+            description: "Make a SMALL, targeted edit to a block's body: replace an exact substring (`old`) with `new`. This is the partial-edit op — prefer it over update_block when changing a line or phrase, since you don't resend the whole body. `old` must occur exactly `expect_count` times (default 1) or nothing changes and an error is returned (so an ambiguous or stale anchor is a safe no-op — include enough surrounding text to make `old` unique). `new` may be empty to delete the matched text. Operates on the raw Markdown, so `![[embeds]]`/`[[refs]]` are literal text. Tags, title, lock state, and properties are preserved. To add text to the END of a block (with no anchor), use append_to_block instead.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "old": {"type": "string", "description": "Exact text to find; must occur expect_count times"},
+                    "new": {"type": "string", "description": "Replacement text (empty to delete the match)"},
+                    "expect_count": {"type": "integer", "description": "Required number of occurrences (default 1)"},
+                    "force": {"type": "boolean", "description": "Bypass the destructive-update guard (default false)"}
+                },
+                "required": ["id", "old"]
+            }),
+        },
+        ToolDef {
+            name: "append_to_block",
+            description: "Append text to the END of a block's body (it starts on a fresh line). Use this to add a new line/paragraph/list-item when there is no existing anchor to target with replace_in_block. Purely additive — it never removes content. Include a leading newline in `text` for a blank-line separation (e.g. before a new heading). Tags, title, lock state, and properties are preserved.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "text": {"type": "string", "description": "Text to append (starts on a new line)"}
+                },
+                "required": ["id", "text"]
+            }),
+        },
+        ToolDef {
+            name: "get_block_lines",
+            description: "Read a line range of a block's raw Markdown body (1-based, inclusive) — useful for viewing part of a large block without fetching the whole thing. Returns the requested lines.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "start": {"type": "integer", "description": "First line, 1-based inclusive"},
+                    "end": {"type": "integer", "description": "Last line, 1-based inclusive"}
+                },
+                "required": ["id", "start", "end"]
+            }),
+        },
+        ToolDef {
             name: "delete_block",
             description: "Delete a block (removes its file and index entries).",
             schema: json!({
@@ -323,6 +363,15 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             Request::Search { query: q }
         }
         "get_block" => Request::GetBlock { id: req_id("id")? },
+        "get_block_lines" => Request::GetBlockSourceRange {
+            id: req_id("id")?,
+            start: args.get("start").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
+            end: args
+                .get("end")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(usize::MAX),
+        },
         "render_block" => Request::RenderBlock { id: req_id("id")? },
         "list_blocks" => Request::ListBlocks,
         "list_roots" => Request::ListRoots,
@@ -339,6 +388,21 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             title: s_nonblank("title"),
             body: req_s("body")?,
             force: args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
+        },
+        "replace_in_block" => Request::ReplaceInBlock {
+            id: req_id("id")?,
+            old: req_s("old")?,
+            new: s("new").unwrap_or_default(),
+            expect_count: args
+                .get("expect_count")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(1),
+            force: args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
+        },
+        "append_to_block" => Request::AppendToBlock {
+            id: req_id("id")?,
+            text: req_s("text")?,
         },
         "delete_block" => Request::DeleteBlock { id: req_id("id")? },
         "set_tags" => Request::SetTags {
@@ -469,7 +533,8 @@ mod tests {
         let args = json!({
             "query": "q", "id": id, "source_id": id, "target_id": id, "parent_id": id,
             "child_id": id, "title": "T", "body": "b", "embed": true, "tags": ["x"],
-            "props": [{"key": "source", "value": "git"}], "keys": ["source"]
+            "props": [{"key": "source", "value": "git"}], "keys": ["source"],
+            "old": "b", "new": "c", "text": "more", "start": 1, "end": 2
         });
         for d in tool_definitions() {
             build_request(d.name, &args)

@@ -5,7 +5,7 @@
 //! (children / transclusions) and `[[target]]` (references). A *target* is resolved to a
 //! concrete id by ULID first, then by an exact (case-insensitive) title match.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::Path;
 
@@ -20,6 +20,32 @@ pub const BLOCKS_DIR: &str = "blocks";
 /// files a block references with a normal Markdown `![](assets/…)` / `[](assets/…)` link. Assets
 /// are carried by sync but never indexed (only `BLOCKS_DIR` is scanned for content).
 pub const ASSETS_DIR: &str = "assets";
+
+/// A block referenced by id + its display title — a single step in a breadcrumb.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Crumb {
+    /// The block's id.
+    pub id: BlockId,
+    /// The block's display title (falls back to the id when untitled).
+    pub title: String,
+}
+
+/// The upward context of a block: where it sits in the transclusion DAG. Lets a search hit on a
+/// nested, embedded block tell the user which page(s) it actually lives on, instead of presenting
+/// it as an isolated fragment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Lineage {
+    /// Whether the block is a root (transcluded by nothing — a top-level page).
+    pub is_root: bool,
+    /// Fewest embed-hops from this block up to its nearest root (`0` for a root).
+    pub depth: usize,
+    /// The blocks that directly transclude this one (`![[id]]`).
+    pub parents: Vec<Crumb>,
+    /// The distinct root pages reachable by walking embed edges upward (the block itself if root).
+    pub roots: Vec<Crumb>,
+}
 
 /// An in-memory collection of block files with id/title resolution.
 #[derive(Debug, Clone, Default)]
@@ -155,6 +181,75 @@ impl Vault {
             .collect();
         out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         out
+    }
+
+    /// Build the embed parent-map once: `child id → the blocks that transclude it` (`![[child]]`).
+    /// O(blocks·edges); pass the result to [`Vault::lineage_with`] to annotate many blocks without
+    /// recomputing the reverse edges per block.
+    pub fn embed_parent_map(&self) -> HashMap<BlockId, Vec<BlockId>> {
+        let mut map: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+        let mut ids: Vec<&BlockId> = self.blocks.keys().collect();
+        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        for parent in ids {
+            for child in self.children(parent) {
+                map.entry(child).or_default().push(parent.clone());
+            }
+        }
+        map
+    }
+
+    /// The upward [`Lineage`] of a block: whether it is a root, its minimum embed-depth to a root,
+    /// its immediate transcluders, and the distinct root pages reachable upward. Builds the parent
+    /// map internally — for many blocks, build it once and call [`Vault::lineage_with`] instead.
+    pub fn lineage(&self, id: &BlockId) -> Lineage {
+        self.lineage_with(&self.embed_parent_map(), id)
+    }
+
+    /// Compute a block's [`Lineage`] using a precomputed `parents` map (see [`embed_parent_map`]).
+    /// Walks embed edges **upward** breadth-first, cycle-safe via a visited set, so a DAG with
+    /// multiple parents is handled and `depth` is the fewest embed-hops to the nearest root.
+    ///
+    /// [`embed_parent_map`]: Vault::embed_parent_map
+    pub fn lineage_with(&self, parents: &HashMap<BlockId, Vec<BlockId>>, id: &BlockId) -> Lineage {
+        let crumb = |bid: &BlockId| Crumb {
+            id: bid.clone(),
+            title: self
+                .block(bid)
+                .map(|b| b.display_title())
+                .unwrap_or_else(|| bid.as_str().to_string()),
+        };
+        let immediate = parents.get(id).cloned().unwrap_or_default();
+        let is_root = immediate.is_empty();
+
+        let mut visited: HashSet<BlockId> = HashSet::new();
+        visited.insert(id.clone());
+        let mut queue: VecDeque<(BlockId, usize)> = VecDeque::new();
+        queue.push_back((id.clone(), 0));
+        let mut root_ids: Vec<BlockId> = Vec::new();
+        let mut depth: Option<usize> = None;
+        while let Some((node, d)) = queue.pop_front() {
+            let ps = parents.get(&node).map(Vec::as_slice).unwrap_or(&[]);
+            if ps.is_empty() {
+                // No transcluder → this node is a root; record the fewest hops reaching one.
+                if !root_ids.contains(&node) {
+                    root_ids.push(node.clone());
+                }
+                depth = Some(depth.map_or(d, |m| m.min(d)));
+            } else {
+                for p in ps {
+                    if visited.insert(p.clone()) {
+                        queue.push_back((p.clone(), d + 1));
+                    }
+                }
+            }
+        }
+        root_ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        Lineage {
+            is_root,
+            depth: depth.unwrap_or(0),
+            parents: immediate.iter().map(&crumb).collect(),
+            roots: root_ids.iter().map(&crumb).collect(),
+        }
     }
 
     /// Load every block file under `<root>/blocks/` into a vault.
@@ -325,6 +420,60 @@ mod tests {
         // child is not a root (it is transcluded); parent is a root.
         assert!(v.roots().contains(&parent));
         assert!(!v.roots().contains(&child));
+    }
+
+    #[test]
+    fn lineage_reports_roots_depth_and_multiple_parents() {
+        let mut v = Vault::new();
+        let leaf = id();
+        let mid = id();
+        let pagea = id();
+        let pageb = id();
+        // Graph: pagea embeds mid; mid embeds leaf; pageb ALSO embeds leaf directly.
+        v.insert_source(leaf.clone(), "---\ntitle: Leaf\n---\nleaf body\n");
+        v.insert_source(mid.clone(), &format!("---\ntitle: Mid\n---\n![[{leaf}]]\n"));
+        v.insert_source(
+            pagea.clone(),
+            &format!("---\ntitle: PageA\n---\n![[{mid}]]\n"),
+        );
+        v.insert_source(
+            pageb.clone(),
+            &format!("---\ntitle: PageB\n---\n![[{leaf}]]\n"),
+        );
+
+        // A root: is_root, depth 0, roots == itself.
+        let la = v.lineage(&pagea);
+        assert!(la.is_root);
+        assert_eq!(la.depth, 0);
+        assert_eq!(
+            la.roots.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+            vec![pagea.clone()]
+        );
+
+        // The leaf has two parents (mid + PageB) and two reachable roots; nearest root is 1 hop.
+        let ll = v.lineage(&leaf);
+        assert!(!ll.is_root);
+        assert_eq!(
+            ll.depth, 1,
+            "PageB embeds leaf directly → nearest root is 1 hop"
+        );
+        let parent_ids: Vec<_> = ll.parents.iter().map(|c| c.id.clone()).collect();
+        assert!(parent_ids.contains(&mid) && parent_ids.contains(&pageb));
+        let root_ids: Vec<_> = ll.roots.iter().map(|c| c.id.clone()).collect();
+        assert!(root_ids.contains(&pagea) && root_ids.contains(&pageb));
+        // Crumb titles are resolved.
+        assert!(ll.parents.iter().any(|c| c.title == "Mid"));
+    }
+
+    #[test]
+    fn lineage_is_cycle_safe() {
+        // Even if the graph somehow contains an embed cycle, lineage must terminate.
+        let mut v = Vault::new();
+        let a = id();
+        let b = id();
+        v.insert_source(a.clone(), &format!("---\ntitle: A\n---\n![[{b}]]\n"));
+        v.insert_source(b.clone(), &format!("---\ntitle: B\n---\n![[{a}]]\n"));
+        let _ = v.lineage(&a); // must not loop forever
     }
 
     #[test]

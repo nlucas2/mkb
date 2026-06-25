@@ -1,6 +1,7 @@
 ---
 title: "Skill: CLI surface"
 tags: [skill, surface, cli]
+updated: 2026-06-25T08:13:56Z
 ---
 
 ## The CLI surface
@@ -23,6 +24,7 @@ Two commands **print an id on stdout you must capture** — `create` (new block 
 ```sh
 mdkb list --vault <vault>                    # root blocks, "id  title" per line
 mdkb get --vault <vault> <id>                # raw Markdown body (use before any update)
+mdkb get --vault <vault> <id> --lines 10:20   # just lines 10-20 (1-based), numbered
 mdkb render --vault <vault> <id>             # body with embeds resolved
 mdkb render --vault <vault> <id> --flat      # published form: embeds dissolved, refs as titles
 mdkb search --vault <vault> "how do I restart nginx" # hybrid keyword+semantic; prefer a natural phrase
@@ -53,6 +55,11 @@ id=$(printf '# Title\n\nbody…\n' | mdkb create --vault <vault> --title="Title"
 mdkb get --vault <vault> "$id" > /tmp/b.md      # 1. read
 #   …edit /tmp/b.md, preserving everything you want to keep…
 mdkb update --vault <vault> "$id" --title="Title" < /tmp/b.md   # 2. write the complete new body
+
+# replace — a SMALL targeted edit: swap an exact string (no full read-modify-write)
+mdkb replace --vault <vault> "$id" --old "old phrase" --new "new phrase"   # fails unless it occurs once
+mdkb replace --vault <vault> "$id" --old-file old.txt --new-file new.txt   # for shell-hostile text
+printf -- '- new bullet' | mdkb append --vault <vault> "$id"   # add text to the END (no anchor needed)
 
 mdkb set-tags --vault <vault> <id> ops k8s      # set managed (frontmatter) tags; no args clears them
 mdkb set-props --vault <vault> <id> source=https://x verified=2026-06-01   # add/update key=value

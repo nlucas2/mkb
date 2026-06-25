@@ -56,6 +56,69 @@ fn io_err(e: impl std::fmt::Display) -> IndexError {
     IndexError::new(e)
 }
 
+/// Apply an exact, count-checked string replacement to a block body, returning the new body.
+///
+/// `old` must be non-empty and must occur **exactly** `expect_count` times (non-overlapping);
+/// otherwise this errors and the body is left unchanged — making a partial edit safe against an
+/// ambiguous or stale anchor (the same property an `old_str` edit gives a code editor, and a free
+/// optimistic-concurrency check on a single-writer daemon). All matching occurrences are replaced
+/// (their total equals `expect_count` on success). `new` may be empty (a deletion). The replacement
+/// operates on the **raw** body, so `![[embeds]]`/`[[refs]]` are treated as literal text.
+pub fn exact_replace(
+    body: &str,
+    old: &str,
+    new: &str,
+    expect_count: usize,
+) -> Result<String, IndexError> {
+    if old.is_empty() {
+        return Err(IndexError::new("the search string must not be empty"));
+    }
+    if expect_count == 0 {
+        return Err(IndexError::new("expect_count must be at least 1"));
+    }
+    let found = body.matches(old).count();
+    if found != expect_count {
+        return Err(IndexError::new(format!(
+            "expected {expect_count} occurrence(s) of the search string but found {found}; \
+             no change made — refine the search string or set the expected count"
+        )));
+    }
+    Ok(body.replace(old, new))
+}
+
+/// Append `text` to a block body so it starts on a fresh line, with a guaranteed trailing newline.
+/// The caller controls extra spacing by including a leading newline in `text` (e.g. `"\n## New"`
+/// for a blank line before a heading). Purely additive — it never removes content.
+pub fn append_text(body: &str, text: &str) -> String {
+    let mut out = body.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(text);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Return lines `start..=end` (1-based, inclusive) of `text`, clamped to the available range.
+/// `start < 1` is treated as 1; `end` past the end clamps to the last line; an out-of-range start
+/// yields an empty string. The slice keeps a trailing newline so it round-trips as block text.
+pub fn slice_lines(text: &str, start: usize, end: usize) -> String {
+    let start = start.max(1);
+    if end < start {
+        return String::new();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    if start > lines.len() {
+        return String::new();
+    }
+    let end = end.min(lines.len());
+    let mut out = lines[start - 1..end].join("\n");
+    out.push('\n');
+    out
+}
+
 impl<I: Index> SyncEngine<I> {
     /// Create an engine rooted at `root` with the given index.
     pub fn new(root: impl Into<PathBuf>, index: I) -> Self {
@@ -699,6 +762,55 @@ mod tests {
         // An explicit empty title clears it.
         e.update_block(&id, Some(""), "edited3\n").unwrap();
         assert_eq!(e.vault().block(&id).unwrap().title, None);
+    }
+
+    #[test]
+    fn exact_replace_is_count_checked() {
+        // Exact single match required by default.
+        let body = "foo bar foo baz";
+        assert!(exact_replace(body, "bar", "BAR", 1).is_ok());
+        assert_eq!(
+            exact_replace(body, "bar", "BAR", 1).unwrap(),
+            "foo BAR foo baz"
+        );
+        // Two occurrences with expect_count 2 → all replaced.
+        assert_eq!(exact_replace(body, "foo", "X", 2).unwrap(), "X bar X baz");
+        // Count mismatch → error, no change.
+        assert!(exact_replace(body, "foo", "X", 1).is_err());
+        assert!(exact_replace(body, "missing", "X", 1).is_err());
+        // Empty search string is rejected; empty replacement (deletion) is allowed.
+        assert!(exact_replace(body, "", "X", 1).is_err());
+        assert_eq!(exact_replace("ab cd", "ab ", "", 1).unwrap(), "cd");
+        // Directives are treated as literal text.
+        assert_eq!(
+            exact_replace("see ![[01ABC]] now", "![[01ABC]]", "[[01ABC]]", 1).unwrap(),
+            "see [[01ABC]] now"
+        );
+    }
+
+    #[test]
+    fn append_text_starts_on_a_fresh_line() {
+        assert_eq!(append_text("a\nb\n", "c"), "a\nb\nc\n");
+        // Body without a trailing newline still gets the append on a new line.
+        assert_eq!(append_text("a\nb", "c"), "a\nb\nc\n");
+        // A leading newline in the appended text yields a blank-line separation.
+        assert_eq!(append_text("para1\n", "\npara2"), "para1\n\npara2\n");
+        // Empty body.
+        assert_eq!(append_text("", "first"), "first\n");
+    }
+
+    #[test]
+    fn slice_lines_is_1_based_and_clamped() {
+        let body = "one\ntwo\nthree\nfour\n";
+        assert_eq!(slice_lines(body, 2, 3), "two\nthree\n");
+        assert_eq!(slice_lines(body, 1, 1), "one\n");
+        // End past the last line clamps.
+        assert_eq!(slice_lines(body, 3, 99), "three\nfour\n");
+        // Start past the end is empty; inverted range is empty.
+        assert_eq!(slice_lines(body, 99, 100), "");
+        assert_eq!(slice_lines(body, 3, 2), "");
+        // start < 1 treated as 1.
+        assert_eq!(slice_lines(body, 0, 1), "one\n");
     }
 
     #[test]

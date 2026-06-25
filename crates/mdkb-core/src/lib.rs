@@ -38,10 +38,10 @@ pub use index::{
 pub use link::{extract_references, Reference};
 pub use render::{render_block, render_flat, rendered_block, RenderedBlock};
 pub use service::{Caller, Capability, RequestContext, Scope, Service};
-pub use sync::{SyncEngine, SyncReport};
+pub use sync::{append_text, exact_replace, slice_lines, SyncEngine, SyncReport};
 pub use vault::{
-    block_rel_path, read_block_files, safe_relative_path, sanitize_asset_filename, Vault,
-    ASSETS_DIR, BLOCKS_DIR,
+    block_rel_path, read_block_files, safe_relative_path, sanitize_asset_filename, Crumb, Lineage,
+    Vault, ASSETS_DIR, BLOCKS_DIR,
 };
 
 /// Crate version, surfaced to clients for diagnostics.

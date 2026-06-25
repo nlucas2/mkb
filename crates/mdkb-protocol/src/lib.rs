@@ -26,6 +26,11 @@ use mdkb_core::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Serde default for `expect_count`: a partial edit expects a single match unless told otherwise.
+fn one() -> usize {
+    1
+}
+
 /// A request to the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -60,6 +65,15 @@ pub enum Request {
     GetBlockSource {
         /// Block id.
         id: BlockId,
+    },
+    /// Lines `start..=end` (1-based, inclusive) of a block's raw source body.
+    GetBlockSourceRange {
+        /// Block id.
+        id: BlockId,
+        /// First line (1-based, inclusive).
+        start: usize,
+        /// Last line (1-based, inclusive).
+        end: usize,
     },
     /// Render a block with its children (transclusions) resolved.
     RenderBlock {
@@ -122,6 +136,28 @@ pub enum Request {
         /// Bypass the destructive-update guard for an intentional rewrite. Defaults to `false`.
         #[serde(default)]
         force: bool,
+    },
+    /// Apply an exact, count-checked string replacement to a block's body (the partial-edit op).
+    ReplaceInBlock {
+        /// Block id.
+        id: BlockId,
+        /// Exact substring to find (must occur `expect_count` times).
+        old: String,
+        /// Replacement text (may be empty to delete).
+        new: String,
+        /// Required number of occurrences; the edit is refused unless it matches exactly.
+        #[serde(default = "one")]
+        expect_count: usize,
+        /// Bypass the destructive-update guard for an intentional rewrite. Defaults to `false`.
+        #[serde(default)]
+        force: bool,
+    },
+    /// Append text to a block's body (it starts on a fresh line). Purely additive.
+    AppendToBlock {
+        /// Block id.
+        id: BlockId,
+        /// Text to append.
+        text: String,
     },
     /// Delete a block.
     DeleteBlock {
@@ -324,6 +360,11 @@ fn handle<I: Index>(
         Request::GetBlockSource { id } => {
             Response::Text(service.get_block_source(ctx, &id).map_err(to_str)?)
         }
+        Request::GetBlockSourceRange { id, start, end } => Response::Text(
+            service
+                .block_source_range(ctx, &id, start, end)
+                .map_err(to_str)?,
+        ),
         Request::RenderBlock { id } => {
             Response::Text(service.render_block(ctx, &id).map_err(to_str)?)
         }
@@ -363,6 +404,22 @@ fn handle<I: Index>(
         }
         Request::DeleteBlock { id } => {
             service.delete_block(ctx, &id).map_err(to_str)?;
+            Response::Ok
+        }
+        Request::ReplaceInBlock {
+            id,
+            old,
+            new,
+            expect_count,
+            force,
+        } => {
+            service
+                .replace_in_block(ctx, &id, &old, &new, expect_count, force)
+                .map_err(to_str)?;
+            Response::Ok
+        }
+        Request::AppendToBlock { id, text } => {
+            service.append_to_block(ctx, &id, &text).map_err(to_str)?;
             Response::Ok
         }
         Request::SetTags { id, tags } => {
@@ -746,6 +803,19 @@ impl Client {
         }
     }
 
+    /// Convenience: lines `start..=end` (1-based, inclusive) of a block's raw source body.
+    pub fn get_block_source_range(
+        &self,
+        id: BlockId,
+        start: usize,
+        end: usize,
+    ) -> io::Result<Option<String>> {
+        match self.call(&Request::GetBlockSourceRange { id, start, end })? {
+            Response::Text(t) => Ok(t),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// Convenience: render a block (transclusions resolved).
     pub fn render_block(&self, id: BlockId) -> io::Result<Option<String>> {
         match self.call(&Request::RenderBlock { id })? {
@@ -859,6 +929,39 @@ impl Client {
     /// Convenience: delete a block.
     pub fn delete_block(&self, id: BlockId) -> io::Result<()> {
         match self.call(&Request::DeleteBlock { id })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: apply an exact, count-checked string replacement to a block's body. `old` must
+    /// occur exactly `expect_count` times or the call errors and nothing changes.
+    pub fn replace_in_block(
+        &self,
+        id: BlockId,
+        old: &str,
+        new: &str,
+        expect_count: usize,
+        force: bool,
+    ) -> io::Result<()> {
+        match self.call(&Request::ReplaceInBlock {
+            id,
+            old: old.to_string(),
+            new: new.to_string(),
+            expect_count,
+            force,
+        })? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: append text to a block's body (starts on a fresh line; purely additive).
+    pub fn append_to_block(&self, id: BlockId, text: &str) -> io::Result<()> {
+        match self.call(&Request::AppendToBlock {
+            id,
+            text: text.to_string(),
+        })? {
             Response::Ok => Ok(()),
             other => Err(unexpected(other)),
         }
@@ -1059,6 +1162,60 @@ mod tests {
         match dispatch(&mut svc, &ctx, Request::Stats) {
             Response::Stats(s) => assert_eq!(s.blocks, 1),
             other => panic!("expected stats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_replace_in_block_edits_body() {
+        let (_dir, mut svc) = service();
+        let ctx = RequestContext::local();
+        let id = match dispatch(
+            &mut svc,
+            &ctx,
+            Request::CreateBlock {
+                title: Some("T".into()),
+                body: "the quick brown fox jumps".into(),
+            },
+        ) {
+            Response::BlockId(id) => id,
+            other => panic!("expected block id, got {other:?}"),
+        };
+        // Exact replace applies and preserves the title.
+        match dispatch(
+            &mut svc,
+            &ctx,
+            Request::ReplaceInBlock {
+                id: id.clone(),
+                old: "brown".into(),
+                new: "red".into(),
+                expect_count: 1,
+                force: false,
+            },
+        ) {
+            Response::Ok => {}
+            other => panic!("expected ok, got {other:?}"),
+        }
+        match dispatch(&mut svc, &ctx, Request::GetBlock { id: id.clone() }) {
+            Response::Block(Some(b)) => {
+                assert_eq!(b.content, "the quick red fox jumps");
+                assert_eq!(b.title.as_deref(), Some("T"));
+            }
+            other => panic!("expected block, got {other:?}"),
+        }
+        // A count mismatch is an error, no change.
+        match dispatch(
+            &mut svc,
+            &ctx,
+            Request::ReplaceInBlock {
+                id: id.clone(),
+                old: "fox".into(),
+                new: "cat".into(),
+                expect_count: 2,
+                force: false,
+            },
+        ) {
+            Response::Error { .. } => {}
+            other => panic!("expected error, got {other:?}"),
         }
     }
 

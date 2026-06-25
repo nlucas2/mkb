@@ -361,6 +361,11 @@ pub struct SearchHit {
     pub block: BlockRecord,
     /// Combined relevance score (higher is better).
     pub score: f64,
+    /// Upward context (which page(s) this block lives on). `None` from the index read path; the
+    /// service overlays it from the vault DAG so a hit on a nested block isn't a context-free
+    /// fragment. See [`crate::Lineage`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub lineage: Option<crate::Lineage>,
 }
 
 /// Lightweight index statistics.
@@ -391,7 +396,7 @@ pub struct IndexError(pub String);
 
 impl fmt::Display for IndexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "index error: {}", self.0)
+        write!(f, "{}", self.0)
     }
 }
 
@@ -671,6 +676,7 @@ pub mod testing {
                 .map(|b| SearchHit {
                     block: b.clone(),
                     score: 1.0,
+                    lineage: None,
                 })
                 .collect();
             hits.sort_by(|a, b| a.block.id.as_str().cmp(b.block.id.as_str()));

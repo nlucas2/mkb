@@ -258,6 +258,18 @@ transparently respawns it — at most a brief cold start.
   `SearchHit` (e.g. a `MatchSource` flag), then surface it in the clients — so a `"quoted phrase"`
   search visibly distinguishes an exact phrase/keyword hit from a result that only the semantic
   side returned. Useful for trusting precision queries and for debugging ranking.
+- **Block-display view (`mdkb show` / `show_block`)** *(planned)*: a page-as-a-human-sees-it
+  read — breadcrumb lineage upward, rendered children downward, backlinks, and metadata in one
+  call — distinct from `get` (raw body) and `render` (children only). Builds on the search
+  lineage already in `SearchHit`.
+- **More partial-edit primitives** *(planned)*: `replace_in_block` (exact string swap) exists,
+  but there is still no `append_to_block` (add to the end) or `insert`/line-range edit, nor a
+  line-range source view — so adding a line at the end of a block still means anchoring on its
+  current last line. Add an append op (the engine already has an internal `append_to_body`) and
+  a `get_block_source_range`.
+- **Opt-in root-biased search** *(planned)*: `--roots-only` and `--root-bias <w>` as post-fusion
+  knobs in the service (never the default, never inside RRF), for navigational queries that want
+  the page rather than its embedded fragments.
 
 ## Working rules
 
