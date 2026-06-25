@@ -29,7 +29,7 @@ impl DaemonPaths {
     /// Derive the standard paths from a vault directory. The index/socket/etc. land in the
     /// per-vault machine-local directory (see [`DaemonPaths`]), never inside the vault by default.
     pub fn from_vault(vault: impl Into<PathBuf>) -> Self {
-        let vault = vault.into();
+        let vault = expand_user(vault.into());
         let dir = index_dir_for(&vault);
         DaemonPaths {
             db: dir.join("index.db"),
@@ -41,7 +41,7 @@ impl DaemonPaths {
     /// The default vault directory: `$MDKB_VAULT`, else `~/mdkb-vault`, else `./mdkb-vault`.
     pub fn default_vault() -> PathBuf {
         if let Some(v) = std::env::var_os("MDKB_VAULT") {
-            return PathBuf::from(v);
+            return expand_user(PathBuf::from(v));
         }
         if let Some(home) = std::env::var_os("HOME") {
             return PathBuf::from(home).join("mdkb-vault");
@@ -123,6 +123,49 @@ fn absolute_lossy(p: &Path) -> PathBuf {
     }
 }
 
+/// Expand a leading `~` to the user's home directory, so a config or flag may *optionally* use a
+/// home-relative path (e.g. `~/OneDrive/notes`) that resolves correctly on any machine — which is
+/// what makes a synced `vaults.json` portable. This is **support, not a requirement**: an absolute
+/// or relative path is returned unchanged. A bare `~` becomes `$HOME`; `~/x` becomes `$HOME/x`.
+/// A `~user` form is *not* expanded (left literal). If `$HOME` is unset, the `~` path is returned
+/// unchanged rather than erroring.
+pub fn expand_user(path: impl Into<PathBuf>) -> PathBuf {
+    let path = path.into();
+    let s = match path.to_str() {
+        Some(s) => s,
+        None => return path, // non-UTF8 path: nothing to expand, pass through
+    };
+    let rest = if s == "~" {
+        ""
+    } else if let Some(r) = s.strip_prefix("~/") {
+        r
+    } else {
+        // Not a home-relative path (absolute, relative, or `~user`) → unchanged.
+        return path;
+    };
+    match home_dir() {
+        Some(home) if rest.is_empty() => home,
+        Some(home) => home.join(rest),
+        None => path, // no home resolvable → leave the `~` path literal rather than erroring
+    }
+}
+
+/// The user's home directory: `$HOME` (Unix/macOS) or `%USERPROFILE%` (Windows), if set.
+fn home_dir() -> Option<PathBuf> {
+    if let Some(h) = std::env::var_os("HOME") {
+        if !h.is_empty() {
+            return Some(PathBuf::from(h));
+        }
+    }
+    #[cfg(windows)]
+    if let Some(h) = std::env::var_os("USERPROFILE") {
+        if !h.is_empty() {
+            return Some(PathBuf::from(h));
+        }
+    }
+    None
+}
+
 /// FNV-1a 64-bit — a tiny, dependency-free, *stable* hash (unlike `DefaultHasher`, whose output is
 /// not guaranteed stable across builds), so a vault always maps to the same local index dir.
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -189,5 +232,28 @@ mod tests {
     fn fnv_is_stable_and_distinguishes() {
         assert_eq!(fnv1a64(b"hello"), fnv1a64(b"hello"));
         assert_ne!(fnv1a64(b"hello"), fnv1a64(b"world"));
+    }
+
+    #[test]
+    fn expand_user_handles_tilde_absolute_and_relative() {
+        // A `~/x` path expands against HOME; absolute/relative paths are untouched.
+        let home = std::path::PathBuf::from("/home/tester");
+        // Drive HOME deterministically for this test.
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+
+        assert_eq!(expand_user("~/notes"), home.join("notes"));
+        assert_eq!(expand_user("~"), home);
+        // Absolute path: unchanged.
+        assert_eq!(expand_user("/srv/vault"), PathBuf::from("/srv/vault"));
+        // Relative path: unchanged (no implicit cwd join here).
+        assert_eq!(expand_user("notes/sub"), PathBuf::from("notes/sub"));
+        // `~user` form is NOT expanded.
+        assert_eq!(expand_user("~bob/x"), PathBuf::from("~bob/x"));
+
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 }

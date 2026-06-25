@@ -4,22 +4,49 @@
 //! to the daemon, which owns the one shared `Service`. It implements no knowledge-base
 //! behavior of its own. See `AGENTS.md`.
 
-mod daemon;
 mod rpc;
 mod tools;
 
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
+use clap::Parser;
+
+use mdkb_protocol::{resolve_client, ClientInputs};
 use rpc::{handle_message, Outcome};
 
+/// MCP server CLI. Pin it to a specific vault (`--vault`, or `$MDKB_VAULT`) so an agent only ever
+/// sees that one knowledge base; otherwise it falls back to the configured registry default. A
+/// remote daemon (`--remote`/`--socket`) is also supported for split agent/daemon setups.
+#[derive(Parser)]
+#[command(
+    name = "mdkb-mcp",
+    version,
+    about = "MCP server for mdkb (stdio) — a thin client that forwards tool calls to the daemon",
+    long_about = "Speaks MCP over stdin/stdout and forwards tool calls to mdkbd (auto-started for \
+                  a local vault). Pin the vault with --vault (or $MDKB_VAULT) so an agent only \
+                  acts on that knowledge base; otherwise the configured registry default is used."
+)]
+struct Cli {
+    /// Vault directory to serve (supports a leading `~`). Overrides $MDKB_VAULT and the registry
+    /// default — pin this so an agent can't act on the wrong vault.
+    #[arg(long, value_name = "DIR")]
+    vault: Option<PathBuf>,
+    /// Connect to a remote daemon `host:port` over TCP instead of a local vault.
+    #[arg(long, value_name = "HOST:PORT")]
+    remote: Option<String>,
+    /// Token to present to a remote daemon.
+    #[arg(long, value_name = "TOKEN")]
+    token: Option<String>,
+    /// Dial this explicit local socket instead of deriving one from the vault.
+    #[arg(long, value_name = "PATH")]
+    socket: Option<PathBuf>,
+}
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        print_help();
-        return ExitCode::SUCCESS;
-    }
-    match run(&args) {
+    let cli = Cli::parse();
+    match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("mdkb-mcp: error: {e}");
@@ -28,23 +55,17 @@ fn main() -> ExitCode {
     }
 }
 
-fn print_help() {
-    println!(
-        "mdkb-mcp {} — MCP server for mdkb (stdio)\n\n\
-usage:\n  mdkb-mcp [--vault <dir>] [--socket <path>] [--db <path>]\n\n\
-Speaks MCP over stdin/stdout and forwards tool calls to mdkbd (auto-started if needed).",
-        env!("CARGO_PKG_VERSION")
-    );
-}
-
-fn run(args: &[String]) -> Result<(), String> {
-    let paths = daemon::paths_from_args(args)?;
-    paths.ensure_dirs().map_err(|e| e.to_string())?;
-    let client = daemon::ensure_daemon(&paths)?;
-    eprintln!(
-        "mdkb-mcp: connected to daemon on {}",
-        paths.socket.display()
-    );
+fn run(cli: Cli) -> Result<(), String> {
+    let inputs = ClientInputs {
+        vault: cli.vault,
+        remote: cli.remote,
+        token: cli.token,
+        socket: cli.socket,
+    };
+    // Resolve + connect via the shared layer (flag > env > registry default > builtin), which
+    // auto-starts a local daemon if needed — same path every client uses.
+    let client = resolve_client(&inputs, None)?;
+    eprintln!("mdkb-mcp: connected to daemon on {}", client.endpoint());
 
     let stdin = io::stdin();
     let stdout = io::stdout();

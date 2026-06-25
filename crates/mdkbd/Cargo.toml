@@ -28,6 +28,7 @@ mdkb-embed.workspace = true
 mdkb-protocol.workspace = true
 notify = "8"
 libc = "0.2"
+clap.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -38,3 +38,6 @@ tempfile = "3"
 serde = "1"
 serde_json = "1"
 toml = "1.0"
+# Pinned below 4.6: clap 4.6+ and clap_lex 1.1+ raise their MSRV to Rust 1.85, but this
+# workspace targets rust-version = 1.80. `--locked` CI keeps the resolved version in range.
+clap = { version = ">=4.5.61, <4.6.0", features = ["derive", "env"] }

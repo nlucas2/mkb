@@ -1,11 +1,87 @@
 //! Daemon configuration: parses CLI args/env into [`DaemonPaths`] plus flags.
 //!
-//! Path layout (vault -> db/socket) is resolved by [`mdkb_protocol::DaemonPaths`] so the
-//! daemon and clients agree on locations without duplicating the rule.
+//! These are **server** options (own/serve a vault), distinct from the client-connection seam: a
+//! daemon's `--socket` is the address it *binds*, `--token` the secret it *requires* of callers.
+//! Path layout (vault -> db/socket) is resolved by [`mdkb_protocol::DaemonPaths`] so the daemon
+//! and clients agree on locations without duplicating the rule.
 
 use std::path::{Path, PathBuf};
 
+use clap::Parser;
 use mdkb_protocol::DaemonPaths;
+
+/// Raw daemon CLI arguments (parsed by clap), resolved into a [`Config`] by [`DaemonArgs::resolve`].
+#[derive(Parser, Debug)]
+#[command(
+    name = "mdkbd",
+    version,
+    about = "mdkb headless daemon — owns the watcher, index, and writes for one vault",
+    long_about = "mdkb headless daemon.\n\nServes one vault over a local socket (and optionally \
+                  TCP). The index/socket/lock/log are machine-local and live OUTSIDE the vault by \
+                  default — under the OS local-data dir, keyed by a hash of the vault path — so a \
+                  cloud-synced vault never syncs the live index. Set $MDKB_INDEX_DIR to override \
+                  the base. The network listener (--listen) is opt-in and fails closed: without a \
+                  valid token, remote callers are rejected."
+)]
+pub struct DaemonArgs {
+    /// Vault directory to serve (supports a leading `~`; default: $MDKB_VAULT or ~/mdkb-vault).
+    #[arg(long, value_name = "DIR")]
+    vault: Option<PathBuf>,
+    /// Index database (default: a machine-local per-vault dir).
+    #[arg(long, value_name = "PATH")]
+    db: Option<PathBuf>,
+    /// Local socket: Unix socket / Windows named pipe (default: beside --db).
+    #[arg(long, value_name = "PATH")]
+    socket: Option<PathBuf>,
+    /// ALSO serve over TCP at this address (e.g. 0.0.0.0:7820); requires a token.
+    #[arg(long, value_name = "ADDR")]
+    listen: Option<String>,
+    /// Shared token network clients must present ($MDKB_TOKEN also accepted).
+    #[arg(long, value_name = "TOKEN")]
+    token: Option<String>,
+    /// Self-shutdown after this many seconds with no requests AND no interactive lease
+    /// (0 = never; default: never when run manually).
+    #[arg(long = "idle-timeout", value_name = "SECS")]
+    idle_timeout: Option<u64>,
+}
+
+impl DaemonArgs {
+    /// Resolve raw args + environment into a [`Config`]: apply the `$MDKB_TOKEN` fallback, enforce
+    /// that `--listen` has a token (fail closed), and derive the machine-local paths.
+    pub fn resolve(self) -> Result<Config, String> {
+        let token = self
+            .token
+            .or_else(|| std::env::var(mdkb_protocol::env::TOKEN).ok())
+            .filter(|s| !s.is_empty());
+
+        if self.listen.is_some() && token.as_deref().unwrap_or("").is_empty() {
+            return Err(
+                "--listen requires a token (set --token or $MDKB_TOKEN); refusing to expose \
+                 the network listener without auth"
+                    .to_string(),
+            );
+        }
+
+        let vault = self.vault.unwrap_or_else(DaemonPaths::default_vault);
+        let mut paths = DaemonPaths::from_vault(vault);
+        if let Some(db) = self.db {
+            paths.db = db;
+        }
+        if let Some(socket) = self.socket {
+            paths.socket = socket;
+        }
+
+        Ok(Config {
+            paths,
+            listen: self.listen,
+            token,
+            idle_timeout: self
+                .idle_timeout
+                .filter(|s| *s > 0)
+                .map(std::time::Duration::from_secs),
+        })
+    }
+}
 
 /// Resolved daemon configuration.
 #[derive(Debug, Clone)]
@@ -20,36 +96,12 @@ pub struct Config {
     /// a manually-run or remote daemon). Clients that auto-start a daemon pass a value so an
     /// unused vault's daemon reaps itself instead of leaking.
     pub idle_timeout: Option<std::time::Duration>,
-    /// Whether `--help` was requested.
-    pub help: bool,
 }
 
 impl Config {
-    /// Usage text.
-    pub fn usage() -> &'static str {
-        "\
-mdkbd — mdkb headless daemon
-
-usage:
-  mdkbd [--vault <dir>] [--db <path>] [--socket <path>] [--listen <addr>] [--token <tok>] [--idle-timeout <secs>]
-
-options:
-  --vault <dir>     vault directory (default: $MDKB_VAULT or ~/mdkb-vault)
-  --db <path>       index database (default: a machine-local per-vault dir, see below)
-  --socket <path>   local socket: Unix socket / Windows named pipe (default: beside --db)
-  --listen <addr>   ALSO serve over TCP at <addr> (e.g. 0.0.0.0:7820); requires a token
-  --token <tok>     shared token network clients must present ($MDKB_TOKEN also accepted)
-  --idle-timeout <secs>  self-shutdown after <secs> with no requests AND no interactive lease
-                         (0 = never; default: never when run manually)
-  --help            show this help
-
-The index/socket/lock/log are machine-local and live OUTSIDE the vault by default — under the OS
-local-data dir (e.g. %LOCALAPPDATA%\\mdkb\\<id>, ~/Library/Application Support/mdkb/<id>,
-~/.local/state/mdkb/<id>), keyed by a hash of the vault path. Set $MDKB_INDEX_DIR to override the
-base. This means a cloud-synced vault never syncs the live index — only the Markdown should sync.
-
-The network listener is opt-in and fails closed: without a valid token, remote callers
-are rejected. The Unix socket remains local-only and trusted."
+    /// Parse configuration from the process arguments (clap handles `--help`/`--version`/errors).
+    pub fn parse() -> Result<Config, String> {
+        DaemonArgs::parse().resolve()
     }
 
     /// Vault directory.
@@ -67,76 +119,6 @@ are rejected. The Unix socket remains local-only and trusted."
         &self.paths.socket
     }
 
-    /// Parse configuration from CLI args (already past the program name) and environment.
-    pub fn from_args(args: impl Iterator<Item = String>) -> Result<Config, String> {
-        let mut vault: Option<PathBuf> = None;
-        let mut db: Option<PathBuf> = None;
-        let mut socket: Option<PathBuf> = None;
-        let mut listen: Option<String> = None;
-        let mut token: Option<String> = std::env::var("MDKB_TOKEN").ok().filter(|s| !s.is_empty());
-        let mut idle_secs: Option<u64> = None;
-        let mut help = false;
-
-        let mut it = args.peekable();
-        while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--help" | "-h" => help = true,
-                "--vault" => vault = Some(require_value(&mut it, "--vault")?.into()),
-                "--db" => db = Some(require_value(&mut it, "--db")?.into()),
-                "--socket" => socket = Some(require_value(&mut it, "--socket")?.into()),
-                "--listen" => listen = Some(require_value(&mut it, "--listen")?),
-                "--token" => token = Some(require_value(&mut it, "--token")?),
-                "--idle-timeout" => {
-                    idle_secs = Some(parse_secs(&require_value(&mut it, "--idle-timeout")?)?)
-                }
-                other => {
-                    if let Some(v) = other.strip_prefix("--vault=") {
-                        vault = Some(v.into());
-                    } else if let Some(v) = other.strip_prefix("--db=") {
-                        db = Some(v.into());
-                    } else if let Some(v) = other.strip_prefix("--socket=") {
-                        socket = Some(v.into());
-                    } else if let Some(v) = other.strip_prefix("--listen=") {
-                        listen = Some(v.into());
-                    } else if let Some(v) = other.strip_prefix("--token=") {
-                        token = Some(v.into());
-                    } else if let Some(v) = other.strip_prefix("--idle-timeout=") {
-                        idle_secs = Some(parse_secs(v)?);
-                    } else {
-                        return Err(format!("unknown argument: {other}"));
-                    }
-                }
-            }
-        }
-
-        if listen.is_some() && token.as_deref().unwrap_or("").is_empty() {
-            return Err(
-                "--listen requires a token (set --token or $MDKB_TOKEN); refusing to expose \
-                 the network listener without auth"
-                    .to_string(),
-            );
-        }
-
-        let vault = vault.unwrap_or_else(DaemonPaths::default_vault);
-        let mut paths = DaemonPaths::from_vault(vault);
-        if let Some(db) = db {
-            paths.db = db;
-        }
-        if let Some(socket) = socket {
-            paths.socket = socket;
-        }
-
-        Ok(Config {
-            paths,
-            listen,
-            token,
-            idle_timeout: idle_secs
-                .filter(|s| *s > 0)
-                .map(std::time::Duration::from_secs),
-            help,
-        })
-    }
-
     /// Create the vault and the local `.mdkb` directories if missing.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         self.paths.ensure_dirs()?;
@@ -150,26 +132,21 @@ are rejected. The Unix socket remains local-only and trusted."
     }
 }
 
-fn require_value(
-    it: &mut std::iter::Peekable<impl Iterator<Item = String>>,
-    flag: &str,
-) -> Result<String, String> {
-    it.next().ok_or_else(|| format!("{flag} requires a value"))
-}
-
-fn parse_secs(s: &str) -> Result<u64, String> {
-    s.trim()
-        .parse::<u64>()
-        .map_err(|_| format!("--idle-timeout expects a whole number of seconds, got {s:?}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Build a `Config` from argv-style tokens (clap parses, then we resolve).
+    fn resolve(argv: &[&str]) -> Result<Config, String> {
+        let mut full = vec!["mdkbd"];
+        full.extend_from_slice(argv);
+        let args = DaemonArgs::try_parse_from(full).map_err(|e| e.to_string())?;
+        args.resolve()
+    }
+
     #[test]
     fn defaults_derive_from_vault() {
-        let cfg = Config::from_args(["--vault".into(), "/tmp/v".into()].into_iter()).unwrap();
+        let cfg = resolve(&["--vault", "/tmp/v"]).unwrap();
         assert_eq!(cfg.vault(), Path::new("/tmp/v"));
         // db/socket default to a machine-local per-vault dir (resolved by DaemonPaths) — exact
         // location depends on the environment, but they're named consistently and share a dir.
@@ -180,14 +157,11 @@ mod tests {
 
     #[test]
     fn explicit_overrides_win() {
-        let cfg = Config::from_args(
-            [
-                "--vault=/tmp/v".into(),
-                "--db=/var/cache/i.db".into(),
-                "--socket=/run/m.sock".into(),
-            ]
-            .into_iter(),
-        )
+        let cfg = resolve(&[
+            "--vault=/tmp/v",
+            "--db=/var/cache/i.db",
+            "--socket=/run/m.sock",
+        ])
         .unwrap();
         assert_eq!(cfg.db(), Path::new("/var/cache/i.db"));
         assert_eq!(cfg.socket(), Path::new("/run/m.sock"));
@@ -195,53 +169,35 @@ mod tests {
 
     #[test]
     fn unknown_arg_errors() {
-        assert!(Config::from_args(["--nope".into()].into_iter()).is_err());
+        assert!(resolve(&["--nope"]).is_err());
     }
 
     #[test]
     fn idle_timeout_parses_and_zero_means_never() {
         // Absent → never.
-        let cfg = Config::from_args(["--vault=/tmp/v".into()].into_iter()).unwrap();
+        let cfg = resolve(&["--vault=/tmp/v"]).unwrap();
         assert_eq!(cfg.idle_timeout, None);
         // A positive value → Some(Duration).
-        let cfg = Config::from_args(
-            [
-                "--vault=/tmp/v".into(),
-                "--idle-timeout".into(),
-                "900".into(),
-            ]
-            .into_iter(),
-        )
-        .unwrap();
+        let cfg = resolve(&["--vault=/tmp/v", "--idle-timeout", "900"]).unwrap();
         assert_eq!(cfg.idle_timeout, Some(std::time::Duration::from_secs(900)));
         // `=` form works too.
-        let cfg =
-            Config::from_args(["--vault=/tmp/v".into(), "--idle-timeout=30".into()].into_iter())
-                .unwrap();
+        let cfg = resolve(&["--vault=/tmp/v", "--idle-timeout=30"]).unwrap();
         assert_eq!(cfg.idle_timeout, Some(std::time::Duration::from_secs(30)));
         // Zero disables it (treated as never).
-        let cfg =
-            Config::from_args(["--vault=/tmp/v".into(), "--idle-timeout=0".into()].into_iter())
-                .unwrap();
+        let cfg = resolve(&["--vault=/tmp/v", "--idle-timeout=0"]).unwrap();
         assert_eq!(cfg.idle_timeout, None);
-        // Non-numeric is an error.
-        assert!(Config::from_args(
-            ["--vault=/tmp/v".into(), "--idle-timeout=soon".into()].into_iter()
-        )
-        .is_err());
+        // Non-numeric is an error (clap rejects it as an invalid u64).
+        assert!(resolve(&["--vault=/tmp/v", "--idle-timeout=soon"]).is_err());
     }
 
     #[test]
     fn listen_requires_a_token() {
         // --listen without a token must fail closed.
         std::env::remove_var("MDKB_TOKEN");
-        let err = Config::from_args(["--listen=0.0.0.0:7820".into()].into_iter()).unwrap_err();
+        let err = resolve(&["--listen=0.0.0.0:7820"]).unwrap_err();
         assert!(err.contains("token"));
         // With a token it succeeds.
-        let cfg = Config::from_args(
-            ["--listen=0.0.0.0:7820".into(), "--token=secret".into()].into_iter(),
-        )
-        .unwrap();
+        let cfg = resolve(&["--listen=0.0.0.0:7820", "--token=secret"]).unwrap();
         assert_eq!(cfg.listen.as_deref(), Some("0.0.0.0:7820"));
         assert_eq!(cfg.token.as_deref(), Some("secret"));
     }

@@ -1,22 +1,272 @@
 //! `mdkb` — the mdkb CLI.
 //!
-//! A **thin client**: every command connects to the vault's daemon (auto-starting a detached
+//! A **thin client**: every command connects to a vault's daemon (auto-starting a detached
 //! `mdkbd` if none is running) and dispatches over the socket — exactly like the MCP server and
 //! the desktop app. There is no separate in-process engine: the daemon owns the one persistent,
 //! warm index and is the single writer, so the CLI never re-parses or re-embeds the vault and
 //! never races the daemon. The unit is the **block** (one file). See `AGENTS.md`.
+//!
+//! Which vault a command acts on is resolved by the shared connection layer
+//! ([`mdkb_protocol::resolve_client`]) with the precedence **`--vault` flag > `$MDKB_VAULT` >
+//! the registry default (`vaults.json`) > the built-in `~/mdkb-vault`** — so configuring a default
+//! once works across every client. `--remote`/`--socket` (or their env vars) connect to an
+//! explicit daemon instead.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use clap::{Args, Parser, Subcommand};
 
 use mdkb_core::export::{ExportRequest, SlugSelection};
 use mdkb_core::{BlockId, SearchQuery};
-use mdkb_protocol::{ensure_daemon, Client, DaemonPaths};
+use mdkb_protocol::{
+    connect_resolved, resolve_client, resolve_target, Client, ClientInputs, EnvSnapshot, Registry,
+    ResolvedTarget,
+};
+
+/// Connection options shared by every subcommand (clap `global`, so they may appear before or
+/// after the subcommand). These are the *explicit* inputs only; environment variables and the
+/// registry default are applied by [`mdkb_protocol::resolve_client`], keeping the precedence in
+/// one shared place.
+#[derive(Args, Debug, Default)]
+struct GlobalArgs {
+    /// Vault directory to act on (supports a leading `~`). Overrides $MDKB_VAULT and the
+    /// configured registry default.
+    #[arg(long, global = true, value_name = "DIR")]
+    vault: Option<PathBuf>,
+
+    /// Connect to a remote daemon `host:port` over TCP instead of a local vault.
+    #[arg(long, global = true, value_name = "HOST:PORT")]
+    remote: Option<String>,
+
+    /// Token to present to a remote daemon (required with --remote / $MDKB_REMOTE).
+    #[arg(long, global = true, value_name = "TOKEN")]
+    token: Option<String>,
+
+    /// Dial this explicit local socket instead of deriving one from the vault.
+    #[arg(long, global = true, value_name = "PATH")]
+    socket: Option<PathBuf>,
+}
+
+impl GlobalArgs {
+    fn inputs(&self) -> ClientInputs {
+        ClientInputs {
+            vault: self.vault.clone(),
+            remote: self.remote.clone(),
+            token: self.token.clone(),
+            socket: self.socket.clone(),
+        }
+    }
+
+    /// Resolve and connect a client (auto-starting a local daemon if needed).
+    fn connect(&self) -> Result<Client, String> {
+        resolve_client(&self.inputs(), None)
+    }
+}
+
+#[derive(Parser)]
+#[command(
+    name = "mdkb",
+    version,
+    about = "Markdown knowledge base CLI — a thin client over the mdkb daemon",
+    long_about = "Markdown knowledge base CLI.\n\nEvery command connects to a vault's daemon \
+                  (auto-starting it). The vault is chosen by --vault, else $MDKB_VAULT, else the \
+                  configured registry default (vaults.json), else ~/mdkb-vault. Use \
+                  --remote/--socket (or $MDKB_REMOTE+$MDKB_TOKEN / $MDKB_SOCKET) for an explicit \
+                  daemon."
+)]
+struct Cli {
+    #[command(flatten)]
+    global: GlobalArgs,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Check the daemon is reachable.
+    Ping,
+    /// List root blocks (id  title).
+    List,
+    /// Render a block, children resolved.
+    Render {
+        /// Block id.
+        id: String,
+        /// Published form: embeds dissolved inline, refs as plain titles.
+        #[arg(long)]
+        flat: bool,
+    },
+    /// Raw Markdown body of a block.
+    Get {
+        /// Block id.
+        id: String,
+    },
+    /// Search (keyword + semantic). The query also accepts inline operators
+    /// (tag:<t> #<t> lang:<l> code:<l> created:before:<date> updated:after:<date> has:<k> missing:<k>).
+    Search {
+        /// Query text.
+        query: String,
+        /// Restrict to a code-fence language.
+        #[arg(long)]
+        lang: Option<String>,
+        /// Require a tag (repeatable).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Maximum number of hits.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Only blocks created on/after this date (YYYY-MM-DD or RFC3339).
+        #[arg(long = "created-after")]
+        created_after: Option<String>,
+        /// Only blocks created before this date.
+        #[arg(long = "created-before")]
+        created_before: Option<String>,
+        /// Only blocks updated on/after this date.
+        #[arg(long = "updated-after")]
+        updated_after: Option<String>,
+        /// Only blocks updated before this date.
+        #[arg(long = "updated-before")]
+        updated_before: Option<String>,
+        /// Require a property to be present (repeatable).
+        #[arg(long = "has")]
+        has: Vec<String>,
+        /// Require a property to be absent (repeatable).
+        #[arg(long = "missing")]
+        missing: Vec<String>,
+    },
+    /// All tags with block counts.
+    Tags,
+    /// A block's properties (key<TAB>value per line).
+    Props {
+        /// Block id.
+        id: String,
+    },
+    /// A block's metadata (created, updated, locked, tags, props).
+    Info {
+        /// Block id.
+        id: String,
+    },
+    /// Blocks that reference/embed a block.
+    Backlinks {
+        /// Block id.
+        id: String,
+    },
+    /// Outgoing links/embeds from a block.
+    Links {
+        /// Block id.
+        id: String,
+    },
+    /// Index statistics.
+    Stats,
+    /// Cloud-sync conflict files.
+    Conflicts,
+    /// Create a block (body from stdin); prints the new id.
+    Create {
+        /// Optional block title.
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// Overwrite a block's title + body (body from stdin).
+    Update {
+        /// Block id.
+        id: String,
+        /// New title.
+        #[arg(long)]
+        title: Option<String>,
+        /// Override the guard that refuses an emptying/truncating edit.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Set managed (frontmatter) tags ([] clears).
+    SetTags {
+        /// Block id.
+        id: String,
+        /// Tags to set (none clears).
+        tags: Vec<String>,
+    },
+    /// Add/update block properties (preserves the rest).
+    SetProps {
+        /// Block id.
+        id: String,
+        /// `key=value` pairs.
+        #[arg(value_name = "KEY=VALUE")]
+        pairs: Vec<String>,
+    },
+    /// Remove the named block properties (preserves the rest).
+    UnsetProps {
+        /// Block id.
+        id: String,
+        /// Property keys to remove (at least one).
+        #[arg(num_args = 1.., required = true)]
+        keys: Vec<String>,
+    },
+    /// Reference (or --embed: transclude) dst from src.
+    Link {
+        /// Source block id.
+        src: String,
+        /// Target block id.
+        dst: String,
+        /// Transclude instead of plain reference.
+        #[arg(long)]
+        embed: bool,
+    },
+    /// Carve a new child block (body from stdin); prints the child id.
+    Carve {
+        /// Parent block id.
+        parent: String,
+        /// Optional child title.
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// Inline parent's single ![[child]] embed and delete it (child must be referenced once).
+    Flatten {
+        /// Parent block id.
+        parent: String,
+        /// Child block id.
+        child: String,
+    },
+    /// Delete a block.
+    Delete {
+        /// Block id.
+        id: String,
+    },
+    /// Rebuild the index from blocks/.
+    Rebuild,
+    /// Generate flat docs from blocks (docs-as-data).
+    Export(ExportArgs),
+}
+
+/// `export` flags (its own struct because there are several, with cross-field rules).
+#[derive(Args)]
+struct ExportArgs {
+    /// Use a manifest file (TOML, or JSON by .json suffix) instead of the default export.toml.
+    #[arg(long)]
+    manifest: Option<String>,
+    /// Output root (default: docs-export/ for a slug dump, . for a manifest).
+    #[arg(long)]
+    root: Option<String>,
+    /// Dump roots carrying this tag to <slug>.md.
+    #[arg(long)]
+    tag: Option<String>,
+    /// With --tag: include every tagged block, not only roots.
+    #[arg(long = "include-non-root")]
+    include_non_root: bool,
+    /// Pull linked blocks outside the export into it.
+    #[arg(long = "follow-links")]
+    follow_links: bool,
+    /// Verify only; non-zero exit on drift (writes nothing).
+    #[arg(long)]
+    check: bool,
+    /// Omit the @generated banner.
+    #[arg(long)]
+    raw: bool,
+}
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
+    let cli = Cli::parse();
+    match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -25,130 +275,58 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: &[String]) -> Result<(), String> {
-    match args.first().map(String::as_str) {
-        // reads
-        Some("ping") => cmd_ping(&args[1..]),
-        Some("list") => cmd_list(&args[1..]),
-        Some("render") => cmd_render(&args[1..]),
-        Some("get") => cmd_get(&args[1..]),
-        Some("search") => cmd_search(&args[1..]),
-        Some("tags") => cmd_tags(&args[1..]),
-        Some("props") => cmd_props(&args[1..]),
-        Some("info") => cmd_info(&args[1..]),
-        Some("backlinks") => cmd_links(&args[1..], true),
-        Some("links") => cmd_links(&args[1..], false),
-        Some("stats") => cmd_stats(&args[1..]),
-        Some("conflicts") => cmd_conflicts(&args[1..]),
-        // writes
-        Some("create") => cmd_create(&args[1..]),
-        Some("update") => cmd_update(&args[1..]),
-        Some("set-tags") => cmd_set_tags(&args[1..]),
-        Some("set-props") => cmd_set_props(&args[1..]),
-        Some("unset-props") => cmd_unset_props(&args[1..]),
-        Some("link") => cmd_link(&args[1..]),
-        Some("carve") => cmd_carve(&args[1..]),
-        Some("flatten") => cmd_flatten(&args[1..]),
-        Some("delete") => cmd_delete(&args[1..]),
-        // maintenance
-        Some("rebuild") => cmd_rebuild(&args[1..]),
-        Some("export") => cmd_export(&args[1..]),
-        Some("--version") | Some("-V") => {
-            println!("mdkb {}", mdkb_core::VERSION);
-            Ok(())
-        }
-        Some("--help") | Some("-h") | None => {
-            print_help();
-            Ok(())
-        }
-        Some(other) => Err(format!("unknown command: {other}\n\n{USAGE}")),
+fn run(cli: Cli) -> Result<(), String> {
+    let g = &cli.global;
+    match cli.command {
+        Command::Ping => cmd_ping(g),
+        Command::List => cmd_list(g),
+        Command::Render { id, flat } => cmd_render(g, &id, flat),
+        Command::Get { id } => cmd_get(g, &id),
+        Command::Search {
+            query,
+            lang,
+            tags,
+            limit,
+            created_after,
+            created_before,
+            updated_after,
+            updated_before,
+            has,
+            missing,
+        } => cmd_search(
+            g,
+            &query,
+            SearchFlags {
+                lang,
+                tags,
+                limit,
+                created_after,
+                created_before,
+                updated_after,
+                updated_before,
+                has,
+                missing,
+            },
+        ),
+        Command::Tags => cmd_tags(g),
+        Command::Props { id } => cmd_props(g, &id),
+        Command::Info { id } => cmd_info(g, &id),
+        Command::Backlinks { id } => cmd_links(g, &id, true),
+        Command::Links { id } => cmd_links(g, &id, false),
+        Command::Stats => cmd_stats(g),
+        Command::Conflicts => cmd_conflicts(g),
+        Command::Create { title } => cmd_create(g, title.as_deref()),
+        Command::Update { id, title, force } => cmd_update(g, &id, title.as_deref(), force),
+        Command::SetTags { id, tags } => cmd_set_tags(g, &id, tags),
+        Command::SetProps { id, pairs } => cmd_set_props(g, &id, &pairs),
+        Command::UnsetProps { id, keys } => cmd_unset_props(g, &id, keys),
+        Command::Link { src, dst, embed } => cmd_link(g, &src, &dst, embed),
+        Command::Carve { parent, title } => cmd_carve(g, &parent, title.as_deref()),
+        Command::Flatten { parent, child } => cmd_flatten(g, &parent, &child),
+        Command::Delete { id } => cmd_delete(g, &id),
+        Command::Rebuild => cmd_rebuild(g),
+        Command::Export(args) => cmd_export(g, &args),
     }
-}
-
-const USAGE: &str = "\
-usage: mdkb <command> <vault-dir> [args]   (connects to the vault's daemon, auto-starting it)
-
-connection: defaults to a local Unix socket under <vault>/.mdkb/, auto-starting mdkbd.
-  Set MDKB_REMOTE=host:port (+ MDKB_TOKEN) to use a TCP daemon (e.g. a loopback high port
-  where Unix sockets aren't usable), or MDKB_SOCKET=<path> for an explicit socket.
-
-reads:
-  list <vault>                      root blocks (id  title)
-  render <vault> <id> [--flat]      render a block, children resolved (--flat = published form:
-                                    embeds dissolved inline, refs as plain titles, to stdout)
-  get <vault> <id>                  raw Markdown body of a block
-  search <vault> <query> [flags]    search (keyword + semantic)
-       flags: --lang=<l> --tag=<t> (repeatable) --limit=<n>
-              --created-after=<date> --created-before=<date>
-              --updated-after=<date> --updated-before=<date>   (date = YYYY-MM-DD or RFC3339)
-              --has=<key> --missing=<key> (repeatable)          property present / absent
-       query also accepts operators: tag:<t>  #<t>  lang:<l>  code:<l>
-                                     created:before:<date>  updated:before:<date>  (and :after:)
-                                     has:<key>  missing:<key>
-  tags <vault>                      all tags with block counts
-  props <vault> <id>                a block's properties (key<TAB>value per line)
-  info <vault> <id>                 a block's metadata (created, updated, locked, tags, props)
-  backlinks <vault> <id>            blocks that reference/embed <id>
-  links <vault> <id>                outgoing links/embeds from <id>
-  stats <vault>                     index statistics
-  conflicts <vault>                 cloud-sync conflict files
-  ping <vault>                      check the daemon is reachable
-
-writes (body is read from stdin where noted):
-  create <vault> [--title=T] < body          create a block; prints the new id
-  update <vault> <id> [--title=T] [--force] < body
-                                             overwrite a block's title + body (--force overrides
-                                             the guard that refuses an emptying/truncating edit)
-  set-tags <vault> <id> [tag ...]            set managed (frontmatter) tags ([] clears)
-  set-props <vault> <id> [key=value ...]     add/update block properties (preserves the rest)
-  unset-props <vault> <id> <key ...>         remove the named block properties (preserves the rest)
-  link <vault> <src> <dst> [--embed]         reference (or --embed: transclude) dst from src
-  carve <vault> <parent> [--title=T] < body  carve a new child block; prints the child id
-  flatten <vault> <parent> <child>           inline parent's single ![[child]] embed and delete it
-                                             (only when child is referenced exactly once)
-  delete <vault> <id>                        delete a block
-
-maintenance:
-  rebuild <vault>                   rebuild the index from blocks/
-  export <vault> [flags]            generate flat docs from blocks (docs-as-data)
-       With no selector: dumps every root block to <slug>.md under --root (default docs-export/).
-       With a manifest (<vault>/export.toml or --manifest=<path>): writes each mapped doc.
-       With --tag=NAME: dumps roots carrying that tag to <slug>.md (add --include-non-root for
-       every tagged block, transcluded ones included).
-       Co-exported docs cross-link; a [[link]] to a block outside the export warns (and stays
-       plain text) unless --follow-links pulls the linked block into the export.
-       flags: --manifest=<path>  --tag=<name>  --include-non-root  --follow-links  --root=<dir>
-              --raw (omit the @generated banner)  --check (verify only; non-zero exit on drift)
-
-  --version                         print version";
-
-fn print_help() {
-    println!(
-        "mdkb {} — Markdown knowledge base CLI\n\n{USAGE}",
-        mdkb_core::VERSION
-    );
-}
-
-/// Connect to the daemon for a vault.
-///
-/// By default this auto-starts (if needed) a local daemon on a Unix socket under
-/// `<vault>/.mdkb/`. For environments where a Unix socket isn't usable (read-only FS, a
-/// too-long socket path, an odd network mount) — or to share one daemon — set `MDKB_REMOTE`
-/// (`host:port` + `MDKB_TOKEN`) to talk to a daemon over **loopback or remote TCP**, or
-/// `MDKB_SOCKET` to point at an explicit socket path. Run such a daemon with
-/// `mdkbd --vault <dir> --listen 127.0.0.1:<port> --token <tok>`.
-fn client(dir: &str) -> Result<Client, String> {
-    if std::env::var_os("MDKB_REMOTE").is_some() || std::env::var_os("MDKB_SOCKET").is_some() {
-        return Client::from_env();
-    }
-    let paths = DaemonPaths::from_vault(dir);
-    ensure_daemon(&paths, None)
-}
-
-fn req<'a>(args: &'a [String], i: usize, what: &str) -> Result<&'a str, String> {
-    args.get(i)
-        .map(String::as_str)
-        .ok_or_else(|| format!("missing {what}"))
 }
 
 fn parse_id(s: &str) -> Result<BlockId, String> {
@@ -163,24 +341,10 @@ fn read_stdin() -> Result<String, String> {
     Ok(s)
 }
 
-/// Pull an optional `--title=...` out of the flags, returning it and the remaining flags.
-fn take_title(flags: &[String]) -> (Option<String>, Vec<String>) {
-    let mut title = None;
-    let mut rest = Vec::new();
-    for f in flags {
-        if let Some(t) = f.strip_prefix("--title=") {
-            title = Some(t.to_string());
-        } else {
-            rest.push(f.clone());
-        }
-    }
-    (title, rest)
-}
-
 // ---------- reads ----------
 
-fn cmd_ping(args: &[String]) -> Result<(), String> {
-    if client(req(args, 0, "<vault-dir>")?)?.ping() {
+fn cmd_ping(g: &GlobalArgs) -> Result<(), String> {
+    if g.connect()?.ping() {
         println!("ok");
         Ok(())
     } else {
@@ -188,8 +352,8 @@ fn cmd_ping(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn cmd_list(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
+fn cmd_list(g: &GlobalArgs) -> Result<(), String> {
+    let c = g.connect()?;
     for id in c.list_roots().map_err(|e| e.to_string())? {
         let title = c
             .get_block(id.clone())
@@ -201,17 +365,9 @@ fn cmd_list(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_render(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let id = parse_id(req(args, 1, "<block-id>")?)?;
-    let mut flat = false;
-    for f in &args[2..] {
-        if f == "--flat" {
-            flat = true;
-        } else {
-            return Err(format!("unknown flag: {f}"));
-        }
-    }
+fn cmd_render(g: &GlobalArgs, id: &str, flat: bool) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
     // --flat = the published form (embeds dissolved inline, refs as plain titles); the default
     // is the interactive form (embed cards + mdkb: links).
     let out = if flat {
@@ -228,9 +384,9 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn cmd_get(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let id = parse_id(req(args, 1, "<block-id>")?)?;
+fn cmd_get(g: &GlobalArgs, id: &str) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
     match c.get_block_source(id).map_err(|e| e.to_string())? {
         Some(src) => {
             print!("{src}");
@@ -240,37 +396,53 @@ fn cmd_get(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn cmd_search(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let query_text = req(args, 1, "<query>")?;
+/// The optional filters for `search`, grouped so the handler signature stays small.
+struct SearchFlags {
+    lang: Option<String>,
+    tags: Vec<String>,
+    limit: Option<usize>,
+    created_after: Option<String>,
+    created_before: Option<String>,
+    updated_after: Option<String>,
+    updated_before: Option<String>,
+    has: Vec<String>,
+    missing: Vec<String>,
+}
+
+fn cmd_search(g: &GlobalArgs, query_text: &str, flags: SearchFlags) -> Result<(), String> {
+    let c = g.connect()?;
     // The positional query understands the same inline operators as the app/MCP
-    // (tag:, #tag, lang:/code:) via the shared parser; the --tag/--lang flags add to it.
+    // (tag:, #tag, lang:/code:) via the shared parser; the flags add to it.
     let mut q = SearchQuery::parse(query_text);
-    for flag in &args[2..] {
-        if let Some(l) = flag.strip_prefix("--lang=") {
-            q.lang = Some(l.to_lowercase());
-        } else if let Some(t) = flag.strip_prefix("--tag=") {
-            let t = t.to_lowercase();
-            if !q.tags.contains(&t) {
-                q.tags.push(t);
-            }
-        } else if let Some(n) = flag.strip_prefix("--limit=") {
-            q.limit = n.parse().map_err(|_| format!("bad --limit: {n}"))?;
-        } else if let Some(d) = flag.strip_prefix("--created-after=") {
-            q.created_after = Some(parse_date_flag(d)?);
-        } else if let Some(d) = flag.strip_prefix("--created-before=") {
-            q.created_before = Some(parse_date_flag(d)?);
-        } else if let Some(d) = flag.strip_prefix("--updated-after=") {
-            q.updated_after = Some(parse_date_flag(d)?);
-        } else if let Some(d) = flag.strip_prefix("--updated-before=") {
-            q.updated_before = Some(parse_date_flag(d)?);
-        } else if let Some(k) = flag.strip_prefix("--has=") {
-            push_prop_key(&mut q.has_prop, k);
-        } else if let Some(k) = flag.strip_prefix("--missing=") {
-            push_prop_key(&mut q.lacks_prop, k);
-        } else {
-            return Err(format!("unknown flag: {flag}"));
+    if let Some(l) = flags.lang {
+        q.lang = Some(l.to_lowercase());
+    }
+    for t in flags.tags {
+        let t = t.to_lowercase();
+        if !q.tags.contains(&t) {
+            q.tags.push(t);
         }
+    }
+    if let Some(n) = flags.limit {
+        q.limit = n;
+    }
+    if let Some(d) = flags.created_after {
+        q.created_after = Some(parse_date_flag(&d)?);
+    }
+    if let Some(d) = flags.created_before {
+        q.created_before = Some(parse_date_flag(&d)?);
+    }
+    if let Some(d) = flags.updated_after {
+        q.updated_after = Some(parse_date_flag(&d)?);
+    }
+    if let Some(d) = flags.updated_before {
+        q.updated_before = Some(parse_date_flag(&d)?);
+    }
+    for k in flags.has {
+        push_prop_key(&mut q.has_prop, &k);
+    }
+    for k in flags.missing {
+        push_prop_key(&mut q.lacks_prop, &k);
     }
     let hits = c.search(q).map_err(|e| e.to_string())?;
     if hits.is_empty() {
@@ -296,9 +468,9 @@ fn push_prop_key(keys: &mut Vec<String>, key: &str) {
     }
 }
 
-fn cmd_info(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let id = parse_id(req(args, 1, "<block-id>")?)?;
+fn cmd_info(g: &GlobalArgs, id: &str) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
     match c.get_block(id).map_err(|e| e.to_string())? {
         Some(rec) => {
             println!("id       {}", rec.id);
@@ -318,8 +490,8 @@ fn cmd_info(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn cmd_tags(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
+fn cmd_tags(g: &GlobalArgs) -> Result<(), String> {
+    let c = g.connect()?;
     let tags = c.list_tags().map_err(|e| e.to_string())?;
     if tags.is_empty() {
         println!("(no tags)");
@@ -330,9 +502,9 @@ fn cmd_tags(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_links(args: &[String], incoming: bool) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let id = parse_id(req(args, 1, "<block-id>")?)?;
+fn cmd_links(g: &GlobalArgs, id: &str, incoming: bool) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
     let rows = if incoming {
         c.backlinks(id).map_err(|e| e.to_string())?
     } else {
@@ -356,8 +528,8 @@ fn cmd_links(args: &[String], incoming: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_stats(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
+fn cmd_stats(g: &GlobalArgs) -> Result<(), String> {
+    let c = g.connect()?;
     let s = c.stats().map_err(|e| e.to_string())?;
     println!("blocks:   {}", s.blocks);
     println!("roots:    {}", s.roots);
@@ -365,8 +537,8 @@ fn cmd_stats(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_conflicts(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
+fn cmd_conflicts(g: &GlobalArgs) -> Result<(), String> {
+    let c = g.connect()?;
     let files = c.conflicts().map_err(|e| e.to_string())?;
     if files.is_empty() {
         println!("(no conflicts)");
@@ -379,50 +551,35 @@ fn cmd_conflicts(args: &[String]) -> Result<(), String> {
 
 // ---------- writes ----------
 
-fn cmd_create(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let (title, rest) = take_title(&args[1..]);
-    if let Some(f) = rest.first() {
-        return Err(format!("unknown flag: {f}"));
-    }
+fn cmd_create(g: &GlobalArgs, title: Option<&str>) -> Result<(), String> {
+    let c = g.connect()?;
     let body = read_stdin()?;
-    let id = c
-        .create_block(title.as_deref(), &body)
-        .map_err(|e| e.to_string())?;
+    let id = c.create_block(title, &body).map_err(|e| e.to_string())?;
     println!("{id}");
     Ok(())
 }
 
-fn cmd_update(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let id = parse_id(req(args, 1, "<block-id>")?)?;
-    let (title, rest) = take_title(&args[2..]);
-    let mut force = false;
-    for f in rest {
-        match f.as_str() {
-            "--force" => force = true,
-            other => return Err(format!("unknown flag: {other}")),
-        }
-    }
+fn cmd_update(g: &GlobalArgs, id: &str, title: Option<&str>, force: bool) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
     let body = read_stdin()?;
-    c.update_block(id, title.as_deref(), &body, force)
+    c.update_block(id, title, &body, force)
         .map_err(|e| e.to_string())?;
     println!("ok");
     Ok(())
 }
 
-fn cmd_set_tags(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let id = parse_id(req(args, 1, "<block-id>")?)?;
-    let tags: Vec<String> = args[2..].to_vec();
+fn cmd_set_tags(g: &GlobalArgs, id: &str, tags: Vec<String>) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
     c.set_tags(id, tags).map_err(|e| e.to_string())?;
     println!("ok");
     Ok(())
 }
 
-fn cmd_props(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let id = parse_id(req(args, 1, "<block-id>")?)?;
+fn cmd_props(g: &GlobalArgs, id: &str) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
     match c.get_block(id).map_err(|e| e.to_string())? {
         Some(rec) => {
             for (k, v) in &rec.props {
@@ -434,11 +591,11 @@ fn cmd_props(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn cmd_set_props(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let id = parse_id(req(args, 1, "<block-id>")?)?;
+fn cmd_set_props(g: &GlobalArgs, id: &str, pairs: &[String]) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
     let mut props: Vec<(String, String)> = Vec::new();
-    for pair in &args[2..] {
+    for pair in pairs {
         let (k, v) = pair
             .split_once('=')
             .ok_or_else(|| format!("expected key=value, got: {pair}"))?;
@@ -449,30 +606,19 @@ fn cmd_set_props(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_unset_props(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let id = parse_id(req(args, 1, "<block-id>")?)?;
-    let keys: Vec<String> = args[2..].to_vec();
-    if keys.is_empty() {
-        return Err("expected at least one property key to remove".to_string());
-    }
+fn cmd_unset_props(g: &GlobalArgs, id: &str, keys: Vec<String>) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
+    // clap guarantees >= 1 key (num_args = 1.., required), so no empty-check is needed here.
     c.unset_props(id, keys).map_err(|e| e.to_string())?;
     println!("ok");
     Ok(())
 }
 
-fn cmd_link(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let src = parse_id(req(args, 1, "<source-id>")?)?;
-    let dst = parse_id(req(args, 2, "<target-id>")?)?;
-    let mut embed = false;
-    for f in &args[3..] {
-        if f == "--embed" {
-            embed = true;
-        } else {
-            return Err(format!("unknown flag: {f}"));
-        }
-    }
+fn cmd_link(g: &GlobalArgs, src: &str, dst: &str, embed: bool) -> Result<(), String> {
+    let c = g.connect()?;
+    let src = parse_id(src)?;
+    let dst = parse_id(dst)?;
     let outcome = c.link(src, dst, embed).map_err(|e| e.to_string())?;
     println!(
         "{}",
@@ -486,33 +632,29 @@ fn cmd_link(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_carve(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let parent = parse_id(req(args, 1, "<parent-id>")?)?;
-    let (title, rest) = take_title(&args[2..]);
-    if let Some(f) = rest.first() {
-        return Err(format!("unknown flag: {f}"));
-    }
+fn cmd_carve(g: &GlobalArgs, parent: &str, title: Option<&str>) -> Result<(), String> {
+    let c = g.connect()?;
+    let parent = parse_id(parent)?;
     let body = read_stdin()?;
     let child = c
-        .carve_block(parent, title.as_deref(), &body)
+        .carve_block(parent, title, &body)
         .map_err(|e| e.to_string())?;
     println!("{child}");
     Ok(())
 }
 
-fn cmd_flatten(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let parent = parse_id(req(args, 1, "<parent-id>")?)?;
-    let child = parse_id(req(args, 2, "<child-id>")?)?;
+fn cmd_flatten(g: &GlobalArgs, parent: &str, child: &str) -> Result<(), String> {
+    let c = g.connect()?;
+    let parent = parse_id(parent)?;
+    let child = parse_id(child)?;
     c.flatten(parent, child).map_err(|e| e.to_string())?;
     println!("ok");
     Ok(())
 }
 
-fn cmd_delete(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
-    let id = parse_id(req(args, 1, "<block-id>")?)?;
+fn cmd_delete(g: &GlobalArgs, id: &str) -> Result<(), String> {
+    let c = g.connect()?;
+    let id = parse_id(id)?;
     c.delete_block(id).map_err(|e| e.to_string())?;
     println!("ok");
     Ok(())
@@ -520,54 +662,38 @@ fn cmd_delete(args: &[String]) -> Result<(), String> {
 
 // ---------- maintenance ----------
 
-fn cmd_rebuild(args: &[String]) -> Result<(), String> {
-    let c = client(req(args, 0, "<vault-dir>")?)?;
+fn cmd_rebuild(g: &GlobalArgs) -> Result<(), String> {
+    let c = g.connect()?;
     c.rebuild().map_err(|e| e.to_string())?;
     println!("rebuilt");
     Ok(())
 }
 
-fn cmd_export(args: &[String]) -> Result<(), String> {
-    let dir = req(args, 0, "<vault-dir>")?;
-    let mut manifest_path: Option<String> = None;
-    let mut root: Option<String> = None;
-    let mut tag: Option<String> = None;
-    let mut include_non_root = false;
-    let mut follow_links = false;
-    let mut check = false;
-    let mut raw = false;
-    for flag in &args[1..] {
-        if let Some(p) = flag.strip_prefix("--manifest=") {
-            manifest_path = Some(p.to_string());
-        } else if let Some(r) = flag.strip_prefix("--root=") {
-            root = Some(r.to_string());
-        } else if let Some(t) = flag.strip_prefix("--tag=") {
-            tag = Some(t.to_string());
-        } else if flag == "--include-non-root" {
-            include_non_root = true;
-        } else if flag == "--follow-links" {
-            follow_links = true;
-        } else if flag == "--check" {
-            check = true;
-        } else if flag == "--raw" {
-            raw = true;
-        } else {
-            return Err(format!("unknown flag: {flag}"));
-        }
-    }
-    if tag.is_some() && manifest_path.is_some() {
+fn cmd_export(g: &GlobalArgs, args: &ExportArgs) -> Result<(), String> {
+    if args.tag.is_some() && args.manifest.is_some() {
         return Err("--tag and --manifest are mutually exclusive selectors".into());
     }
-    if include_non_root && tag.is_none() {
+    if args.include_non_root && args.tag.is_none() {
         return Err("--include-non-root only applies with --tag".into());
     }
-    if manifest_path.is_some() && (follow_links || raw) {
+    if args.manifest.is_some() && (args.follow_links || args.raw) {
         return Err(
             "--follow-links and --raw don't apply to --manifest (its paths and per-entry \
                     banner policy are explicit); use them with --tag or the whole-KB export"
                 .into(),
         );
     }
+
+    // Resolve the connection target once: `export` needs both a client AND, for the default
+    // manifest lookup, the local vault directory (when the target is a local vault).
+    let inputs = g.inputs();
+    let env = EnvSnapshot::read();
+    let registry_default = Registry::load().default_connection();
+    let target = resolve_target(&inputs, &env, Some(&registry_default))?;
+    let vault_dir: Option<PathBuf> = match &target {
+        ResolvedTarget::LocalVault { vault } => Some(vault.clone()),
+        _ => None,
+    };
 
     // Build the export request. Its type makes illegal combinations unrepresentable, so the only
     // job here is to map the parsed flags onto the right variant:
@@ -579,7 +705,10 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
     //   (none, no default)       → Slugs{ AllRoots } (the whole-KB dump)
     // The manifest is parsed client-side (defaults resolved) and shipped as structured entries, so
     // the protocol stays uniformly JSON and the daemon never parses the on-disk format.
-    let default_manifest = format!("{dir}/export.toml");
+    let default_manifest = vault_dir
+        .as_ref()
+        .map(|d| d.join("export.toml"))
+        .filter(|p| p.exists());
     let read_manifest = |p: &str| -> Result<ExportRequest, String> {
         let text = std::fs::read_to_string(p).map_err(|e| format!("reading manifest {p}: {e}"))?;
         let manifest = if p.ends_with(".json") {
@@ -590,31 +719,31 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("{p}: {e}"))?;
         Ok(ExportRequest::Manifest(manifest.entries))
     };
-    let request: ExportRequest = if let Some(name) = tag {
+    let request: ExportRequest = if let Some(name) = args.tag.clone() {
         ExportRequest::Slugs {
             selection: SlugSelection::Tag {
                 name,
-                include_non_root,
+                include_non_root: args.include_non_root,
             },
-            follow_links,
-            raw,
+            follow_links: args.follow_links,
+            raw: args.raw,
         }
-    } else if let Some(p) = &manifest_path {
+    } else if let Some(p) = &args.manifest {
         read_manifest(p)?
-    } else if !follow_links && !raw && Path::new(&default_manifest).exists() {
-        read_manifest(&default_manifest)?
+    } else if let Some(default) = default_manifest.filter(|_| !args.follow_links && !args.raw) {
+        read_manifest(&default.to_string_lossy())?
     } else {
         ExportRequest::Slugs {
             selection: SlugSelection::AllRoots,
-            follow_links,
-            raw,
+            follow_links: args.follow_links,
+            raw: args.raw,
         }
     };
 
     // A manifest names exact paths (so it writes relative to cwd); a slug dump emits `<slug>.md`
     // and defaults into `docs-export/` to avoid scattering files in cwd.
     let slug_dump = matches!(request, ExportRequest::Slugs { .. });
-    let root = root.unwrap_or_else(|| {
+    let root = args.root.clone().unwrap_or_else(|| {
         if slug_dump {
             "docs-export".into()
         } else {
@@ -623,7 +752,7 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
     });
 
     // The daemon plans the docs against its warm vault (rendering + banner live in core).
-    let docs = client(dir)?
+    let docs = connect_resolved(target, None)?
         .plan_exports(request)
         .map_err(|e| e.to_string())?;
 
@@ -636,7 +765,7 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
         let out = root.join(&doc.path);
         let current = std::fs::read_to_string(&out).ok();
         let up_to_date = current.as_deref() == Some(doc.content.as_str());
-        if check {
+        if args.check {
             if !up_to_date {
                 drifted.push(doc.path.clone());
             }
@@ -670,7 +799,7 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
         eprintln!("warning: {w}");
     }
 
-    if check {
+    if args.check {
         if drifted.is_empty() {
             println!("up to date ({} doc(s))", docs.len());
             Ok(())
@@ -679,7 +808,7 @@ fn cmd_export(args: &[String]) -> Result<(), String> {
                 eprintln!("drift: {p}");
             }
             Err(format!(
-                "{} doc(s) out of date; run `mdkb export {dir}` to regenerate",
+                "{} doc(s) out of date; run `mdkb export` to regenerate",
                 drifted.len()
             ))
         }

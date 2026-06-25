@@ -10,9 +10,13 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 pub mod connect;
+pub mod env;
 pub mod paths;
 pub mod transport;
-pub use connect::{connect, ensure_daemon, ConnectionConfig};
+pub use connect::{
+    connect, connect_resolved, ensure_daemon, resolve_client, resolve_target, ClientInputs,
+    ConnectionConfig, EnvSnapshot, Registry, ResolvedTarget, VaultEntry,
+};
 pub use paths::DaemonPaths;
 
 use mdkb_core::export::{ExportRequest, PlannedDoc};

@@ -15,6 +15,7 @@ path = "src/main.rs"
 mdkb-core = { workspace = true, features = ["serde"] }
 mdkb-protocol.workspace = true
 mdkb-view.workspace = true
+clap.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

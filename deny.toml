@@ -63,6 +63,14 @@ allow = [
 ]
 confidence-threshold = 0.8
 
+# webpki-roots vendors the Mozilla CA certificate bundle as *data* under CDLA-Permissive-2.0
+# (a Linux Foundation permissive *data* license). It is a build-time transitive dep of the
+# onnxruntime downloader (ort-sys → ort → fastembed), not linked code. Scope the allowance to
+# this one crate rather than globally permitting the license.
+[[licenses.exceptions]]
+name = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
 [bans]
 # Duplicate versions are informational (a large GUI tree always has some), not a
 # failure. Flip to "deny" later if you want to actively prune them.

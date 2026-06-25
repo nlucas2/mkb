@@ -33,11 +33,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    let cfg = Config::from_args(std::env::args().skip(1))?;
-    if cfg.help {
-        println!("{}", Config::usage());
-        return Ok(());
-    }
+    let cfg = Config::parse()?;
 
     cfg.ensure_dirs().map_err(|e| e.to_string())?;
 
