@@ -77,6 +77,55 @@ a model directory on disk — it overrides the compiled-in one.)
 *releases*: the desktop app builds and runs fine on arm64 Linux from source (`cargo tauri
 build`, see below), and the daemon container image covers running it as a server (see `deploy/`).
 
+### Install: with Rust (`cargo install`)
+
+**Use this if you have Rust and just want the binaries** (CLI/MCP/web/daemon) without an installer.
+Requires Rust (stable); the workspace pins `rust-version = 1.80`. This compiles locally, so on
+macOS the result is **not** quarantined and Gatekeeper never blocks it:
+
+```sh
+cargo install --git https://github.com/<you>/mdkb mdkbd mdkb-cli mdkb-mcp mdkb-web
+# installs: mdkbd (daemon), mdkb (CLI), mdkb-mcp, mdkb-web — onto ~/.cargo/bin (put it on PATH)
+```
+
+Zero-to-running from there:
+
+```sh
+echo "# First note" | mdkb create --vault ~/notes --title "First note"   # auto-starts the daemon
+mdkb search --vault ~/notes "first note"
+```
+
+Semantic search is built in: the neural model (BGE-small) is compiled into the daemon, so
+`cargo install` "just works" fully offline — real semantic embeddings, no model files, no download.
+The first command may take a few seconds while the daemon starts and indexes; later ones are warm.
+(Advanced: build with `--no-default-features` to leave the embedded model out and fall back to the
+offline hash embedder.)
+
+### Build from a checkout (contributors)
+
+Clone the repo, then run any interface straight from the source tree — each command auto-starts the
+daemon:
+
+```sh
+cargo build --workspace                                # build everything
+cargo run -p mdkb-cli -- list --vault ./my-vault       # CLI
+cargo run -p mdkb-web -- --vault ./my-vault            # web UI → http://127.0.0.1:7878
+cargo run -p mdkb-mcp -- --vault ./my-vault            # MCP server (stdio)
+
+cargo test --workspace                                 # the suite (green before every commit)
+```
+
+Working *inside* the repo against the repo's own `vault/`? The daemon's index is keyed by the
+vault's absolute path and lives outside the vault, so it won't pollute your checkout. If you also
+want `cargo`'s build output elsewhere (e.g. to avoid a huge in-tree `target/`), set
+`CARGO_TARGET_DIR=~/.cache/mdkb-target` (or any path) before building.
+
+The desktop app lives in its own workspace and needs the Tauri toolchain — see
+[`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md). On macOS, building it from source with
+`cargo tauri build` likewise yields an app that opens without the Gatekeeper "damaged" prompt; the
+downloaded `.dmg` from a Release is unsigned and needs a one-time `xattr` unquarantine (documented
+in that app README).
+
 ### Install: container
 
 Run the daemon as a networked, token-gated service — the daemon has the embedding model
@@ -95,39 +144,65 @@ mdkb-web --remote 127.0.0.1:7820 --token "$MDKB_TOKEN"   # http://127.0.0.1:7878
 
 See [`deploy/README.md`](./deploy/README.md) for the Kubernetes manifest and full cluster setup.
 
-### Install: from source
+### Choosing your vault
 
-Requires Rust (stable); the workspace pins `rust-version = 1.80`. Clone the repo, then run any
-interface straight from the source tree — each command auto-starts the daemon:
+Every client (CLI, MCP, web, desktop app) acts on **one vault at a time**, resolved in this order:
 
-```sh
-cargo build --workspace                          # build everything
-cargo run -p mdkb-cli -- list ./my-vault         # CLI
-cargo run -p mdkb-web -- --vault ./my-vault      # web UI → http://127.0.0.1:7878
-cargo run -p mdkb-mcp -- --vault ./my-vault      # MCP server (stdio)
+1. an explicit `--vault <dir>` flag (the CLI/MCP/web also accept `--remote`/`--socket`);
+2. the `MDKB_VAULT` environment variable;
+3. the **default** in your vault registry (see below);
+4. the built-in fallback `~/mdkb-vault`.
 
-cargo test --workspace                           # the suite (green before every commit)
+So you can always be explicit (`mdkb search --vault ~/notes "…"`), or set a default once and drop
+the flag entirely (`mdkb search "…"`).
+
+**The registry file (optional).** Clients read a small per-user JSON file listing your vaults and
+which is the default. You don't need to create it — if it's absent, the built-in `~/mdkb-vault`
+default is used. The desktop app writes it for you when you pick a vault in its settings, and you
+can also hand-edit it like any dotfile. It lives at:
+
+- macOS: `~/Library/Application Support/mdkb/vaults.json`
+- Linux: `~/.config/mdkb/vaults.json` (or `$XDG_CONFIG_HOME/mdkb/`)
+- Windows: `%APPDATA%\mdkb\vaults.json`
+- override the directory with `$MDKB_CONFIG_DIR`.
+
+The format is a list of named vaults plus the `default` to use when no vault is specified:
+
+```json
+{
+  "vaults": [
+    { "name": "notes", "connection": { "mode": "local", "vault": "~/notes" } },
+    { "name": "work",  "connection": { "mode": "remote", "host": "10.0.0.5:7820", "token": "…" } }
+  ],
+  "default": "notes"
+}
 ```
 
-To install the headless binaries onto your `PATH` (instead of running from the tree), use
-`cargo install` from the public mirror — this compiles locally, so on macOS the result is **not**
-quarantined and Gatekeeper never blocks it:
+A `local` vault is a directory (a leading `~` is expanded, so the same file works across machines);
+a `remote` vault is a token-gated `mdkbd --listen` over TCP. If `default` names a vault that isn't
+in the list, mdkb falls back to the built-in default rather than guessing.
 
-```sh
-cargo install --git https://github.com/<you>/mdkb mdkbd mdkb-cli mdkb-mcp mdkb-web
-# installs: mdkbd (daemon), mdkb (CLI), mdkb-mcp, mdkb-web
-```
+### Where your vault lives — local or synced
 
-This default build has semantic search built in: the neural model (BGE-small) is compiled into the
-daemon, so `cargo build` / `cargo install` "just works" fully offline — real semantic embeddings,
-no model files, no download. (Advanced: build with `--no-default-features` to leave the embedded
-model out and fall back to the offline hash embedder.)
+Your vault is just a directory of Markdown files, and **the Markdown is the only thing you ever
+need to sync**. How you store it is independent of how you installed mdkb.
 
-The desktop app lives in its own workspace and needs the Tauri toolchain — see
-[`app/mdkb-tauri/README.md`](./app/mdkb-tauri/README.md). On macOS, building it from source with
-`cargo tauri build` likewise yields an app that opens without the Gatekeeper "damaged" prompt; the
-downloaded `.dmg` from a Release is unsigned and needs a one-time `xattr` unquarantine (documented
-in that app README).
+- **Local (single machine).** Point a client at any folder (`--vault ~/notes`) and go. Nothing
+  else to set up.
+- **Synced across machines (OneDrive, Syncthing, Dropbox, iCloud…).** Put the vault folder inside
+  your synced location and use it from each machine. Because the synced path is usually under your
+  home directory, a `~`-relative vault entry in the registry (e.g. `~/OneDrive/notes`) resolves
+  correctly everywhere, so one config can be shared.
+
+The reason this is safe: the **index is not in the vault**. The SQLite index, socket, lock, and
+log are machine-local — they live outside the vault (under the OS local-data dir, keyed by a hash
+of the vault's path) and are fully rebuildable from the Markdown. So a synced vault never drags a
+live database between machines (the classic cause of cloud-sync corruption); each machine keeps its
+own index for the same notes. **Never sync the index** — only the Markdown.
+
+If a sync tool produces a conflict copy (e.g. `note (conflicted copy).md` /
+`note-DESKTOP-AB12.md`), mdkb deliberately **doesn't index it** and surfaces it via `mdkb conflicts
+--vault <dir>` so you can merge it back in plain text. The Markdown stays authoritative.
 
 ## Core principles
 
@@ -434,8 +509,8 @@ several docs transclude.
 - Regenerate everything, or check for drift (CI/pre-commit gate, non-zero exit on drift):
 
 ```sh
-cargo run -p mdkb-cli -- export vault            # regenerate the mapped docs
-cargo run -p mdkb-cli -- export vault --check    # verify they're current
+cargo run -p mdkb-cli -- export --vault vault         # regenerate the mapped docs
+cargo run -p mdkb-cli -- export --vault vault --check  # verify they're current
 ```
 
 There are three ways to select what to export:

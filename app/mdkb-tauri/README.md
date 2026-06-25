@@ -31,9 +31,11 @@ webview, which the core product doesn't require).
 
 ## Connection (Settings)
 
-The connection is configured in-app and saved to a per-user file
-(`~/Library/Application Support/dev.mdkb.desktop/connection.json` on macOS; the XDG/`APPDATA`
-equivalent elsewhere). Click the connection-status dot at the bottom of the sidebar.
+The connection is configured in-app and saved to the shared per-user vault registry
+(`~/Library/Application Support/mdkb/vaults.json` on macOS; the XDG/`APPDATA` equivalent
+elsewhere). This is the same registry the CLI and MCP server read, so configuring the vault here
+also sets the default for those tools. Click the connection-status dot at the bottom of the
+sidebar.
 
 - **Local vault** — pick a folder. The app **auto-starts a background `mdkbd`** for that vault
   (the daemon is bundled inside the app) and reuses it next time. The daemon is started
