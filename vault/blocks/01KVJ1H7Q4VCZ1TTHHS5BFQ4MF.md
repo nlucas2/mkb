@@ -1,12 +1,13 @@
 ---
 title: MCP skill page
 tags: [skill, skill-page, mcp]
+updated: 2026-06-25T21:17:09Z
 ---
 
 ---
 name: mkb-knowledge
 description: >-
-    How to use mkb (a personal Markdown knowledge base) well via the MCP server: the DRY search-before-write process, embed-vs-reference, search operators, safe
+    How to use mkb (a modular Markdown knowledge base) well via the MCP server: the DRY search-before-write process, embed-vs-reference, search operators, safe
     writes, and the MCP tool surface. Read before storing or retrieving knowledge in an mkb vault.
 user-invocable: false
 ---

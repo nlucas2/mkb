@@ -1,8 +1,9 @@
 ---
 title: What is mkb
+updated: 2026-06-25T21:17:09Z
 ---
 
-mkb is a **personal Markdown knowledge base — a tool, not an agent** — that a human and an
+mkb is a **modular Markdown knowledge base — a tool, not an agent** — that a human and an
 AI use as equal partners. The inspiration: give an AI agent **auditable, refactorable
 memory** — knowledge it stores and recalls that **you** can look up and manage too, in the
 app, instead of an opaque store you can't see into.

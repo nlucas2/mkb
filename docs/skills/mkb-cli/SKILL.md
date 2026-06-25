@@ -1,7 +1,7 @@
 ---
 name: mkb-cli
 description: >-
-    How to use mkb (a personal Markdown knowledge base) well from the CLI: the DRY
+    How to use mkb (a modular Markdown knowledge base) well from the CLI: the DRY
     search-before-write process, embed-vs-reference, search operators, safe writes, and
     the CLI command surface. Read before storing or retrieving knowledge in an mkb vault.
 user-invocable: false

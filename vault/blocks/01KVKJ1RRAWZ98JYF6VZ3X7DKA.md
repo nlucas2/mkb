@@ -1,10 +1,10 @@
 ---
 title: README page
 tags: [doc, doc-page, user]
-updated: 2026-06-25T10:04:10Z
+updated: 2026-06-25T21:15:45Z
 ---
 
-# mkb — Markdown Knowledge Base
+# mkb — Modular Knowledge Base
 
 ![[01KVHJ76YA04MEM71HNDB7RT8G]]
 

@@ -69,8 +69,8 @@ impl GlobalArgs {
 #[command(
     name = "mkb",
     version,
-    about = "Markdown knowledge base CLI — a thin client over the mkb daemon",
-    long_about = "Markdown knowledge base CLI.\n\nEvery command connects to a vault's daemon \
+    about = "Modular Markdown knowledge base CLI — a thin client over the mkb daemon",
+    long_about = "Modular Markdown knowledge base CLI.\n\nEvery command connects to a vault's daemon \
                   (auto-starting it). The vault is chosen by --vault, else $MKB_VAULT, else the \
                   configured registry default (vaults.json), else ~/mkb-vault. Use \
                   --remote/--socket (or $MKB_REMOTE+$MKB_TOKEN / $MKB_SOCKET) for an explicit \
