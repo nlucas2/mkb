@@ -56,7 +56,7 @@ pub fn markdown_to_html_with_assets(markdown: &str, vault_root: Option<&Path>) -
     render_markdown(markdown, |dest| {
         if let Some(root) = vault_root {
             if let Some(abs) = vault_asset_path(dest, root) {
-                return ImageAction::Rewrite(format!("mkb-asset:{}", abs.display()));
+                return ImageAction::Rewrite(format!("mkb-asset:{}", asset_url_path(&abs)));
             }
         }
         if is_external_image(dest) {
@@ -84,6 +84,15 @@ pub fn vault_asset_path(dest: &str, vault_root: &Path) -> Option<PathBuf> {
         }
     }
     (path != vault_root).then_some(path)
+}
+
+/// Render an absolute vault path as the payload of an `mkb-asset:` URL. Asset URLs always use `/`
+/// regardless of the host's path separator: on Windows [`Path`] joins with `\`, which the Markdown
+/// renderer would percent-encode to `%5C`, producing a sentinel the desktop front-end can't map
+/// back to a real file. Forcing forward slashes keeps the sentinel format identical on every OS
+/// (Windows accepts `/` in file paths, and `convertFileSrc` handles it).
+fn asset_url_path(abs: &Path) -> String {
+    abs.to_string_lossy().replace('\\', "/")
 }
 
 /// Whether an image source points outside the vault (and so must never be auto-fetched): it has a
@@ -513,6 +522,25 @@ mod tests {
             html.contains('b'),
             "alt text should be preserved; got: {html}"
         );
+    }
+
+    #[test]
+    fn asset_url_always_uses_forward_slashes() {
+        // OS-independent guard: a Windows-style absolute path must serialise with `/`, not `\`
+        // (a `\` would be percent-encoded to `%5C` and break the desktop front-end's mapping).
+        // `to_string_lossy` keeps the literal `\` on every OS, so this also fails on Linux CI if
+        // the conversion regresses.
+        assert_eq!(
+            asset_url_path(Path::new(r"C:\vault\assets\x.png")),
+            "C:/vault/assets/x.png"
+        );
+        assert_eq!(
+            asset_url_path(Path::new("/vault/assets/x.png")),
+            "/vault/assets/x.png"
+        );
+        // And the full render must never leak a backslash (raw or percent-encoded) into the URL.
+        let html = markdown_to_html_with_assets("![a](assets/x.png)\n", Some(Path::new("/vault")));
+        assert!(!html.contains("%5C") && !html.contains('\\'), "got: {html}");
     }
 
     #[test]
