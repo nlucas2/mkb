@@ -489,11 +489,51 @@ fn spawn_detached(paths: &DaemonPaths, mkbd_path: Option<&Path>) -> Result<(), S
         use std::os::windows::process::CommandExt;
         // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW.
         cmd.creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000);
+
+        // Stop the long-lived daemon from inheriting *this* process's std handles. Rust spawns
+        // with bInheritHandles=TRUE in order to hand the daemon its redirected log handles
+        // (above), and on Windows that duplicates EVERY inheritable handle into the child — not
+        // just the ones we redirected. So when a parent captures our stdout/stderr through a pipe
+        // (a shell pipeline, `$(mkb …)`, or the MCP client reading our stdio), an inherited
+        // duplicate living in the detached daemon keeps that pipe open long after we exit, and the
+        // capturing parent appears to hang until the daemon idle-reaps (~minutes later). Clearing
+        // HANDLE_FLAG_INHERIT on our std handles scopes our output to us; the daemon's own
+        // stdout/stderr are the separate log handles set above and are unaffected.
+        clear_std_handle_inheritance();
     }
 
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("failed to spawn {}: {e}", exe.display()))
+}
+
+/// Clear `HANDLE_FLAG_INHERIT` on this process's standard handles so a subsequently spawned,
+/// fully-detached child cannot inherit them. See the call site in [`spawn_detached`] for why this
+/// is required on Windows. No-op-safe: invalid/absent std handles are skipped, and clearing the
+/// flag affects only child inheritance, never this process's own use of the handles.
+#[cfg(windows)]
+fn clear_std_handle_inheritance() {
+    use std::os::windows::io::RawHandle;
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+    const INVALID_HANDLE_VALUE: isize = -1;
+    extern "system" {
+        fn GetStdHandle(n_std_handle: u32) -> RawHandle;
+        fn SetHandleInformation(h_object: RawHandle, dw_mask: u32, dw_flags: u32) -> i32;
+    }
+    // SAFETY: GetStdHandle/SetHandleInformation are simple, thread-safe Win32 calls. We only read
+    // the process's own std handles and clear an inherit bit; we never close or store them.
+    unsafe {
+        for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let h = GetStdHandle(id);
+            // Skip NULL (no handle attached) and INVALID_HANDLE_VALUE (-1).
+            if !h.is_null() && h as isize != INVALID_HANDLE_VALUE {
+                let _ = SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
 }
 
 /// Locate the `mkbd` binary: an explicit path, else beside the current executable, else
@@ -547,6 +587,17 @@ mod tests {
     /// Serialises tests that mutate process-global env vars (`MKB_CONFIG_DIR`, etc.), since Rust
     /// runs a crate's tests in parallel and the env is shared.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// The Windows handle-inheritance guard (see [`spawn_detached`]) must be callable and
+    /// idempotent — clearing the inherit bit twice is harmless. This only exercises the call path
+    /// (the real fix — a detached child not inheriting our pipe ends — is a runtime behaviour
+    /// verified on Windows); on other targets the function doesn't exist.
+    #[cfg(windows)]
+    #[test]
+    fn clear_std_handle_inheritance_is_callable_and_idempotent() {
+        clear_std_handle_inheritance();
+        clear_std_handle_inheritance();
+    }
 
     #[test]
     fn default_is_local_default_vault() {
