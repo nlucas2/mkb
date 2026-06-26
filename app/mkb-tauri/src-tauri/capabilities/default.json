@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Baseline window capability. The app routes all data access through its own #[tauri::command]s (which don't require a permission), so the only built-in surface it needs is the event system: the Rust shell emits `vault-changed` and the WebView listens for it (live refresh). Without `core:event:default` the listener has no permission and the event is never delivered, so the UI never refreshes on out-of-band edits.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}
