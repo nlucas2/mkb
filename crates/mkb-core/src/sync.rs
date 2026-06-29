@@ -168,6 +168,16 @@ impl<I: Index> SyncEngine<I> {
         &self.conflicts
     }
 
+    /// The daemon's current content **version** for a block: the hash of its persisted file source,
+    /// maintained in memory on every write and reconcile. `None` if the block is unknown. This is
+    /// an opaque optimistic-concurrency token — a caller captures it on read and passes it back on
+    /// write so a stale, clobbering overwrite can be rejected. It is computed purely from the
+    /// daemon's in-memory state (never re-reading disk): the daemon is the single writer, so its
+    /// hash is authoritative the instant any client's write is applied.
+    pub fn block_version(&self, id: &BlockId) -> Option<u64> {
+        self.hashes.get(id).copied()
+    }
+
     /// Reconcile the whole `blocks/` directory: ingest new/changed block files, drop deleted
     /// ones. Files whose content hash is unchanged since the last pass are skipped.
     pub fn reconcile(&mut self) -> Result<SyncReport, IndexError> {

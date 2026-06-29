@@ -293,20 +293,61 @@ fn search(state: tauri::State<'_, AppState>, query: String) -> Result<String, St
 // ----- writes -----
 
 /// Update a block's title + body in place.
+/// The result of a [`save_block`] under optimistic concurrency, serialised for the WebView.
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum SaveOutcome {
+    /// The save was applied; `version` is the block's new content version (the editor adopts it as
+    /// its new base so the user can keep editing without re-reading).
+    Applied { version: String },
+    /// The save was rejected because the block changed since the editor opened it. Carries the
+    /// current state so the UI can offer reload/merge. Nothing was written.
+    Conflict {
+        current_title: Option<String>,
+        current_body: String,
+        version: String,
+    },
+}
+
+/// The current content version of a block (optimistic-concurrency token the editor captures on
+/// open and passes back on save).
+#[tauri::command]
+fn block_version(state: tauri::State<'_, AppState>, id: String) -> Result<Option<String>, String> {
+    let client = state.connected()?;
+    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
+    client.block_version(bid).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn save_block(
     state: tauri::State<'_, AppState>,
     id: String,
     title: Option<String>,
     body: String,
-) -> Result<(), String> {
+    base_version: Option<String>,
+) -> Result<SaveOutcome, String> {
     let client = state.connected()?;
     let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    client
-        // The desktop app is the human surface — the editor shows the full body being saved, so
-        // the destructive-update guard (which protects against blind agent truncation) is bypassed.
-        .update_block(bid, title.as_deref(), &body, true)
-        .map_err(|e| e.to_string())
+    // The desktop app is the human surface — the editor shows the full body being saved, so the
+    // destructive-update guard (which protects against blind agent truncation) is bypassed with
+    // force=true. The optimistic-concurrency guard is separate: when the editor passes the version
+    // it opened against, a concurrent change is reported as a Conflict for the UI to reconcile,
+    // rather than silently clobbered.
+    let outcome = client
+        .update_block_checked(bid, title.as_deref(), &body, true, base_version.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(match outcome {
+        mkb_core::UpdateOutcome::Applied { version } => SaveOutcome::Applied { version },
+        mkb_core::UpdateOutcome::Conflict {
+            current_title,
+            current_body,
+            version,
+        } => SaveOutcome::Conflict {
+            current_title,
+            current_body,
+            version,
+        },
+    })
 }
 
 /// Create a new top-level block. Returns the new id.
@@ -621,6 +662,7 @@ pub fn run() {
             render_block,
             block_source,
             block_title_of,
+            block_version,
             graph,
             backlinks,
             search,

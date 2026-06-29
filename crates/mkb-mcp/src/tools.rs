@@ -372,6 +372,10 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
             title: s_nonblank("title"),
             body: req_s("body")?,
             force: args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
+            // The MCP path is non-interactive: agents don't hold an editor session to pin a base
+            // version against, and use replace_in_block for safe partial edits. The optimistic-
+            // concurrency guard is the human editor's feature, so update_block here is unguarded.
+            base_version: None,
         },
         "replace_in_block" => Request::ReplaceInBlock {
             id: req_id("id")?,
@@ -461,6 +465,12 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
         Response::Error { message } => Err(message.clone()),
         Response::Pong => Ok("pong".to_string()),
         Response::Ok => Ok("ok".to_string()),
+        // The MCP path sends no base_version, so a guarded update never conflicts here; a plain
+        // applied update just reports ok.
+        Response::Updated { .. } => Ok("ok".to_string()),
+        Response::Conflict { version, .. } => Err(format!(
+            "conflict: the block changed (current version {version})"
+        )),
         Response::Text(t) => Ok(t.clone().unwrap_or_else(|| "(not found)".to_string())),
         Response::BlockId(id) => Ok(id.to_string()),
         Response::Path(p) => Ok(p.clone()),

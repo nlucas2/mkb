@@ -22,7 +22,7 @@ pub use paths::DaemonPaths;
 use mkb_core::export::{ExportRequest, PlannedDoc};
 use mkb_core::{
     BlockId, BlockRecord, GraphData, Index, IndexStats, LinkOutcome, LinkRow, PageView,
-    RenderedBlock, RequestContext, SearchHit, SearchQuery, Service, TagCount,
+    RenderedBlock, RequestContext, SearchHit, SearchQuery, Service, TagCount, UpdateOutcome,
 };
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +85,14 @@ pub enum Request {
     },
     /// Raw Markdown body of a block (for editing).
     GetBlockSource {
+        /// Block id.
+        id: BlockId,
+    },
+    /// A block's current content **version** (opaque optimistic-concurrency token). An editor
+    /// captures this on open and echoes it back in [`UpdateBlock`](Request::UpdateBlock)'s
+    /// `base_version`; it's also the cheap "did *this* block change" probe behind the live-edit
+    /// conflict banner. Replies [`Response::Text`] (`None` if the block is unknown).
+    BlockVersion {
         /// Block id.
         id: BlockId,
     },
@@ -158,6 +166,12 @@ pub enum Request {
         /// Bypass the destructive-update guard for an intentional rewrite. Defaults to `false`.
         #[serde(default)]
         force: bool,
+        /// Optimistic-concurrency token: the block version the caller last read. When present, the
+        /// write is rejected with [`Response::Conflict`] (nothing written) if the block has changed
+        /// since — so a stale full-overwrite can't clobber a concurrent edit. `None` skips the
+        /// check (the historical behaviour).
+        #[serde(default)]
+        base_version: Option<String>,
     },
     /// Apply an exact, count-checked string replacement to a block's body (the partial-edit op).
     ReplaceInBlock {
@@ -332,6 +346,7 @@ impl Request {
             | Request::GetBlock { .. }
             | Request::GetBlockView { .. }
             | Request::GetBlockSource { .. }
+            | Request::BlockVersion { .. }
             | Request::GetBlockSourceRange { .. }
             | Request::RenderBlock { .. }
             | Request::RenderedBlock { .. }
@@ -397,6 +412,23 @@ pub enum Response {
     Linked(LinkOutcome),
     /// Success with no payload.
     Ok,
+    /// A guarded [`Request::UpdateBlock`] was applied; carries the block's new content version so
+    /// an interactive client can keep editing against fresh state without re-reading.
+    Updated {
+        /// The post-write content version.
+        version: String,
+    },
+    /// A guarded [`Request::UpdateBlock`] was **rejected**: the caller's `base_version` no longer
+    /// matched, so the overwrite would have clobbered a concurrent change. Nothing was written;
+    /// the current state is returned so the client can show a conflict/merge UI.
+    Conflict {
+        /// The block's current title.
+        current_title: Option<String>,
+        /// The block's current body.
+        current_body: String,
+        /// The block's current version.
+        version: String,
+    },
     /// An error with a human-readable message.
     Error {
         /// The message.
@@ -493,11 +525,33 @@ fn handle<I: Index>(
             title,
             body,
             force,
+            base_version,
         } => {
-            service
-                .update_block(ctx, &id, title.as_deref(), &body, force)
-                .map_err(to_str)?;
-            Response::Ok
+            match service
+                .update_block(
+                    ctx,
+                    &id,
+                    title.as_deref(),
+                    &body,
+                    force,
+                    base_version.as_deref(),
+                )
+                .map_err(to_str)?
+            {
+                mkb_core::UpdateOutcome::Applied { version } => Response::Updated { version },
+                mkb_core::UpdateOutcome::Conflict {
+                    current_title,
+                    current_body,
+                    version,
+                } => Response::Conflict {
+                    current_title,
+                    current_body,
+                    version,
+                },
+            }
+        }
+        Request::BlockVersion { id } => {
+            Response::Text(service.block_version(ctx, &id).map_err(to_str)?)
         }
         Request::DeleteBlock { id } => {
             service.delete_block(ctx, &id).map_err(to_str)?;
@@ -1023,8 +1077,10 @@ impl Client {
         }
     }
 
-    /// Convenience: update a block. `force` bypasses the destructive-update guard (an edit that
-    /// would empty the block or strip most of its content); pass `false` for ordinary edits.
+    /// Convenience: update a block (no concurrency check). `force` bypasses the destructive-update
+    /// guard (an edit that would empty the block or strip most of its content); pass `false` for
+    /// ordinary edits. For interactive editors that must not clobber a concurrent change, use
+    /// [`update_block_checked`](Client::update_block_checked) with the version read on open.
     pub fn update_block(
         &self,
         id: BlockId,
@@ -1037,8 +1093,51 @@ impl Client {
             title: title.map(str::to_string),
             body: body.to_string(),
             force,
+            base_version: None,
         })? {
-            Response::Ok => Ok(()),
+            Response::Ok | Response::Updated { .. } => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: a block's current content version (opaque optimistic-concurrency token), or
+    /// `None` if the block is unknown.
+    pub fn block_version(&self, id: BlockId) -> io::Result<Option<String>> {
+        match self.call(&Request::BlockVersion { id })? {
+            Response::Text(v) => Ok(v),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: a **guarded** block update. `base_version` is the version the caller read when
+    /// it opened the block; the daemon rejects the write (returning [`UpdateOutcome::Conflict`]
+    /// with the current state) if the block has changed since, so a stale overwrite can't clobber a
+    /// concurrent edit. On success returns [`UpdateOutcome::Applied`] with the new version.
+    pub fn update_block_checked(
+        &self,
+        id: BlockId,
+        title: Option<&str>,
+        body: &str,
+        force: bool,
+        base_version: Option<&str>,
+    ) -> io::Result<UpdateOutcome> {
+        match self.call(&Request::UpdateBlock {
+            id,
+            title: title.map(str::to_string),
+            body: body.to_string(),
+            force,
+            base_version: base_version.map(str::to_string),
+        })? {
+            Response::Updated { version } => Ok(UpdateOutcome::Applied { version }),
+            Response::Conflict {
+                current_title,
+                current_body,
+                version,
+            } => Ok(UpdateOutcome::Conflict {
+                current_title,
+                current_body,
+                version,
+            }),
             other => Err(unexpected(other)),
         }
     }
@@ -1229,6 +1328,7 @@ mod tests {
                 title: None,
                 body: "b".into(),
                 force: false,
+                base_version: None,
             },
             Request::ReplaceInBlock {
                 id: id.clone(),

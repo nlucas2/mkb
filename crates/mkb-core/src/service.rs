@@ -22,6 +22,37 @@ use crate::render::{
 };
 use crate::sync::{SyncEngine, SyncReport};
 
+/// The result of a [`Service::update_block`] attempt under optimistic concurrency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum UpdateOutcome {
+    /// The write was applied. Carries the block's new version (so a client can keep editing
+    /// against fresh state without a re-read).
+    Applied {
+        /// The post-write content version.
+        version: String,
+    },
+    /// The write was **rejected**: the caller's `base_version` no longer matches the daemon's
+    /// current version, so applying the full-body overwrite would have clobbered a change made
+    /// since the caller last read the block. Carries the current state so a client can show a
+    /// conflict/merge UI without a second request. Nothing was written.
+    Conflict {
+        /// The block's current title.
+        current_title: Option<String>,
+        /// The block's current body.
+        current_body: String,
+        /// The block's current version (what `base_version` must equal to apply).
+        version: String,
+    },
+}
+
+/// Format a raw content hash as the opaque version token clients echo back. Hex of the `u64` the
+/// [`SyncEngine`] already maintains; clients treat it as opaque (never parse it), so the underlying
+/// representation can change without a protocol break.
+fn format_version(hash: u64) -> String {
+    format!("{hash:016x}")
+}
+
 /// A block is at least this many characters before the "drastic shrink" guard applies, so trimming
 /// a small note is never blocked — only substantial blocks are protected from mass deletion.
 const UPDATE_GUARD_MIN_CHARS: usize = 200;
@@ -561,6 +592,18 @@ impl<I: Index> Service<I> {
         self.engine.add_asset(name, bytes)
     }
 
+    /// The current content version of a block (opaque optimistic-concurrency token), or `None` if
+    /// the block is unknown. A client captures this when it opens a block for editing and passes it
+    /// back to [`update_block`](Service::update_block) as `base_version`.
+    pub fn block_version(
+        &self,
+        ctx: &RequestContext,
+        id: &BlockId,
+    ) -> Result<Option<String>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(self.engine.block_version(id).map(format_version))
+    }
+
     /// Overwrite a block's title + body.
     ///
     /// `update_block` replaces the **entire** body, so a caller that sends a truncated or empty
@@ -569,6 +612,13 @@ impl<I: Index> Service<I> {
     /// [`destructive_update_reason`]) — unless `force` is set, which an intentional rewrite passes.
     /// The guard lives here, at the user-facing op; the internal structural rewrites
     /// (`carve_selection`/`flatten_block`) go straight to the engine and are never guarded.
+    ///
+    /// Under optimistic concurrency, if `base_version` is `Some`, the write is **rejected with a
+    /// [`UpdateOutcome::Conflict`]** (and nothing is written) when it no longer matches the block's
+    /// current version — i.e. the block changed since the caller read it, so a blind overwrite
+    /// would clobber that change. `None` skips the check (the historical behaviour, for
+    /// non-interactive callers). `force` is independent: it bypasses the destructive-shrink guard,
+    /// not the concurrency check.
     pub fn update_block(
         &mut self,
         ctx: &RequestContext,
@@ -576,9 +626,32 @@ impl<I: Index> Service<I> {
         title: Option<&str>,
         body: &str,
         force: bool,
-    ) -> Result<(), IndexError> {
+        base_version: Option<&str>,
+    ) -> Result<UpdateOutcome, IndexError> {
         ctx.authorize(Capability::Write)?;
         self.ensure_writable(id)?;
+        // Optimistic-concurrency check FIRST: if the caller pinned a base version and it no longer
+        // matches, refuse and hand back the current state so the client can reconcile. Compared
+        // against the daemon's in-memory version (it is the single writer, so that is authoritative
+        // for every write applied through it).
+        if let Some(base) = base_version {
+            let current = self.engine.block_version(id).map(format_version);
+            if current.as_deref() != Some(base) {
+                if let Some(rec) = self.engine.index().block(id)? {
+                    return Ok(UpdateOutcome::Conflict {
+                        current_title: self.engine.vault().block(id).and_then(|b| b.title.clone()),
+                        current_body: rec.content,
+                        version: current.unwrap_or_default(),
+                    });
+                }
+                // The block vanished entirely since the read — treat as a conflict with no content.
+                return Ok(UpdateOutcome::Conflict {
+                    current_title: None,
+                    current_body: String::new(),
+                    version: String::new(),
+                });
+            }
+        }
         if !force {
             if let Some(old) = self.engine.vault().block(id) {
                 if let Some(reason) = destructive_update_reason(&old.body, body) {
@@ -590,7 +663,13 @@ impl<I: Index> Service<I> {
                 }
             }
         }
-        self.engine.update_block(id, title, body)
+        self.engine.update_block(id, title, body)?;
+        let version = self
+            .engine
+            .block_version(id)
+            .map(format_version)
+            .unwrap_or_default();
+        Ok(UpdateOutcome::Applied { version })
     }
 
     /// Apply an exact, count-checked string replacement to a block's **body** — the partial-edit
@@ -981,15 +1060,17 @@ mod tests {
         let id = svc.create_block(&ctx, Some("Doc"), &big).unwrap();
 
         // An accidental truncation is refused and changes nothing.
-        let err = svc.update_block(&ctx, &id, Some("Doc"), "oops", false);
+        let err = svc.update_block(&ctx, &id, Some("Doc"), "oops", false, None);
         assert!(err.is_err(), "truncating update should be refused");
         assert_eq!(svc.get_block_source(&ctx, &id).unwrap().unwrap(), big);
 
         // Emptying is refused too.
-        assert!(svc.update_block(&ctx, &id, Some("Doc"), "", false).is_err());
+        assert!(svc
+            .update_block(&ctx, &id, Some("Doc"), "", false, None)
+            .is_err());
 
         // The same edit goes through when explicitly forced (a deliberate rewrite).
-        svc.update_block(&ctx, &id, Some("Doc"), "oops", true)
+        svc.update_block(&ctx, &id, Some("Doc"), "oops", true, None)
             .unwrap();
         assert_eq!(svc.get_block_source(&ctx, &id).unwrap().unwrap(), "oops");
     }
@@ -1007,11 +1088,75 @@ mod tests {
             svc.get_block(&ctx, &id).unwrap().unwrap().content,
             "original body"
         );
-        svc.update_block(&ctx, &id, Some("Note"), "updated body", false)
+        svc.update_block(&ctx, &id, Some("Note"), "updated body", false, None)
             .unwrap();
         assert_eq!(
             svc.get_block_source(&ctx, &id).unwrap().unwrap(),
             "updated body"
+        );
+    }
+
+    #[test]
+    fn update_block_optimistic_concurrency() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let id = svc
+            .create_block(
+                &ctx,
+                Some("Doc"),
+                "the original body, long enough to matter",
+            )
+            .unwrap();
+
+        // A read captures the current version.
+        let v0 = svc
+            .block_version(&ctx, &id)
+            .unwrap()
+            .expect("has a version");
+
+        // Updating with the matching base version applies and reports the NEW version.
+        let outcome = svc
+            .update_block(&ctx, &id, None, "first revision body", false, Some(&v0))
+            .unwrap();
+        let v1 = match outcome {
+            UpdateOutcome::Applied { version } => version,
+            UpdateOutcome::Conflict { .. } => panic!("matching base must apply, not conflict"),
+        };
+        assert_ne!(v0, v1, "the version must move after a write");
+        assert_eq!(
+            svc.get_block_source(&ctx, &id).unwrap().unwrap(),
+            "first revision body"
+        );
+
+        // A second write that still pins the STALE v0 is rejected as a conflict — nothing written,
+        // and the current state is handed back for the client to reconcile.
+        match svc
+            .update_block(&ctx, &id, None, "clobbering body", true, Some(&v0))
+            .unwrap()
+        {
+            UpdateOutcome::Conflict {
+                current_body,
+                version,
+                ..
+            } => {
+                assert_eq!(current_body, "first revision body");
+                assert_eq!(version, v1, "conflict reports the true current version");
+            }
+            UpdateOutcome::Applied { .. } => panic!("stale base must conflict, not apply"),
+        }
+        // The rejected write left the body untouched.
+        assert_eq!(
+            svc.get_block_source(&ctx, &id).unwrap().unwrap(),
+            "first revision body"
+        );
+
+        // `None` base version skips the check entirely (non-interactive callers).
+        svc.update_block(&ctx, &id, None, "unchecked overwrite", true, None)
+            .unwrap();
+        assert_eq!(
+            svc.get_block_source(&ctx, &id).unwrap().unwrap(),
+            "unchecked overwrite"
         );
     }
 
@@ -1369,7 +1514,7 @@ mod tests {
 
         // Every write path is denied for an agent.
         assert!(svc
-            .update_block(&agent, &id, None, "tampered", false)
+            .update_block(&agent, &id, None, "tampered", false, None)
             .is_err());
         assert!(svc.set_tags(&agent, &id, &["x".to_string()]).is_err());
         assert!(svc
@@ -1414,7 +1559,7 @@ mod tests {
         );
 
         // A plain body edit must not drop the properties.
-        svc.update_block(&ctx, &id, Some("Atom"), "body v2", false)
+        svc.update_block(&ctx, &id, Some("Atom"), "body v2", false, None)
             .unwrap();
         let rec = svc.get_block(&ctx, &id).unwrap().unwrap();
         assert_eq!(rec.content, "body v2");
@@ -1611,7 +1756,9 @@ mod tests {
         let id = svc.create_block(&agent, Some("Pinned"), "v1").unwrap();
         svc.set_lock(&app(), &id, true).unwrap();
         // The app holds Write + ManageLocks, but a direct write to a locked block still fails.
-        assert!(svc.update_block(&app(), &id, None, "v2", false).is_err());
+        assert!(svc
+            .update_block(&app(), &id, None, "v2", false, None)
+            .is_err());
         assert_eq!(svc.get_block_source(&agent, &id).unwrap().unwrap(), "v1");
     }
 
@@ -1622,11 +1769,14 @@ mod tests {
         let agent = RequestContext::local();
         let id = svc.create_block(&agent, Some("Pinned"), "v1").unwrap();
         svc.set_lock(&app(), &id, true).unwrap();
-        assert!(svc.update_block(&agent, &id, None, "nope", false).is_err());
+        assert!(svc
+            .update_block(&agent, &id, None, "nope", false, None)
+            .is_err());
 
         // The honest flow: app unlocks → edit → re-lock. After unlock an agent can write too.
         svc.set_lock(&app(), &id, false).unwrap();
-        svc.update_block(&agent, &id, None, "v2", false).unwrap();
+        svc.update_block(&agent, &id, None, "v2", false, None)
+            .unwrap();
         assert_eq!(svc.get_block_source(&agent, &id).unwrap().unwrap(), "v2");
         svc.set_lock(&app(), &id, true).unwrap();
         let rec = svc.get_block(&agent, &id).unwrap().unwrap();

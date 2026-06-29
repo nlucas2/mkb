@@ -210,7 +210,29 @@
       .modal-back { position:fixed; inset:0; z-index:60; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; }
       .modal { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:1.2rem 1.3rem; max-width:26rem; box-shadow:0 12px 48px rgba(0,0,0,.5); }
       .modal p { margin:0 0 1rem; }
-      .modal .row { display:flex; gap:.6rem; justify-content:flex-end; }
+      .modal .row { display:flex; gap:.6rem; justify-content:flex-end; flex-wrap:wrap; }
+      /* Conflict "Compare" peek: read-only side-by-side of the unsaved draft vs. the current block. */
+      .peek-back { z-index:70; }
+      .peek { background:var(--panel); border:1px solid var(--border); border-radius:10px; width:min(94vw,76rem); height:min(88vh,52rem); display:flex; flex-direction:column; box-shadow:0 12px 48px rgba(0,0,0,.5); }
+      .pk-hd { display:flex; align-items:center; gap:.6rem; padding:.6rem .9rem; border-bottom:1px solid var(--border); }
+      .pk-hd .pk-title { font-weight:600; }
+      .pk-hd .muted { margin-right:auto; font-size:.85em; }
+      .pk-legend { font-size:.78em; }
+      .pk-legend .sw { display:inline-block; width:.7rem; height:.7rem; border-radius:2px; vertical-align:middle; margin:0 .25rem 0 .6rem; }
+      .pk-x { padding:.1rem .5rem; line-height:1; }
+      .pk-grid { flex:1 1 auto; overflow:auto; display:grid; grid-template-columns:1fr 1fr; align-content:start; font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .pk-colhd { position:sticky; top:0; z-index:1; background:var(--panel); padding:.4rem .7rem; font-size:.72em; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); border-bottom:1px solid var(--border); }
+      .pk-colhd:first-child { border-right:1px solid var(--border); }
+      .pk-cell { padding:.05rem .7rem; white-space:pre-wrap; overflow-wrap:anywhere; border-bottom:1px solid color-mix(in srgb, var(--border) 45%, transparent); }
+      .pk-cell:nth-child(odd) { border-right:1px solid var(--border); }
+      .pk-empty { background:color-mix(in srgb, var(--bg) 55%, transparent); }
+      .pk-mine { background:color-mix(in srgb, var(--accent) 16%, transparent); }
+      .pk-theirs { background:color-mix(in srgb, var(--ok) 16%, transparent); }
+      .pk-ft { display:flex; gap:.6rem; align-items:center; padding:.7rem .9rem; border-top:1px solid var(--border); }
+      .pk-ft .muted { margin-right:auto; font-size:.85em; }
+      .pk-count { font-size:.8em; }
+      .pk-mergewrap { flex:1 1 auto; overflow:auto; padding:.7rem .9rem; display:flex; }
+      .pk-merge { flex:1 1 auto; min-height:100%; resize:none; }
     </style>
   </head>
   <body>
@@ -274,6 +296,173 @@
           document.body.appendChild(back);
           back.querySelector('[data-a="ok"]').focus();
         });
+      }
+
+      // Conflict resolver: a guarded save was rejected because the block changed under the editor.
+      // A two-pane overlay. Pane 1 (compare) is the decision surface — left = your unsaved draft,
+      // right = the current block in the vault. Pane 2 (merge preview) is an editable 3-way auto-
+      // merge you confirm before it ever touches the vault; you can always back out to the editor
+      // with your original draft intact. Resolves an object:
+      //   {action:"cancel"}             keep editing — original draft untouched
+      //   {action:"mine"}               keep yours (overwrite the vault)
+      //   {action:"current"}            keep the vault's version (discard yours)
+      //   {action:"merge", text}        save this confirmed, conflict-free merged text
+      function resolveConflict(opts) {
+        const base = (opts && opts.base) || "";
+        const mine = (opts && opts.mine) || "";
+        const theirs = (opts && opts.theirs) || "";
+        return new Promise((resolve) => {
+          const ov = document.createElement("div");
+          ov.className = "modal-back peek-back";
+          const panel = document.createElement("div");
+          panel.className = "peek";
+          ov.appendChild(panel);
+          const close = (v) => { ov.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
+
+          // ----- Pane 1: side-by-side compare + resolution controls -----
+          function renderCompare() {
+            const rows = diffLines(String(mine).split("\n"), String(theirs).split("\n"));
+            const cells = rows.map((r) => {
+              const l = r.l == null ? `<div class="pk-cell pk-empty"></div>`
+                : `<div class="pk-cell ${r.t === "diff" ? "pk-mine" : ""}">${esc(r.l) || "&nbsp;"}</div>`;
+              const rt = r.r == null ? `<div class="pk-cell pk-empty"></div>`
+                : `<div class="pk-cell ${r.t === "diff" ? "pk-theirs" : ""}">${esc(r.r) || "&nbsp;"}</div>`;
+              return l + rt;
+            }).join("");
+            panel.innerHTML = `
+              <div class="pk-hd"><span class="pk-title">This block changed outside the editor</span>
+                <span class="pk-legend muted"><span class="sw" style="background:color-mix(in srgb,var(--accent) 45%,transparent)"></span>only in yours<span class="sw" style="background:color-mix(in srgb,var(--ok) 45%,transparent)"></span>only in current</span>
+                <button class="pk-x" data-a="cancel" title="Keep editing (Esc)">✕</button></div>
+              <div class="pk-grid">
+                <div class="pk-colhd">Yours (unsaved)</div><div class="pk-colhd">Current (in the vault)</div>
+                ${cells}</div>
+              <div class="pk-ft"><span class="muted">Choose how to resolve — or merge both and confirm before saving.</span>
+                <button data-a="cancel">Keep editing</button>
+                <button data-a="mine">Keep mine ◀</button>
+                <button data-a="current">▶ Keep current</button>
+                <button class="primary" data-a="merge">Merge both</button></div>`;
+            panel.querySelector('[data-a="merge"]').focus();
+          }
+
+          // ----- Pane 2: editable, confirm-before-save merge preview -----
+          function renderMerge() {
+            const m = threeWayMerge(base, mine, theirs);
+            panel.innerHTML = `
+              <div class="pk-hd"><span class="pk-title">Merge preview</span>
+                <span class="pk-count muted" id="pkc"></span>
+                <button class="pk-x" data-a="cancel" title="Keep editing (Esc)">✕</button></div>
+              <div class="pk-mergewrap"><textarea class="editarea pk-merge" id="pkm" spellcheck="false"></textarea></div>
+              <div class="pk-ft"><span class="muted" id="pkhint"></span>
+                <button data-a="back">◀ Back to compare</button>
+                <button data-a="cancel">Keep editing</button>
+                <button class="primary" data-a="save" id="pksave">Save merged</button></div>`;
+            const ta = panel.querySelector("#pkm");
+            ta.value = m.text;
+            const saveBtn = panel.querySelector("#pksave");
+            const countEl = panel.querySelector("#pkc");
+            const hintEl = panel.querySelector("#pkhint");
+            const refresh = () => {
+              const n = (ta.value.match(/^<<<<<<< /gm) || []).length;
+              countEl.textContent = n ? `${n} conflict(s) to resolve` : "no conflicts";
+              countEl.style.color = n ? "var(--bad)" : "var(--ok)";
+              saveBtn.disabled = n > 0;
+              hintEl.textContent = n > 0
+                ? "Resolve the <<<<<<< / ======= / >>>>>>> markers to enable Save — or back out to the editor."
+                : "Auto-merged. Review the result, then save it to the vault.";
+            };
+            ta.addEventListener("input", refresh);
+            refresh();
+            ta.focus();
+          }
+
+          const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close({ action: "cancel" }); } };
+          panel.addEventListener("click", (e) => {
+            const a = e.target.dataset && e.target.dataset.a;
+            if (!a) return;
+            if (a === "merge") renderMerge();
+            else if (a === "back") renderCompare();
+            else if (a === "save") {
+              const ta = panel.querySelector("#pkm");
+              if ((ta.value.match(/^<<<<<<< /gm) || []).length === 0) close({ action: "merge", text: ta.value });
+            } else close({ action: a }); // cancel | mine | current
+          });
+          ov.addEventListener("click", (e) => { if (e.target === ov) close({ action: "cancel" }); });
+          document.addEventListener("keydown", onKey);
+          document.body.appendChild(ov);
+          renderCompare();
+        });
+      }
+
+      // Line-level LCS diff for the side-by-side view. Returns aligned rows {l, r, t} where t is
+      // "same" or "diff" (l-only and r-only lines are surfaced via null on the opposite side, and
+      // tinted by side rather than add/delete). O(n*m); blocks are small.
+      function diffLines(a, b) {
+        const n = a.length, m = b.length;
+        const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+        for (let i = n - 1; i >= 0; i--)
+          for (let j = m - 1; j >= 0; j--)
+            dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        const rows = [];
+        let i = 0, j = 0;
+        while (i < n && j < m) {
+          if (a[i] === b[j]) { rows.push({ l: a[i], r: b[j], t: "same" }); i++; j++; }
+          else if (dp[i + 1][j] >= dp[i][j + 1]) { rows.push({ l: a[i], r: null, t: "diff" }); i++; }
+          else { rows.push({ l: null, r: b[j], t: "diff" }); j++; }
+        }
+        while (i < n) { rows.push({ l: a[i], r: null, t: "diff" }); i++; }
+        while (j < m) { rows.push({ l: null, r: b[j], t: "diff" }); j++; }
+        return rows;
+      }
+
+      // LCS line alignment between x and y: Map of x-index → y-index for matched lines.
+      function lineMatchMap(x, y) {
+        const n = x.length, m = y.length;
+        const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+        for (let i = n - 1; i >= 0; i--)
+          for (let j = m - 1; j >= 0; j--)
+            dp[i][j] = x[i] === y[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        const map = new Map();
+        let i = 0, j = 0;
+        while (i < n && j < m) {
+          if (x[i] === y[j]) { map.set(i, j); i++; j++; }
+          else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+          else j++;
+        }
+        return map;
+      }
+
+      const arrEq = (a, b) => a.length === b.length && a.every((v, k) => v === b[k]);
+
+      // Diff3-style three-way merge. Anchors are base lines kept unchanged by BOTH sides; between
+      // anchors, a one-sided change is taken automatically and a both-sides change becomes a
+      // <<<<<<< / ======= / >>>>>>> conflict the user resolves in the editor. Returns {text, conflicts}.
+      function threeWayMerge(baseText, mineText, theirsText) {
+        const base = String(baseText).split("\n");
+        const mine = String(mineText).split("\n");
+        const theirs = String(theirsText).split("\n");
+        const amap = lineMatchMap(base, mine), bmap = lineMatchMap(base, theirs);
+        const anchors = [{ o: -1, a: -1, b: -1 }];
+        for (let o = 0; o < base.length; o++)
+          if (amap.has(o) && bmap.has(o)) anchors.push({ o, a: amap.get(o), b: bmap.get(o) });
+        anchors.push({ o: base.length, a: mine.length, b: theirs.length });
+        const out = [];
+        let conflicts = 0;
+        for (let k = 0; k < anchors.length - 1; k++) {
+          const p = anchors[k], q = anchors[k + 1];
+          if (p.o >= 0) out.push(base[p.o]); // the shared anchor line
+          const baseGap = base.slice(p.o + 1, q.o);
+          const mineGap = mine.slice(p.a + 1, q.a);
+          const theirsGap = theirs.slice(p.b + 1, q.b);
+          if (mineGap.length === 0 && theirsGap.length === 0) continue;
+          if (arrEq(mineGap, theirsGap)) out.push(...mineGap);          // same edit on both sides
+          else if (arrEq(mineGap, baseGap)) out.push(...theirsGap);     // only the vault changed
+          else if (arrEq(theirsGap, baseGap)) out.push(...mineGap);     // only you changed
+          else {
+            conflicts++;
+            out.push("<<<<<<< yours (unsaved)", ...mineGap, "=======", ...theirsGap, ">>>>>>> current (in the vault)");
+          }
+        }
+        return { text: out.join("\n"), conflicts };
       }
 
       const searchEl = document.getElementById("search");
@@ -383,7 +572,7 @@
         return indexCache;
       }
 
-      async function loadBlocks(select) {
+      async function loadBlocks(select, opts = {}) {
         try {
           roots = navScope === "all" ? await invoke("block_index") : await invoke("list_blocks");
         }
@@ -394,6 +583,9 @@
           refreshStatus(); return;
         }
         renderNav();
+        // navOnly: refresh just the sidebar list, never touch the main pane — used by live-refresh
+        // while the user is mid-edit, so an external change can't rebuild (and discard) their draft.
+        if (opts.navOnly) { refreshStatus(); return; }
         if (select && roots.some((b) => b.id === select)) openBlock(select);
         else if (active && roots.some((b) => b.id === active)) openBlock(active);
         else if (roots.length) openBlock(roots[0].id);
@@ -574,7 +766,9 @@
         } catch { /* fall through: if the check fails, let the edit attempt surface the error */ }
         regionEl.dataset.editing = "1";
         let src = "";
+        let baseVersion = null;
         try { src = await invoke("block_source", { id: blockId }); } catch (e) { toast(String(e), "error"); return; }
+        try { baseVersion = await invoke("block_version", { id: blockId }); } catch { /* unguarded if unavailable */ }
         const wrap = document.createElement("div");
         const ta = document.createElement("textarea");
         ta.className = "editarea"; ta.value = src; ta.spellcheck = false;
@@ -589,11 +783,36 @@
         attachPicker(ta);
         let finished = false;
         const save = async () => {
-          if (finished) return; finished = true;
+          if (finished) return;
           if (ta.value !== src) {
-            try { await invoke("save_block", { id: blockId, title: null, body: ta.value }); invalidate(); }
-            catch (e) { toast(String(e), "error"); }
+            let res;
+            try { res = await invoke("save_block", { id: blockId, title: null, body: ta.value, baseVersion }); }
+            catch (e) { toast(String(e), "error"); return; }
+            if (res.status === "conflict") {
+              const r = await resolveConflict({ base: src, mine: ta.value, theirs: res.current_body });
+              if (r.action === "cancel") return; // keep the inline editor open
+              if (r.action === "current") { ta.value = res.current_body; src = res.current_body; baseVersion = res.version; autosize(ta); return; }
+              if (r.action === "merge") {
+                // Confirmed conflict-free in the preview; persist against the vault's current version.
+                try {
+                  const r2 = await invoke("save_block", { id: blockId, title: null, body: r.text, baseVersion: res.version });
+                  if (r2.status !== "applied") {
+                    ta.value = r.text; src = r2.current_body; baseVersion = r2.version; autosize(ta);
+                    toast("The block changed again while merging — review and Save once more.");
+                    return;
+                  }
+                } catch (e) { toast(String(e), "error"); return; }
+                invalidate(); finished = true; done(); return;
+              }
+              // r.action === "mine": overwrite the vault with the local draft.
+              try {
+                const r2 = await invoke("save_block", { id: blockId, title: null, body: ta.value, baseVersion: null });
+                if (r2.status !== "applied") { toast("Save failed", "error"); return; }
+              } catch (e) { toast(String(e), "error"); return; }
+            }
+            invalidate();
           }
+          finished = true;
           done();
         };
         const cancel = () => { if (finished) return; finished = true; done(); };
@@ -614,10 +833,16 @@
             <span>This block is <strong>locked</strong> (human-only). Unlock it (🔓 in the header) to edit — AI clients can read it but not modify it.</span></div>`;
           return;
         }
-        const [src, title] = await Promise.all([
+        const [src, title, ver] = await Promise.all([
           invoke("block_source", { id }),
           invoke("block_title_of", { id }),
+          invoke("block_version", { id }),
         ]);
+        // Optimistic-concurrency state: the version the editor opened against, and the body it
+        // loaded. `baseVersion` is sent on save so a concurrent change is caught instead of
+        // clobbered; `baseBody` is retained for a future 3-way merge view.
+        let baseVersion = ver;
+        let baseBody = src;
         body.innerHTML = `<input class="titleedit" id="t" placeholder="Title (optional)" />
           <textarea class="editarea" id="b" spellcheck="false" style="min-height:50vh"></textarea>
           <div class="editbar">
@@ -637,18 +862,60 @@
         await getIndex();
         renderLegend(legend, ta.value);
         ta.addEventListener("input", () => renderLegend(legend, ta.value));
-        body.querySelector("#save").onclick = async () => {
+        // Save through the optimistic-concurrency guard. Returns true if the block is now persisted
+        // with the editor's content (so callers may refresh), false if the save didn't land (a
+        // conflict the user chose to reconcile, or an error). Shared by Save and Carve.
+        async function saveEditor() {
+          const newTitle = body.querySelector("#t").value.trim() || null;
+          const newBody = ta.value;
+          let res;
           try {
-            await invoke("save_block", { id, title: body.querySelector("#t").value.trim() || null, body: ta.value });
-            invalidate(); await loadBlocks(id); openBlock(id);
-          } catch (e) { body.querySelector("#msg").textContent = String(e); }
+            res = await invoke("save_block", { id, title: newTitle, body: newBody, baseVersion });
+          } catch (e) { body.querySelector("#msg").textContent = String(e); return false; }
+          if (res.status === "applied") { baseVersion = res.version; baseBody = newBody; return true; }
+          // Conflict: the block changed under us. Resolve via the side-by-side.
+          const r = await resolveConflict({ base: baseBody, mine: newBody, theirs: res.current_body });
+          if (r.action === "mine") {
+            try {
+              const r2 = await invoke("save_block", { id, title: newTitle, body: newBody, baseVersion: null });
+              if (r2.status === "applied") { baseVersion = r2.version; baseBody = newBody; return true; }
+            } catch (e) { body.querySelector("#msg").textContent = String(e); }
+            return false;
+          }
+          if (r.action === "current") {
+            ta.value = res.current_body;
+            body.querySelector("#t").value = res.current_title || "";
+            baseVersion = res.version; baseBody = res.current_body;
+            renderLegend(legend, ta.value);
+            body.querySelector("#msg").textContent = "Reloaded the latest version — your unsaved changes were discarded.";
+          } else if (r.action === "merge") {
+            // The merge was confirmed conflict-free in the preview; persist it against the vault's
+            // current version (so the guard re-fires only if the block changed yet again).
+            try {
+              const r2 = await invoke("save_block", { id, title: newTitle, body: r.text, baseVersion: res.version });
+              if (r2.status === "applied") {
+                ta.value = r.text; baseVersion = r2.version; baseBody = r.text;
+                renderLegend(legend, ta.value);
+                return true;
+              }
+              // Raced again: keep the merged text, adopt the newest token, prompt another Save.
+              ta.value = r.text; baseVersion = r2.version; baseBody = r2.current_body;
+              renderLegend(legend, ta.value);
+              body.querySelector("#msg").textContent = "The block changed again while merging — review and Save once more.";
+            } catch (e) { body.querySelector("#msg").textContent = String(e); }
+            return false;
+          }
+          return false; // cancel / current: nothing newly saved
+        }
+        body.querySelector("#save").onclick = async () => {
+          if (await saveEditor()) { invalidate(); await loadBlocks(id); openBlock(id); }
         };
         body.querySelector("#carve").onclick = async () => {
           const start = ta.selectionStart, end = ta.selectionEnd;
           if (start === end) { body.querySelector("#msg").textContent = "Select some text to carve."; return; }
           try {
             // Persist current body first so offsets match the stored block, then carve.
-            await invoke("save_block", { id, title: body.querySelector("#t").value.trim() || null, body: ta.value });
+            if (!(await saveEditor())) return;
             await invoke("carve_selection", { parentId: id, start, end });
             invalidate(); await loadBlocks(id); openBlock(id);
           } catch (e) { body.querySelector("#msg").textContent = String(e); }
@@ -1261,8 +1528,13 @@
       window.__TAURI__.event.listen("vault-changed", async () => {
         invalidate();
         previewCache.clear();
-        await loadBlocks();
-        if (active) await openBlock(active, true);
+        // Always refresh the sidebar (add/delete/rename elsewhere). But if the user is mid-edit,
+        // do NOT rebuild the open block — that would discard their unsaved draft. The save-time
+        // conflict guard still protects the eventual write; a proactive in-editor banner is a
+        // follow-up. Preserve the sidebar's selection on the block being edited.
+        const editing = mode === "edit" && active;
+        await loadBlocks(editing ? active : undefined, { navOnly: editing });
+        if (active && !editing) await openBlock(active, true);
       });
 
       loadBlocks();

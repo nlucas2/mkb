@@ -279,7 +279,7 @@ transparently respawns it — at most a brief cold start.
   with "unknown variant". Add a `mkb daemon restart`/`stop` command (shut down + let the next
   client respawn) to fix the dev loop without the GUI.
 
-- **Concurrent-edit safety — the app's full-overwrite write is a lost-update vector** *(live-refresh shipped; lost-update prevention planned)*:
+- **Concurrent-edit safety — the app's full-overwrite write is a lost-update vector** *(shipped; Phase 3 daemon-push planned)*:
   the desktop app reads a block into its editor and saves with a **whole-body overwrite**
   (`save_block`), with no check that the block is unchanged since it was read. If an AI client (or
   the CLI) edits that block via MCP between the app opening it and the human saving, the app's save
@@ -296,10 +296,14 @@ transparently respawns it — at most a brief cold start.
     **generation** on every change (a daemon-applied write, or a watcher-reconciled external edit),
     and the desktop app reads it on its existing lease heartbeat; when it moves, the app invalidates
     its caches and re-opens the current block, so an edit from the CLI, an MCP client, or another
-    editor shows within a heartbeat. Still open: **optimistic concurrency** to *prevent* a stale
-    full-overwrite save from clobbering (the live refresh narrows the race window but doesn't close
-    it), and **Phase 2** — true daemon-*pushed* change events instead of the heartbeat poll (lower
-    latency, no polling).
+    editor shows within a heartbeat.
+  - *Update — lost-update prevention shipped (Phase 2):* each block now carries an opaque content
+    **version** token; the editor captures it on open and `update_block` rejects a whole-body save
+    whose base no longer matches, returning the current state so the app can reconcile. The desktop
+    app surfaces this as a side-by-side resolver (keep mine / keep current / a confirm-before-save
+    3-way **merge** preview), and live refresh is edit-aware (the sidebar updates mid-edit without
+    discarding the draft). Still open: true daemon-*pushed* change events instead of the heartbeat
+    poll (lower latency, no polling).
 
 - **Validate the Windows-native `justfile`** *(planned)*: `just` runs recipe lines with `sh`, which
   Windows lacks, and several recipes used bash-only constructs (`uname`/`case`/`osascript`) and Unix
