@@ -288,6 +288,19 @@ pub enum Request {
         /// The lease id to drop.
         lease: String,
     },
+    /// Long-poll for a vault-content change: block until the daemon's generation differs from
+    /// `since`, or `timeout_ms` elapses, then reply [`Response::Changed`] with the current
+    /// generation. A long-lived client passes the last generation it saw and is parked here until
+    /// something changes — sub-second push without a tight poll. The daemon clamps `timeout_ms`
+    /// below its connection read timeout so a remote caller never trips the slowloris guard; the
+    /// optimization is meant for the trusted local socket. Old daemons reject it (unknown variant),
+    /// so clients fall back to the heartbeat-generation poll.
+    WaitForChange {
+        /// The last generation the client saw; it returns at once if the current value differs.
+        since: u64,
+        /// Maximum time to park, in milliseconds (the daemon may clamp it).
+        timeout_ms: u64,
+    },
     /// Lock or unlock a block (toggle its human-only `locked` flag). Requires the `ManageLocks`
     /// capability, which only the desktop app's connection holds — so this is effectively an
     /// app-only op (see [`Request::AnnounceApp`]).
@@ -361,6 +374,7 @@ impl Request {
             | Request::Authenticate { .. }
             | Request::Heartbeat { .. }
             | Request::ReleaseLease { .. }
+            | Request::WaitForChange { .. }
             | Request::AnnounceApp
             | Request::Shutdown => false,
         }
@@ -395,6 +409,14 @@ pub enum Response {
     /// and refreshes when it moves. (Old daemons reply [`Response::Ok`]; clients treat that as
     /// generation `0` — no live-refresh, graceful degradation.)
     Heartbeat {
+        /// The daemon's current vault-content generation.
+        generation: u64,
+    },
+    /// Reply to [`Request::WaitForChange`]: the vault-content generation now differs from the
+    /// client's `since` (or the long-poll timed out). The client adopts this value as its new
+    /// baseline and immediately re-arms. A reset-to-0 after a daemon restart reads as a change
+    /// (the client compares with `!=`), so a restart triggers a refresh, not a stall.
+    Changed {
         /// The daemon's current vault-content generation.
         generation: u64,
     },
@@ -645,6 +667,9 @@ fn handle<I: Index>(
         },
         Request::Heartbeat { .. } | Request::ReleaseLease { .. } => Response::Error {
             message: "lease ops are handled by the daemon lifecycle layer".to_string(),
+        },
+        Request::WaitForChange { .. } => Response::Error {
+            message: "wait_for_change is handled by the daemon lifecycle layer".to_string(),
         },
     })
 }
@@ -1284,6 +1309,19 @@ impl Client {
         }
     }
 
+    /// Convenience: long-poll for a vault-content change. Parks until the generation differs from
+    /// `since` or `timeout_ms` elapses, returning the current generation. Returns `Ok(None)` if the
+    /// daemon doesn't support the op (an old daemon answers with an error) so the caller can fall
+    /// back to the heartbeat poll; a transport error (e.g. the daemon restarting mid-wait) is an
+    /// `Err` so the caller reconnects and re-baselines.
+    pub fn wait_for_change(&self, since: u64, timeout_ms: u64) -> io::Result<Option<u64>> {
+        match self.call(&Request::WaitForChange { since, timeout_ms })? {
+            Response::Changed { generation } => Ok(Some(generation)),
+            Response::Error { .. } => Ok(None),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// Convenience: release an interactive lease (the client is closing cleanly).
     pub fn release_lease(&self, lease: &str) -> io::Result<()> {
         match self.call(&Request::ReleaseLease {
@@ -1377,6 +1415,10 @@ mod tests {
             Request::Heartbeat {
                 lease: "x".into(),
                 ttl_ms: 1000,
+            },
+            Request::WaitForChange {
+                since: 0,
+                timeout_ms: 1000,
             },
             Request::Rebuild,
         ];

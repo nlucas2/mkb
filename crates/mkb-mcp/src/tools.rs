@@ -487,8 +487,9 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
         Response::Hits(h) => to_json(h),
         Response::Block(b) => to_json(b),
         Response::Page(p) => to_json(p),
-        // The MCP server never heartbeats, but the match must stay exhaustive.
+        // The MCP server never heartbeats or long-polls, but the match must stay exhaustive.
         Response::Heartbeat { generation } => Ok(generation.to_string()),
+        Response::Changed { generation } => Ok(generation.to_string()),
         Response::Rendered(b) => to_json(b),
         Response::Links(l) => to_json(l),
         Response::Stats(s) => to_json(s),

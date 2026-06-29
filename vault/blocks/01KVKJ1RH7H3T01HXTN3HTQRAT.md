@@ -1,7 +1,7 @@
 ---
 title: "README: Roadmap"
 tags: [doc, readme]
-updated: 2026-06-29T05:25:24Z
+updated: 2026-06-29T07:00:32Z
 ---
 
 ## Roadmap
@@ -84,7 +84,7 @@ updated: 2026-06-29T05:25:24Z
   with "unknown variant". Add a `mkb daemon restart`/`stop` command (shut down + let the next
   client respawn) to fix the dev loop without the GUI.
 
-- **Concurrent-edit safety — the app's full-overwrite write is a lost-update vector** *(shipped; Phase 3 daemon-push planned)*:
+- **Concurrent-edit safety — the app's full-overwrite write is a lost-update vector** *(shipped)*:
   the desktop app reads a block into its editor and saves with a **whole-body overwrite**
   (`save_block`), with no check that the block is unchanged since it was read. If an AI client (or
   the CLI) edits that block via MCP between the app opening it and the human saving, the app's save
@@ -107,8 +107,13 @@ updated: 2026-06-29T05:25:24Z
     whose base no longer matches, returning the current state so the app can reconcile. The desktop
     app surfaces this as a side-by-side resolver (keep mine / keep current / a confirm-before-save
     3-way **merge** preview), and live refresh is edit-aware (the sidebar updates mid-edit without
-    discarding the draft). Still open: true daemon-*pushed* change events instead of the heartbeat
-    poll (lower latency, no polling).
+    discarding the draft).
+  - *Update — daemon-pushed change events shipped (Phase 3):* the generation now carries a wait
+    primitive (a condvar), and clients long-poll `WaitForChange{since}` — parked server-side until
+    the vault changes, then woken sub-second, so a co-edit reflects in the app almost immediately
+    instead of within the old 10s heartbeat. A restart resets the counter; clients compare with
+    `!=` and reconnect on the dropped wait, so it reads as a change and refreshes. Old daemons
+    reject the op, so the app falls back to the heartbeat poll. Concurrent-edit safety is complete.
 
 - **Validate the Windows-native `justfile`** *(planned)*: `just` runs recipe lines with `sh`, which
   Windows lacks, and several recipes used bash-only constructs (`uname`/`case`/`osascript`) and Unix

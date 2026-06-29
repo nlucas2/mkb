@@ -19,7 +19,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -41,22 +41,61 @@ const TCP_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// watcher (which bumps it) and the connection handlers (which report it on each heartbeat), it is
 /// the cheap "something changed underneath you" signal a long-lived client polls to refresh.
 #[derive(Clone, Default)]
-pub struct Generation(Arc<AtomicU64>);
+pub struct Generation(Arc<GenInner>);
+
+#[derive(Default)]
+struct GenInner {
+    counter: AtomicU64,
+    /// Wait coordination: bumpers notify under this lock, waiters block on the condvar. The
+    /// counter itself stays atomic so the common read (`current()`) is lock-free.
+    lock: Mutex<()>,
+    cv: Condvar,
+}
 
 impl Generation {
     /// A fresh counter at generation `0`.
     pub fn new() -> Self {
-        Generation(Arc::new(AtomicU64::new(0)))
+        Generation(Arc::new(GenInner::default()))
     }
 
     /// The current generation.
     pub fn current(&self) -> u64 {
-        self.0.load(Ordering::Relaxed)
+        self.0.counter.load(Ordering::Relaxed)
     }
 
-    /// Advance the generation (returns the new value). Called after a content change.
+    /// Advance the generation (returns the new value). Called after a content change. Wakes any
+    /// long-poll waiters so they return near-instantly.
     pub fn bump(&self) -> u64 {
-        self.0.fetch_add(1, Ordering::Relaxed) + 1
+        let next = self.0.counter.fetch_add(1, Ordering::Relaxed) + 1;
+        // Notify under the lock so a waiter that just re-checked the counter can't miss this wake.
+        let _g = self.0.lock.lock().unwrap_or_else(|p| p.into_inner());
+        self.0.cv.notify_all();
+        next
+    }
+
+    /// Block until the generation differs from `since`, or `timeout` elapses; return the current
+    /// generation either way. Returns immediately when it already differs (covers a daemon restart
+    /// that reset the counter, where `since` may exceed the current value). This is the long-poll
+    /// primitive: a client passes the last generation it saw and is parked here until a change.
+    pub fn wait_until_changed(&self, since: u64, timeout: Duration) -> u64 {
+        let mut guard = self.0.lock.lock().unwrap_or_else(|p| p.into_inner());
+        let deadline = Instant::now() + timeout;
+        loop {
+            let cur = self.current();
+            if cur != since {
+                return cur;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return cur;
+            }
+            let (g, _) = self
+                .0
+                .cv
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(|p| p.into_inner());
+            guard = g;
+        }
     }
 }
 
@@ -393,6 +432,21 @@ fn handle(
                 leases.release(&lease);
                 Response::Ok
             }
+            // Long-poll: park this connection until the vault changes (or timeout), then report the
+            // current generation. Cheap (one blocked thread), and gives clients sub-second push
+            // without a tight poll. The timeout is clamped under the network read timeout so a
+            // remote caller can't trip the slowloris guard mid-wait; locally there's no read
+            // timeout, so the cap is just a sane ceiling.
+            Ok(Request::WaitForChange { since, timeout_ms }) => {
+                if let Some(a) = activity {
+                    a.touch();
+                }
+                let cap = (TCP_READ_TIMEOUT.as_millis() as u64).saturating_sub(5_000);
+                let wait = Duration::from_millis(timeout_ms.min(cap.max(1_000)));
+                Response::Changed {
+                    generation: generation.wait_until_changed(since, wait),
+                }
+            }
             // Scope upgrade for the desktop app: grant lock management, but only over the local
             // (trusted) transport. On a remote/authenticated connection it's refused — lock
             // management is a local human surface, not something a network token confers.
@@ -555,5 +609,49 @@ mod tests {
         let g2 = g.clone();
         assert_eq!(g2.bump(), 2);
         assert_eq!(g.current(), 2, "clones observe each other's bumps");
+    }
+
+    #[test]
+    fn wait_returns_immediately_when_already_changed() {
+        let g = Generation::new();
+        g.bump(); // now at 1
+                  // since=0 differs from current=1, so this must not block even with a long timeout.
+        let start = Instant::now();
+        assert_eq!(g.wait_until_changed(0, Duration::from_secs(60)), 1);
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "should return at once"
+        );
+    }
+
+    #[test]
+    fn wait_returns_immediately_when_since_exceeds_current() {
+        // A daemon restart resets the counter to 0; a client's stale `since` may exceed it. The
+        // wait must not block forever — `!=` returns the (lower) current generation at once.
+        let g = Generation::new();
+        let start = Instant::now();
+        assert_eq!(g.wait_until_changed(47, Duration::from_secs(60)), 0);
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn wait_blocks_then_wakes_on_bump() {
+        let g = Generation::new();
+        let g2 = g.clone();
+        let waiter = thread::spawn(move || g2.wait_until_changed(0, Duration::from_secs(10)));
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(g.bump(), 1);
+        assert_eq!(waiter.join().unwrap(), 1, "the bump woke the parked waiter");
+    }
+
+    #[test]
+    fn wait_times_out_returning_unchanged() {
+        let g = Generation::new();
+        let start = Instant::now();
+        assert_eq!(g.wait_until_changed(0, Duration::from_millis(120)), 0);
+        assert!(
+            start.elapsed() >= Duration::from_millis(100),
+            "should park ~timeout"
+        );
     }
 }

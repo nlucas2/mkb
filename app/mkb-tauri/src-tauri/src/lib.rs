@@ -33,6 +33,9 @@ const HEARTBEAT_SECS: u64 = 10;
 /// Lease time-to-live. Set to ~3× the heartbeat interval so a couple of missed beats are tolerated,
 /// while a crashed/closed app still lets the lease expire promptly (it never pins the daemon open).
 const LEASE_TTL_MS: u64 = 30_000;
+/// Long-poll timeout the change-watcher requests; the daemon clamps it under its read timeout. A
+/// minute keeps re-arms infrequent while still re-validating the connection regularly.
+const WAIT_CHANGE_MS: u64 = 60_000;
 
 /// Shared application state: the (reconnectable) connection to the daemon, plus what's needed
 /// to transparently re-establish it. A local daemon may self-reap when idle (or crash), so the
@@ -637,21 +640,56 @@ pub fn run() {
             let lease = format!("mkb-app-{}", std::process::id());
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                // The daemon returns its vault-content generation on each heartbeat. The first beat
-                // sets a baseline; after that, any change means a block was edited out-of-band
-                // (CLI/MCP/another editor) — tell the WebView to refresh. (An old daemon reports 0,
-                // which never moves, so this simply no-ops.)
-                let mut last_gen: Option<u64> = None;
+                // Renew the interactive lease so the daemon won't self-reap while the window is up.
+                // Change detection lives in the long-poll thread below; this one is lease-only.
                 loop {
                     if let Ok(client) = handle.state::<AppState>().connected() {
-                        if let Ok(generation) = client.heartbeat(&lease, LEASE_TTL_MS) {
+                        let _ = client.heartbeat(&lease, LEASE_TTL_MS);
+                    }
+                    std::thread::sleep(Duration::from_secs(HEARTBEAT_SECS));
+                }
+            });
+
+            // Live refresh via daemon push: long-poll wait_for_change parks until the vault's
+            // generation moves, then we tell the WebView to refresh — sub-second, no tight poll.
+            // The first reply sets a baseline; a daemon restart resets the counter, so the value
+            // differs (compared with !=) and triggers a refresh. A transport error means the daemon
+            // is restarting mid-wait: reconnect (which respawns it) and re-baseline. An old daemon
+            // that doesn't support the op returns None, so we fall back to a 10s generation poll.
+            let handle2 = app.handle().clone();
+            let lease2 = format!("mkb-app-poll-{}", std::process::id());
+            std::thread::spawn(move || {
+                let mut last_gen: Option<u64> = None;
+                loop {
+                    // Clone the client and release the lock before parking: the long-poll blocks up
+                    // to ~25s, and holding the AppState mutex that whole time would freeze every UI
+                    // command. The Client is just a cheap transport descriptor (socket/addr).
+                    let client = match handle2.state::<AppState>().connected() {
+                        Ok(guard) => guard.clone(),
+                        Err(_) => {
+                            std::thread::sleep(Duration::from_millis(500));
+                            continue;
+                        }
+                    };
+                    match client.wait_for_change(last_gen.unwrap_or(0), WAIT_CHANGE_MS) {
+                        Ok(Some(generation)) => {
                             if last_gen.is_some_and(|prev| prev != generation) {
-                                let _ = handle.emit("vault-changed", generation);
+                                let _ = handle2.emit("vault-changed", generation);
                             }
                             last_gen = Some(generation);
                         }
+                        Ok(None) => {
+                            // Old daemon: fall back to the heartbeat-generation poll.
+                            if let Ok(generation) = client.heartbeat(&lease2, LEASE_TTL_MS) {
+                                if last_gen.is_some_and(|prev| prev != generation) {
+                                    let _ = handle2.emit("vault-changed", generation);
+                                }
+                                last_gen = Some(generation);
+                            }
+                            std::thread::sleep(Duration::from_secs(HEARTBEAT_SECS));
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(500)), // daemon restarting: reconnect + re-baseline
                     }
-                    std::thread::sleep(Duration::from_secs(HEARTBEAT_SECS));
                 }
             });
             Ok(())
