@@ -4,6 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>mkb</title>
+    <script>
+      // Resolve the theme BEFORE first paint so there's no flash. Stored preference is
+      // "auto" (default; follow the OS), "light", or "dark". `auto` consults prefers-color-scheme.
+      // Sets data-theme on <html>; the CSS keys the light palette off [data-theme="light"].
+      (function () {
+        try {
+          var pref = localStorage.getItem("mkb.theme") || "auto";
+          var dark = pref === "dark" || (pref === "auto" &&
+            window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        } catch (e) { document.documentElement.setAttribute("data-theme", "dark"); }
+      })();
+    </script>
     <script src="vendor/force-graph.min.js"></script>
     <script src="vendor/highlight.min.js"></script>
     <!-- Extra language grammars not in the highlight.js "common" bundle. Each
@@ -23,11 +36,32 @@
     <link rel="stylesheet" href="vendor/highlight-theme.css" />
     <style>
       :root {
+        /* Dark (Catppuccin Mocha) — the default palette. */
         --bg:#1e1e2e; --fg:#cdd6f4; --muted:#9399b2; --accent:#89b4fa;
-        --panel:#181825; --border:#313244; --hover:#272840; --ok:#a6e3a1; --bad:#f38ba8; --mauve:#cba6f7;
+        --panel:#181825; --border:#313244; --hover:#272840; --ok:#a6e3a1; --bad:#f38ba8; --mauve:#cba6f7; --tag:#f9e2af; --field:#181825;
       }
+      :root[data-theme="light"] {
+        /* Light — a warm beige/sepia "paper" tone (Catppuccin Latte, warmed). Easy on the eyes,
+           not stark white. Same variable names so the whole UI reskins without touching markup.
+           --fg is a touch darker and --field (editor/input surface) a touch lighter than --bg for
+           a bit more contrast where you read and write. */
+        --bg:#f4ecd8; --fg:#3a3327; --muted:#857a5f; --accent:#3b6ea5;
+        --panel:#ece2c8; --border:#ddd0b0; --hover:#e6dabb; --ok:#4a8a3f; --bad:#c44a5a; --mauve:#8557c9; --tag:#df8e1d; --field:#fbf6ea;
+      }
+      /* Code highlighting in light mode: the vendored highlight.js theme is atom-one-dark, which
+         hardcodes a dark code background + light tokens. Override to an atom-one-light palette on a
+         warm code background so code blocks read on the beige page. */
+      :root[data-theme="light"] .hljs { background:#f7f1e3; color:#4c4636; }
+      :root[data-theme="light"] .hljs-comment, :root[data-theme="light"] .hljs-quote { color:#a08c66; }
+      :root[data-theme="light"] .hljs-doctag, :root[data-theme="light"] .hljs-formula, :root[data-theme="light"] .hljs-keyword { color:#8839ef; }
+      :root[data-theme="light"] .hljs-deletion, :root[data-theme="light"] .hljs-name, :root[data-theme="light"] .hljs-section, :root[data-theme="light"] .hljs-selector-tag, :root[data-theme="light"] .hljs-subst { color:#d20f39; }
+      :root[data-theme="light"] .hljs-literal { color:#179299; }
+      :root[data-theme="light"] .hljs-addition, :root[data-theme="light"] .hljs-attribute, :root[data-theme="light"] .hljs-meta .hljs-string, :root[data-theme="light"] .hljs-regexp, :root[data-theme="light"] .hljs-string { color:#40a02b; }
+      :root[data-theme="light"] .hljs-attr, :root[data-theme="light"] .hljs-number, :root[data-theme="light"] .hljs-selector-attr, :root[data-theme="light"] .hljs-selector-class, :root[data-theme="light"] .hljs-selector-pseudo, :root[data-theme="light"] .hljs-template-variable, :root[data-theme="light"] .hljs-type, :root[data-theme="light"] .hljs-variable { color:#df8e1d; }
+      :root[data-theme="light"] .hljs-bullet, :root[data-theme="light"] .hljs-link, :root[data-theme="light"] .hljs-meta, :root[data-theme="light"] .hljs-selector-id, :root[data-theme="light"] .hljs-symbol, :root[data-theme="light"] .hljs-title { color:#1e66f5; }
+      :root[data-theme="light"] .hljs-built_in, :root[data-theme="light"] .hljs-class .hljs-title, :root[data-theme="light"] .hljs-title.class_ { color:#df8e1d; }
       * { box-sizing: border-box; }
-      html, body { height:100%; background:#1e1e2e; }
+      html, body { height:100%; background:var(--bg); }
       /* Theme the scrollbars to match the dark palette. WebView2 (Windows) and WKWebView (macOS)
          both honour ::-webkit-scrollbar; on macOS the OS overlay scrollbars usually hide these
          anyway, but on Windows this replaces the chunky default light scrollbar. Firefox-style
@@ -132,7 +166,7 @@
       .tag.inline { color:var(--muted); border-style:dashed; cursor:default; }
       .tag.inline:hover { background:var(--panel); color:var(--muted); }
       .tag .x { margin-left:.35rem; opacity:.7; font-weight:700; cursor:pointer; }
-      .tag .x:hover { opacity:1; color:var(--danger,#f38ba8); }
+      .tag .x:hover { opacity:1; color:var(--bad); }
       .tagadd { font-size:.78em; width:5.5rem; padding:.05rem .45rem; background:transparent; border:1px dashed var(--border); border-radius:999px; color:var(--fg); }
       .tagadd:focus { outline:none; border-color:var(--accent); width:8rem; }
       .results .crumb .tag { margin-left:.3rem; }
@@ -144,6 +178,7 @@
       .seg button { border:none; border-radius:0; border-right:1px solid var(--border); }
       .seg button:last-child { border-right:none; }
       .seg button.on { background:var(--accent); color:var(--panel); font-weight:600; }
+      .seg.seg-equal button { flex:1 1 0; text-align:center; padding:.4rem .9rem; }
 
       .content > :first-child { margin-top:.2rem; }
       .content { cursor:text; }
@@ -154,10 +189,10 @@
       .reading .wikilink { background:none; border:none; padding:0; color:var(--fg); text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:2px; white-space:normal; }
       .reading .wikilink:hover { color:var(--accent); }
       .reading .wikilink.unresolved { color:var(--bad); text-decoration-style:dashed; }
-      .editarea { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--accent); border-radius:6px; padding:.5rem .6rem; font:14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; resize:vertical; }
+      .editarea { width:100%; background:var(--field); color:var(--fg); border:1px solid var(--accent); border-radius:6px; padding:.5rem .6rem; font:14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; resize:vertical; }
       .editarea.dropping { outline:2px dashed var(--accent); outline-offset:2px; }
       .mkb-extern-img { display:inline-flex; gap:.35rem; align-items:center; padding:.1rem .5rem; border:1px dashed var(--border); border-radius:6px; color:var(--muted); font-size:.9em; cursor:help; }
-      .titleedit { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.45rem .6rem; margin-bottom:.5rem; font:inherit; }
+      .titleedit { width:100%; background:var(--field); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.45rem .6rem; margin-bottom:.5rem; font:inherit; }
       .editbar { display:flex; gap:.5rem; align-items:center; margin:.4rem 0 0; }
       .editbar .muted { margin-left:auto; }
       .addrow { margin-top:1rem; }
@@ -210,7 +245,7 @@
       .picker .mk { padding:.3rem .6rem; font-size:.75em; color:var(--muted); border-top:1px solid var(--border); }
 
       #graphview { position:absolute; inset:0; }
-      .glegend { position:absolute; left:1rem; bottom:1rem; z-index:6; background:rgba(24,24,37,.9); border:1px solid var(--border); border-radius:8px; padding:.5rem .7rem; font-size:.82em; display:flex; flex-direction:column; gap:.25rem; }
+      .glegend { position:absolute; left:1rem; bottom:1rem; z-index:6; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:8px; padding:.5rem .7rem; font-size:.82em; display:flex; flex-direction:column; gap:.25rem; }
       .glegend .lg { display:flex; align-items:center; gap:.45rem; }
       .glegend .sw { width:11px; height:11px; border-radius:50%; flex:0 0 auto; }
       .glegend .sw.tag { border-radius:2px; transform:rotate(45deg); width:9px; height:9px; }
@@ -221,13 +256,13 @@
       .gcontrols .gtoggle { cursor:pointer; }
       .spinner { display:inline-block; width:1.1rem; height:1.1rem; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; }
       @keyframes spin { to { transform:rotate(360deg); } }
-      .gcontrols { position:absolute; right:1rem; top:1rem; z-index:6; display:flex; align-items:center; gap:.5rem; background:rgba(24,24,37,.9); border:1px solid var(--border); border-radius:8px; padding:.4rem .6rem; font-size:.82em; }
+      .gcontrols { position:absolute; right:1rem; top:1rem; z-index:6; display:flex; align-items:center; gap:.5rem; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:8px; padding:.4rem .6rem; font-size:.82em; }
       .gcontrols label { display:flex; align-items:center; gap:.4rem; color:var(--muted); }
       .gcontrols input[type=range] { width:7rem; accent-color:var(--accent); }
       .gcontrols button { padding:.25rem .5rem; }
       .gcontrols button:hover { border-color:var(--accent); color:var(--accent); }
       .form { max-width:34rem; } .form label { display:block; margin:.8rem 0 .2rem; font-weight:600; }
-      .form input[type=text] { width:100%; padding:.5rem .6rem; background:var(--panel); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
+      .form input[type=text] { width:100%; padding:.5rem .6rem; background:var(--field); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
       .form .row { display:flex; gap:.5rem; align-items:center; }
       .modes { display:flex; gap:1rem; margin:.5rem 0; }
       .hint { color:var(--muted); font-size:.85em; margin-top:.3rem; }
@@ -270,9 +305,9 @@
     </style>
   </head>
   <body>
-    <div id="bootbanner" style="position:fixed;inset:0;z-index:9999;background:#1e1e2e;color:#cdd6f4;display:flex;align-items:center;justify-content:center;font:15px -apple-system,sans-serif;text-align:center;padding:2rem">
+    <div id="bootbanner" style="position:fixed;inset:0;z-index:9999;background:var(--bg);color:var(--fg);display:flex;align-items:center;justify-content:center;font:15px -apple-system,sans-serif;text-align:center;padding:2rem">
       <div><div style="font-size:1.2rem;margin-bottom:.6rem;display:flex;align-items:center;gap:.6rem;justify-content:center"><span class="spinner"></span> Indexing your vault…</div>
-      <div id="bootbannermsg" style="color:#9399b2">Loading your knowledge base.</div></div>
+      <div id="bootbannermsg" style="color:var(--muted)">Loading your knowledge base.</div></div>
     </div>
     <div class="toastwrap" id="toasts"></div>
     <div class="layout">
@@ -301,7 +336,7 @@
       const hideBanner = () => { try { const b = document.getElementById("bootbanner"); if (b) b.remove(); } catch {} };
       const showError = (m) => {
         document.body.innerHTML =
-          '<pre style="color:#f38ba8;background:#1e1e2e;margin:0;padding:1rem;white-space:pre-wrap;font:13px ui-monospace,Menlo,monospace">UI error:\n' +
+          '<pre style="color:var(--bad);background:var(--bg);margin:0;padding:1rem;white-space:pre-wrap;font:13px ui-monospace,Menlo,monospace">UI error:\n' +
           String(m).replace(/[<&]/g, (c) => (c === "<" ? "&lt;" : "&amp;")) + "</pre>";
       };
       window.addEventListener("error", (e) => showError((e.error && e.error.stack) || e.message || e));
@@ -603,6 +638,51 @@
       let graphCache = null;
 
       const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
+
+      // ---------- theme (dark / light / follow-OS) ----------
+      // Preference is "auto" (default; follow the OS), "light", or "dark", persisted in
+      // localStorage. The early <head> script applies it before first paint; this keeps it live:
+      // updating the toggle, re-resolving on OS change while in auto, and re-rendering the surfaces
+      // whose colours aren't pure CSS (the graph canvas + already-rendered mermaid SVGs).
+      const themeMedia = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+      function themePref() { try { return localStorage.getItem("mkb.theme") || "auto"; } catch { return "auto"; } }
+      function effectiveDark() {
+        const p = themePref();
+        return p === "dark" || (p === "auto" && !!(themeMedia && themeMedia.matches));
+      }
+      function applyTheme(redraw) {
+        document.documentElement.setAttribute("data-theme", effectiveDark() ? "dark" : "light");
+        // Reflect the current pref on the Settings segmented control, if it's on screen.
+        const seg = document.getElementById("themeseg");
+        if (seg) seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.theme === themePref()));
+        if (redraw) redrawForTheme();
+      }
+      function setTheme(pref) {
+        try { localStorage.setItem("mkb.theme", pref); } catch {}
+        applyTheme(true);
+      }
+      // Re-render the surfaces that bake colours at render time (not pure CSS): the graph canvas
+      // and any mermaid diagrams in the open block. highlight.js + everything else are CSS-driven
+      // and reskin instantly.
+      function redrawForTheme() {
+        if (document.getElementById("graphview")) { showGraph(); return; }
+        if (active) openBlock(active, true);
+      }
+      // While in "auto", track the OS appearance live.
+      if (themeMedia) {
+        const onOS = () => { if (themePref() === "auto") applyTheme(true); };
+        themeMedia.addEventListener ? themeMedia.addEventListener("change", onOS) : themeMedia.addListener(onOS);
+      }
+      // Theme colours for canvas/JS surfaces that can't use CSS vars directly.
+      function themeColors() {
+        const s = getComputedStyle(document.documentElement);
+        const v = (n, f) => (s.getPropertyValue(n).trim() || f);
+        return {
+          bg: v("--bg", "#1e1e2e"), panel: v("--panel", "#181825"), fg: v("--fg", "#cdd6f4"),
+          accent: v("--accent", "#89b4fa"), mauve: v("--mauve", "#cba6f7"),
+          border: v("--border", "#313244"), tag: v("--tag", effectiveDark() ? "#f9e2af" : "#df8e1d"),
+        };
+      }
 
       async function refreshStatus() {
         try {
@@ -1172,6 +1252,9 @@
       let mermaidSeq = 0;
       function mermaidIn(root) {
         if (!window.mermaid) return;
+        // Pick the mermaid theme to match the app theme (re-initialised per pass so a theme toggle
+        // re-renders diagrams in the right palette).
+        try { window.mermaid.initialize({ startOnLoad: false, theme: effectiveDark() ? "dark" : "default", securityLevel: "strict" }); } catch {}
         root.querySelectorAll("pre > code.language-mermaid").forEach((code) => {
           const pre = code.parentElement;
           const src = code.textContent;
@@ -1427,10 +1510,10 @@
             <button id="graphfit" title="Fit the whole graph on screen (or double-click the background)">⤢ Fit</button>
           </div>
           <div class="glegend">
-            <div class="lg"><span class="sw" style="background:#89b4fa"></span> Root block (nothing embeds it)</div>
-            <div class="lg"><span class="sw" style="background:#cba6f7"></span> Embedded / linked block</div>
-            <div class="lg"><span class="sw tag" style="background:#f9e2af"></span> Tag (when shown)</div>
-            <div class="lg"><span class="edgekey solid" style="border-color:#cba6f7"></span> Embed&nbsp;<code>![[ ]]</code> &nbsp;<span class="edgekey dashed" style="border-color:#89b4fa"></span> Reference&nbsp;<code>[[ ]]</code></div>
+            <div class="lg"><span class="sw" style="background:var(--accent)"></span> Root block (nothing embeds it)</div>
+            <div class="lg"><span class="sw" style="background:var(--mauve)"></span> Embedded / linked block</div>
+            <div class="lg"><span class="sw tag" style="background:var(--tag)"></span> Tag (when shown)</div>
+            <div class="lg"><span class="edgekey solid" style="border-color:var(--mauve)"></span> Embed&nbsp;<code>![[ ]]</code> &nbsp;<span class="edgekey dashed" style="border-color:var(--accent)"></span> Reference&nbsp;<code>[[ ]]</code></div>
             <div class="lg muted">Size = connections · arrows source → target · click to open · drag background to pan · scroll to zoom · drag a node to move it</div>
           </div>`;
         let g;
@@ -1469,8 +1552,14 @@
           });
         }
         buildData();
+        // Theme-aware colours (read live so a theme toggle re-skins the canvas on re-render).
+        const tc = themeColors();
+        const rgba = (hex, a) => {
+          const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex).trim());
+          return m ? `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${a})` : hex;
+        };
         fg = ForceGraph()(el)
-          .backgroundColor("#181825")
+          .backgroundColor(tc.panel)
           .graphData({ nodes, links })
           // Edge kind, surfaced visually so embeds read differently from plain links:
           //   • transclusion (![[embed]]) — solid, brighter, slightly thicker (the stronger tie)
@@ -1479,9 +1568,9 @@
           // Core serializes the kind as PascalCase ("References"/"Transcludes"); compare lowercased.
           .linkColor((l) => {
             const k = String(l.kind || "").toLowerCase();
-            if (k === "tag") return "rgba(249,226,175,.28)";
-            if (k === "references") return "rgba(137,180,250,.45)"; // cool blue, dimmer
-            return "rgba(203,166,247,.6)";                          // mauve, brighter (embed)
+            if (k === "tag") return rgba(tc.tag, 0.28);
+            if (k === "references") return rgba(tc.accent, 0.45); // reference (link)
+            return rgba(tc.mauve, 0.6);                           // embed (transclusion)
           })
           .linkWidth((l) => String(l.kind || "").toLowerCase() === "transcludes" ? 1.6 : 0.7)
           .linkLineDash((l) => {
@@ -1497,15 +1586,15 @@
               // Diamond + warm colour so tags never read as blocks.
               ctx.beginPath();
               ctx.moveTo(n.x, n.y - r); ctx.lineTo(n.x + r, n.y); ctx.lineTo(n.x, n.y + r); ctx.lineTo(n.x - r, n.y); ctx.closePath();
-              ctx.fillStyle = "#f9e2af"; ctx.fill();
+              ctx.fillStyle = tc.tag; ctx.fill();
             } else {
               ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
-              ctx.fillStyle = n.root ? "#89b4fa" : "#cba6f7"; ctx.fill();
+              ctx.fillStyle = n.root ? tc.accent : tc.mauve; ctx.fill();
             }
             if (scale > 1.1 || (hover && (hover === n.id || (neighbors[hover] && neighbors[hover].has(n.id))))) {
               ctx.globalAlpha = dim ? 0.25 : 1;
               ctx.font = `${11/scale}px -apple-system, sans-serif`;
-              ctx.fillStyle = n.kind === "tag" ? "#f9e2af" : "#cdd6f4"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+              ctx.fillStyle = n.kind === "tag" ? tc.tag : tc.fg; ctx.textAlign = "left"; ctx.textBaseline = "middle";
               ctx.fillText(n.label || n.id, n.x + r + 1.5, n.y);
             }
             ctx.globalAlpha = 1;
@@ -1628,6 +1717,12 @@
             </div>
             <div class="savebar"><button class="primary" id="savecfg">Save & connect</button><span class="muted" id="cfgmsg"></span></div>
             <hr style="border:none;border-top:1px solid var(--border);margin:1.4rem 0"/>
+            <label>Appearance</label>
+            <p class="hint">Choose the colour theme. <strong>Auto</strong> follows your operating system's light/dark setting.</p>
+            <div class="seg seg-equal" id="themeseg">
+              <button data-theme="auto">Auto</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button>
+            </div>
+            <hr style="border:none;border-top:1px solid var(--border);margin:1.4rem 0"/>
             <label>Daemon</label>
             <p class="hint">Restart the background <code>mkbd</code> — it shuts down and a fresh one starts on the next action. Use this after updating the app so a still-running older daemon is replaced.</p>
             <div class="row"><button id="restartd">Restart daemon</button><span class="muted" id="restartmsg"></span></div>
@@ -1667,6 +1762,12 @@
             toast("Daemon restarted.");
           } catch (e) { msg.textContent = String(e); toast(String(e), "error"); }
         };
+        // Appearance: reflect the saved theme and switch on click (persists + reskins live).
+        const themeseg = mainEl.querySelector("#themeseg");
+        themeseg.querySelectorAll("button").forEach((b) => {
+          b.classList.toggle("on", b.dataset.theme === themePref());
+          b.onclick = () => setTheme(b.dataset.theme);
+        });
         loadOrphans();
       }
 
@@ -1729,6 +1830,7 @@
       document.getElementById("newblock").onclick = newBlock;
       document.getElementById("graphbtn").onclick = showGraph;
       document.getElementById("tagsbtn").onclick = showTags;
+      applyTheme(false);
       document.getElementById("status").onclick = showSettings;
       document.getElementById("tabRoots").onclick = () => { if (navScope !== "roots") { navScope = "roots"; loadBlocks(active); } };
       document.getElementById("tabAll").onclick = () => { if (navScope !== "all") { navScope = "all"; loadBlocks(active); } };
