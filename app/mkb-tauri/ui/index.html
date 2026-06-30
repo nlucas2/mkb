@@ -245,22 +245,40 @@
       .picker .mk { padding:.3rem .6rem; font-size:.75em; color:var(--muted); border-top:1px solid var(--border); }
 
       #graphview { position:absolute; inset:0; }
-      .glegend { position:absolute; left:1rem; bottom:1rem; z-index:6; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:8px; padding:.5rem .7rem; font-size:.82em; display:flex; flex-direction:column; gap:.25rem; }
-      .glegend .lg { display:flex; align-items:center; gap:.45rem; }
+      .glegend { position:absolute; left:1rem; bottom:1rem; z-index:6; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:8px; padding:.5rem .7rem; font-size:.82em; max-width:min(92vw, 44rem); }
+      .glegend-toggle { background:none; border:none; color:var(--muted); cursor:pointer; font-size:1em; padding:0; display:flex; align-items:center; gap:.35rem; }
+      .glegend-toggle:hover { color:var(--fg); }
+      .glegend-head { color:var(--muted); font-size:1em; }
+      .glegend-body { display:flex; gap:.9rem; align-items:stretch; }
+      .glegend-col { display:flex; flex-direction:column; }
+      .glegend-col-body { display:flex; flex-direction:column; gap:.3rem; margin-top:.45rem; }
+      .glegend-keys { min-width:16rem; }
+      .glegend-keys .lg { display:flex; align-items:center; gap:.45rem; color:var(--fg); padding:.1rem .15rem; }
+      .glegend-keys .lgtoggle { cursor:pointer; border-radius:5px; }
+      .glegend-keys .lgtoggle:hover { background:var(--hover); }
+      .glegend-keys .keyL { width:26px; flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center; }
       .glegend .sw { width:11px; height:11px; border-radius:50%; flex:0 0 auto; }
       .glegend .sw.tag { border-radius:2px; transform:rotate(45deg); width:9px; height:9px; }
-      .glegend .edgekey { display:inline-block; width:16px; height:0; border-top:2px solid var(--muted); flex:0 0 auto; }
+      .glegend .edgekey { display:inline-block; width:24px; height:0; border-top:2px solid var(--muted); flex:0 0 auto; }
       .glegend .edgekey.dashed { border-top-style:dashed; }
       .glegend code { font-size:.9em; }
-      .gcontrols input[type=checkbox] { accent-color:var(--accent); }
-      .gcontrols .gtoggle { cursor:pointer; }
+      .glegend .lgmuted { color:var(--muted); }
+      .glegend .lgfoot { font-size:.92em; margin-top:.2rem; padding:0 .15rem; }
+      .glegend input[type=checkbox] { accent-color:var(--accent); }
+      .glegend-panel { border-left:1px solid var(--border); padding-left:.9rem; min-width:15rem; }
+      .glegend .gslider { display:flex; align-items:center; justify-content:space-between; gap:.6rem; color:var(--muted); min-height:1.5rem; }
+      /* Themed select — no native OS chrome (consistency with our scrollbars/inputs). */
+      .glegend .gslider select { appearance:none; -webkit-appearance:none; background:var(--field); color:var(--fg); border:1px solid var(--border); border-radius:5px; padding:.2rem 1.5rem .2rem .45rem; font:inherit; cursor:pointer; background-image:linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position:calc(100% - 12px) center, calc(100% - 7px) center; background-size:5px 5px, 5px 5px; background-repeat:no-repeat; }
+      .glegend .gslider select:hover { border-color:var(--accent); }
+      /* Themed range slider — explicit track + thumb so it matches in every webview. */
+      .glegend .gslider input[type=range] { appearance:none; -webkit-appearance:none; width:8rem; height:4px; border-radius:3px; background:var(--border); cursor:pointer; }
+      .glegend .gslider input[type=range]::-webkit-slider-thumb { appearance:none; -webkit-appearance:none; width:13px; height:13px; border-radius:50%; background:var(--accent); border:none; cursor:pointer; }
+      .gpanel-actions { display:flex; gap:.35rem; margin-top:.3rem; }
+      .gpanel-actions button { flex:1 1 0; padding:.3rem .25rem; white-space:nowrap; }
+      .gpanel-actions button:hover { border-color:var(--accent); color:var(--accent); }
+      .gpanel-actions button.on { border-color:var(--accent); color:var(--accent); }
       .spinner { display:inline-block; width:1.1rem; height:1.1rem; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; }
       @keyframes spin { to { transform:rotate(360deg); } }
-      .gcontrols { position:absolute; right:1rem; top:1rem; z-index:6; display:flex; align-items:center; gap:.5rem; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:8px; padding:.4rem .6rem; font-size:.82em; }
-      .gcontrols label { display:flex; align-items:center; gap:.4rem; color:var(--muted); }
-      .gcontrols input[type=range] { width:7rem; accent-color:var(--accent); }
-      .gcontrols button { padding:.25rem .5rem; }
-      .gcontrols button:hover { border-color:var(--accent); color:var(--accent); }
       .form { max-width:34rem; } .form label { display:block; margin:.8rem 0 .2rem; font-weight:600; }
       .form input[type=text] { width:100%; padding:.5rem .6rem; background:var(--field); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
       .form .row { display:flex; gap:.5rem; align-items:center; }
@@ -681,6 +699,7 @@
           bg: v("--bg", "#1e1e2e"), panel: v("--panel", "#181825"), fg: v("--fg", "#cdd6f4"),
           accent: v("--accent", "#89b4fa"), mauve: v("--mauve", "#cba6f7"),
           border: v("--border", "#313244"), tag: v("--tag", effectiveDark() ? "#f9e2af" : "#df8e1d"),
+          field: v("--field", effectiveDark() ? "#181825" : "#fbf6ea"),
         };
       }
 
@@ -1499,50 +1518,87 @@
       async function showGraph() {
         active = null; renderNav();
         mainEl.innerHTML = `<div id="graphview"></div>
-          <div class="gcontrols">
-            <label title="Spread connected nodes apart or pull them tighter">Spread
-              <input type="range" id="gspread" min="0.3" max="3" step="0.1" value="1"/></label>
-            <label title="Pull the whole graph toward the center (tighter) or let it relax (looser)">Gravity
-              <input type="range" id="ggravity" min="0" max="0.2" step="0.005" value="0.05"/></label>
-            <label class="gtoggle" title="Show each block's #tags as nodes in the graph">
-              <input type="checkbox" id="gtags"/> Tags</label>
-            <button id="greheat" title="Re-run the layout">↻ Reheat</button>
-            <button id="graphfit" title="Fit the whole graph on screen (or double-click the background)">⤢ Fit</button>
-          </div>
-          <div class="glegend">
-            <div class="lg"><span class="sw" style="background:var(--accent)"></span> Root block (nothing embeds it)</div>
-            <div class="lg"><span class="sw" style="background:var(--mauve)"></span> Embedded / linked block</div>
-            <div class="lg"><span class="sw tag" style="background:var(--tag)"></span> Tag (when shown)</div>
-            <div class="lg"><span class="edgekey solid" style="border-color:var(--mauve)"></span> Embed&nbsp;<code>![[ ]]</code> &nbsp;<span class="edgekey dashed" style="border-color:var(--accent)"></span> Reference&nbsp;<code>[[ ]]</code></div>
-            <div class="lg muted">Size = connections · arrows source → target · click to open · drag background to pan · scroll to zoom · drag a node to move it</div>
+          <div class="glegend" id="glegend">
+            <div class="glegend-body">
+              <div class="glegend-col glegend-keys">
+                <button class="glegend-toggle" id="glegendToggle" title="Hide/show the legend & controls">Legend <span id="glegendChevron">▾</span></button>
+                <div class="glegend-col-body" id="glegendBody">
+                  <label class="lg lgtoggle"><input type="checkbox" id="vRoot" checked/><span class="keyL"><span class="sw" style="background:var(--accent)"></span></span><span>Root block <span class="lgmuted">— nothing embeds it</span></span></label>
+                  <label class="lg lgtoggle"><input type="checkbox" id="vLinked" checked/><span class="keyL"><span class="sw" style="background:var(--mauve)"></span></span><span>Embedded / linked block</span></label>
+                  <label class="lg lgtoggle"><input type="checkbox" id="vEmbed" checked/><span class="keyL"><span class="edgekey solid" style="border-color:var(--mauve)"></span></span><span>Embeds <code>![[ ]]</code></span></label>
+                  <label class="lg lgtoggle"><input type="checkbox" id="vRef" checked/><span class="keyL"><span class="edgekey dashed" style="border-color:var(--accent)"></span></span><span>References <code>[[ ]]</code></span></label>
+                  <label class="lg lgtoggle"><input type="checkbox" id="vTags" checked/><span class="keyL"><span class="sw tag" style="background:var(--tag)"></span></span><span>Tags</span></label>
+                  <div class="lgfoot lgmuted">Size = connections · click to open · drag to move · scroll to zoom</div>
+                </div>
+              </div>
+              <div class="glegend-col glegend-panel" id="glegendPanel">
+                <span class="glegend-head">Layout</span>
+                <div class="glegend-col-body" id="glegendPanelBody">
+                  <label class="gslider"><span>Labels</span>
+                    <select id="vLabels">
+                      <option value="auto" selected>Auto (on zoom)</option>
+                      <option value="full">Always</option>
+                      <option value="trunc">Truncated</option>
+                      <option value="off">Hidden</option>
+                    </select></label>
+                  <label class="gslider" title="Spread connected nodes apart or pull them tighter"><span>Spread</span>
+                    <input type="range" id="gspread" min="0.3" max="3" step="0.1" value="1"/></label>
+                  <label class="gslider" title="Pull the whole graph toward the center (tighter) or let it relax (looser)"><span>Gravity</span>
+                    <input type="range" id="ggravity" min="0" max="0.2" step="0.005" value="0.05"/></label>
+                  <label class="gslider" title="Repulsion strength between nodes (stronger = more spread)"><span>Charge</span>
+                    <input type="range" id="gcharge" min="0.3" max="3" step="0.1" value="1"/></label>
+                  <div class="gpanel-actions">
+                    <button id="greheat" title="Re-run the layout">↻ Reheat</button>
+                    <button id="gstop" title="Freeze all forces so nodes stop moving (toggle)">⏸ Freeze</button>
+                    <button id="graphfit" title="Fit the whole graph on screen (or double-click the background)">⤢ Fit</button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>`;
         let g;
         try { g = graphCache || (graphCache = await invoke("graph")); }
         catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
-        let tagsOn = false;
+        let tagsOn = true;          // tags shown by default
+        let showEmbed = true;       // ![[embed]] edges
+        let showRef = true;         // [[reference]] edges
+        let showRoot = true;        // root block nodes (nothing embeds them)
+        let showLinked = true;      // embedded / linked block nodes
         let hover = null;
         const el = document.getElementById("graphview");
         // Drawn radius of a node (grows with its connection count). Shared with the collision
         // force below so nodes never visually overlap.
         const nodeR = (n) => Math.max(2.4, Math.cbrt((n.d || 0) + 1) * 2.6);
-        // Build the force-graph nodes/links for the current toggle state. Block nodes + their
-        // edges always; tag nodes (id `tag:<name>`) + block→tag edges only when `showTags`.
-        // Recomputes per-node degree (drives size) and neighbour sets (drives hover-dim).
+        // Build the force-graph nodes/links for the current visibility flags. Block edges are
+        // filtered by kind (embed/reference); tag nodes + block→tag edges are added when tagsOn.
+        // Orphaned block nodes (no visible edge) are kept so the block is still reachable. Recomputes
+        // per-node degree (drives size) and neighbour sets (drives hover-dim).
         let nodes = [], links = [], neighbors = {};
         function buildData() {
-          const deg = {};
-          g.edges.forEach((e) => { deg[e.source] = (deg[e.source] || 0) + 1; deg[e.target] = (deg[e.target] || 0) + 1; });
-          nodes = g.nodes.map((n) => ({ id: n.id, label: n.title, d: (deg[n.id] || 0), root: n.root, kind: "block" }));
-          links = g.edges.map((e) => ({ source: e.source, target: e.target, kind: e.kind }));
+          // Which block nodes are visible (root vs embedded/linked can each be hidden).
+          const vis = new Set();
+          g.nodes.forEach((n) => { if (n.root ? showRoot : showLinked) vis.add(n.id); });
+          links = g.edges
+            .filter((e) => {
+              const k = String(e.kind || "").toLowerCase();
+              if (!vis.has(e.source) || !vis.has(e.target)) return false; // both ends must be shown
+              return k === "transcludes" ? showEmbed : showRef;
+            })
+            .map((e) => ({ source: e.source, target: e.target, kind: e.kind }));
           if (tagsOn) {
-            const tagDeg = {}, tagLinks = [];
-            g.nodes.forEach((n) => (n.tags || []).forEach((t) => {
-              const tid = "tag:" + t;
-              tagDeg[tid] = (tagDeg[tid] || 0) + 1;
-              tagLinks.push({ source: n.id, target: tid, kind: "tag" });
-            }));
-            nodes = nodes.concat(Object.keys(tagDeg).map((tid) => ({ id: tid, label: "#" + tid.slice(4), d: tagDeg[tid], kind: "tag" })));
-            links = links.concat(tagLinks);
+            g.nodes.forEach((n) => { if (vis.has(n.id)) (n.tags || []).forEach((t) => {
+              links.push({ source: n.id, target: "tag:" + t, kind: "tag" });
+            }); });
+          }
+          // Degree from the *visible* links so node size reflects what's shown.
+          const deg = {};
+          links.forEach((l) => { deg[l.source] = (deg[l.source] || 0) + 1; deg[l.target] = (deg[l.target] || 0) + 1; });
+          nodes = g.nodes.filter((n) => vis.has(n.id))
+            .map((n) => ({ id: n.id, label: n.title, d: (deg[n.id] || 0), root: n.root, kind: "block" }));
+          if (tagsOn) {
+            const tagIds = new Set();
+            g.nodes.forEach((n) => { if (vis.has(n.id)) (n.tags || []).forEach((t) => tagIds.add("tag:" + t)); });
+            nodes = nodes.concat([...tagIds].map((tid) => ({ id: tid, label: "#" + tid.slice(4), d: (deg[tid] || 0), kind: "tag" })));
           }
           neighbors = {};
           links.forEach((l) => {
@@ -1554,12 +1610,25 @@
         buildData();
         // Theme-aware colours (read live so a theme toggle re-skins the canvas on re-render).
         const tc = themeColors();
+        const lightUI = !effectiveDark();
         const rgba = (hex, a) => {
           const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex).trim());
           return m ? `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${a})` : hex;
         };
+        // Edge opacity: on the light "paper" background the same colours read fainter, so bump
+        // their alpha a touch. The canvas itself is lightened in light mode (below), which restores
+        // label/line contrast, so tags don't need to be cranked the way they did on the dark panel.
+        const aEmbed = lightUI ? 0.75 : 0.6, aRef = lightUI ? 0.6 : 0.45, aTag = lightUI ? 0.6 : 0.32;
+        const tagLine = lightUI ? "#b5710e" : tc.tag;
+        let labelMode = "auto"; // "auto" (on zoom/hover) | "full" | "trunc" | "off"
+        const labelOf = (n) => {
+          const s = n.label || n.id;
+          if (labelMode !== "trunc" || n.kind === "tag") return s;
+          const first = String(s).trim().split(/\s+/)[0] || s;
+          return first.length < String(s).length ? first + "…" : first;
+        };
         fg = ForceGraph()(el)
-          .backgroundColor(tc.panel)
+          .backgroundColor(lightUI ? tc.field : tc.panel)
           .graphData({ nodes, links })
           // Edge kind, surfaced visually so embeds read differently from plain links:
           //   • transclusion (![[embed]]) — solid, brighter, slightly thicker (the stronger tie)
@@ -1568,11 +1637,14 @@
           // Core serializes the kind as PascalCase ("References"/"Transcludes"); compare lowercased.
           .linkColor((l) => {
             const k = String(l.kind || "").toLowerCase();
-            if (k === "tag") return rgba(tc.tag, 0.28);
-            if (k === "references") return rgba(tc.accent, 0.45); // reference (link)
-            return rgba(tc.mauve, 0.6);                           // embed (transclusion)
+            if (k === "tag") return rgba(tagLine, aTag);
+            if (k === "references") return rgba(tc.accent, aRef); // reference (link)
+            return rgba(tc.mauve, aEmbed);                        // embed (transclusion)
           })
-          .linkWidth((l) => String(l.kind || "").toLowerCase() === "transcludes" ? 1.6 : 0.7)
+          .linkWidth((l) => {
+            const k = String(l.kind || "").toLowerCase();
+            return k === "transcludes" ? 1.6 : (k === "tag" ? 1.0 : 0.7);
+          })
           .linkLineDash((l) => {
             const k = String(l.kind || "").toLowerCase();
             return k === "references" ? [3, 2] : (k === "tag" ? [1, 3] : null);
@@ -1591,11 +1663,15 @@
               ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
               ctx.fillStyle = n.root ? tc.accent : tc.mauve; ctx.fill();
             }
-            if (scale > 1.1 || (hover && (hover === n.id || (neighbors[hover] && neighbors[hover].has(n.id))))) {
+            const hot = hover && (hover === n.id || (neighbors[hover] && neighbors[hover].has(n.id)));
+            const showLabel = labelMode === "off" ? false
+              : labelMode === "auto" ? (scale > 1.1 || hot)
+              : true;
+            if (showLabel) {
               ctx.globalAlpha = dim ? 0.25 : 1;
               ctx.font = `${11/scale}px -apple-system, sans-serif`;
               ctx.fillStyle = n.kind === "tag" ? tc.tag : tc.fg; ctx.textAlign = "left"; ctx.textBaseline = "middle";
-              ctx.fillText(n.label || n.id, n.x + r + 1.5, n.y);
+              ctx.fillText(labelOf(n), n.x + r + 1.5, n.y);
             }
             ctx.globalAlpha = 1;
           })
@@ -1617,7 +1693,9 @@
         const BASE_LINK = Math.max(34, 24 + N * 0.6);
         let spread = 1;        // Spread slider multiplier
         let gravityK = 0.05;   // Gravity slider: pull toward origin (tighter when higher)
-        fg.d3Force("charge").strength(() => BASE_CHARGE * spread);
+        let chargeK = 1;       // Charge slider: repulsion multiplier
+        let frozen = false;    // Freeze toggle: pin every node so forces stop moving them
+        fg.d3Force("charge").strength(() => BASE_CHARGE * spread * chargeK);
         fg.d3Force("link").distance(() => BASE_LINK * spread);
         // Custom forces — the bundled d3 force factories are minified-away, so we supply our own.
         // Gravity: pull every node toward the origin (≈ forceX(0)+forceY(0)) so components converge.
@@ -1661,17 +1739,50 @@
         // Controls. Fit (or double-click) re-frames the graph. Reheat re-runs the layout. Spread
         // scales repulsion + link length so you can pull a dense graph tighter or spread it out.
         const fit = () => fg.zoomToFit(400, 40);
-        const relayout = () => { refitNext = true; fg.d3ReheatSimulation(); };
+        const relayout = () => { if (frozen) return; refitNext = true; fg.d3ReheatSimulation(); };
         document.getElementById("graphfit").onclick = fit;
         el.addEventListener("dblclick", fit);
         document.getElementById("greheat").onclick = relayout;
         document.getElementById("gspread").oninput = (e) => { spread = parseFloat(e.target.value) || 1; relayout(); };
         document.getElementById("ggravity").oninput = (e) => { gravityK = parseFloat(e.target.value) || 0; relayout(); };
-        document.getElementById("gtags").onchange = (e) => {
-          tagsOn = e.target.checked;
-          buildData();
-          fg.graphData({ nodes, links });
-          relayout();
+        document.getElementById("gcharge").oninput = (e) => { chargeK = parseFloat(e.target.value) || 1; relayout(); };
+        // Freeze: pin every node at its current position so no force can move it (the most robust
+        // "stop all forces"). Resume releases the pins and reheats. While frozen, dropping a dragged
+        // node re-pins it where you left it (force-graph clears fx/fy on drag-end by default).
+        const stopBtn = document.getElementById("gstop");
+        const setFrozen = (on) => {
+          frozen = on;
+          for (const n of nodes) { if (on) { n.fx = n.x; n.fy = n.y; } else { n.fx = null; n.fy = null; } }
+          stopBtn.textContent = on ? "▶ Resume" : "⏸ Freeze";
+          stopBtn.classList.toggle("on", on);
+          if (!on) { refitNext = false; fg.d3ReheatSimulation(); }
+        };
+        stopBtn.onclick = () => setFrozen(!frozen);
+        fg.onNodeDragEnd((n) => { if (frozen) { n.fx = n.x; n.fy = n.y; } });
+        // Rebuild the visible graph after a visibility toggle (embeds/refs/tags). buildData() makes
+        // fresh node objects, so lift any freeze first and let the new topology lay out.
+        const rebuild = () => { if (frozen) setFrozen(false); buildData(); fg.graphData({ nodes, links }); refitNext = true; fg.d3ReheatSimulation(); };
+        document.getElementById("vRoot").onchange = (e) => { showRoot = e.target.checked; rebuild(); };
+        document.getElementById("vLinked").onchange = (e) => { showLinked = e.target.checked; rebuild(); };
+        document.getElementById("vEmbed").onchange = (e) => { showEmbed = e.target.checked; rebuild(); };
+        document.getElementById("vRef").onchange = (e) => { showRef = e.target.checked; rebuild(); };
+        document.getElementById("vTags").onchange = (e) => { tagsOn = e.target.checked; rebuild(); };
+        // Labels mode just changes painted text (no layout change). Re-setting the node painter
+        // accessor marks the canvas dirty so force-graph repaints on the next frame, without a reheat.
+        document.getElementById("vLabels").onchange = (e) => { labelMode = e.target.value; fg.nodeCanvasObject(fg.nodeCanvasObject()); };
+        // Collapsible legend cluster. "Legend ▾" collapses the keys list AND hides the controls
+        // column. The legend's collapsed state persists.
+        const legendBody = document.getElementById("glegendBody");
+        const legendChevron = document.getElementById("glegendChevron");
+        const panel = document.getElementById("glegendPanel");
+        const applyLegend = (c) => { legendBody.style.display = c ? "none" : ""; panel.style.display = c ? "none" : ""; legendChevron.textContent = c ? "▸" : "▾"; };
+        let legendCollapsed = false;
+        try { legendCollapsed = localStorage.getItem("mkb.graphLegend") === "collapsed"; } catch {}
+        applyLegend(legendCollapsed);
+        document.getElementById("glegendToggle").onclick = () => {
+          legendCollapsed = !legendCollapsed;
+          applyLegend(legendCollapsed);
+          try { localStorage.setItem("mkb.graphLegend", legendCollapsed ? "collapsed" : "open"); } catch {}
         };
       }
 
