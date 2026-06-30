@@ -92,7 +92,28 @@ install: install-cli app
 
 # Semantic search is compiled in, so this works offline. The desktop app is added by `just install`.
 # Install the headless tools (daemon + CLI + MCP) onto ~/.cargo/bin.
+[unix]
 install-cli:
+    cargo install --path crates/mkbd
+    cargo install --path crates/mkb-cli
+    cargo install --path crates/mkb-mcp
+
+# Windows locks a running .exe, so a live daemon or MCP server still using the
+# ~/.cargo/bin copy (auto-started by the CLI, the app, or an AI client) makes
+# `cargo install` fail with "Access is denied (os error 5)". The recipe stops just
+# those cargo-bin copies first — a client respawns the daemon on next use, and the
+# desktop app's own bundled daemon (under %LOCALAPPDATA%) is a different file, so
+# it is left untouched.
+# Install the headless tools (daemon + CLI + MCP) onto ~/.cargo/bin.
+[windows]
+install-cli:
+    #!powershell
+    $ErrorActionPreference = 'Stop'
+    $bin = Join-Path $env:USERPROFILE '.cargo\bin'
+    Get-Process mkbd, mkb-mcp, mkb -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.StartsWith($bin, [System.StringComparison]::OrdinalIgnoreCase) } |
+        Stop-Process -Force
+    Start-Sleep -Milliseconds 500
     cargo install --path crates/mkbd
     cargo install --path crates/mkb-cli
     cargo install --path crates/mkb-mcp
