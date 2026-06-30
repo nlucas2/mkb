@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mkb_core::export::{plan_exports, Manifest};
+use mkb_core::export::{merge_path_prop_entries, plan_exports, Manifest};
 use mkb_core::{read_block_files, Vault};
 
 /// The workspace root, derived from this crate's compile-time manifest dir (`crates/mkb-core`).
@@ -38,9 +38,13 @@ fn generated_docs_match_their_source_blocks() {
     let vault_dir = root.join("vault");
     let manifest_text =
         std::fs::read_to_string(vault_dir.join("export.toml")).expect("read vault/export.toml");
-    let manifest = Manifest::parse(&manifest_text).expect("parse export.toml");
+    let mut manifest = Manifest::parse(&manifest_text).expect("parse export.toml");
 
     let vault = load_vault(&vault_dir);
+    // The default export.toml flow also derives docs from blocks' `path`/`filename` properties
+    // (mkb export --from-props), so the gate must too — otherwise prop-routed docs (the skills)
+    // would look unmapped.
+    merge_path_prop_entries(&vault, &mut manifest);
     let planned = plan_exports(&vault, &manifest).expect("plan exports");
     assert!(!planned.is_empty(), "manifest produced no docs");
 

@@ -955,7 +955,7 @@ fn cmd_export(g: &GlobalArgs, args: &ExportArgs) -> Result<(), String> {
         .as_ref()
         .map(|d| d.join("export.toml"))
         .filter(|p| p.exists());
-    let read_manifest = |p: &str| -> Result<ExportRequest, String> {
+    let read_manifest = |p: &str, include_path_props: bool| -> Result<ExportRequest, String> {
         let text = std::fs::read_to_string(p).map_err(|e| format!("reading manifest {p}: {e}"))?;
         let manifest = if p.ends_with(".json") {
             mkb_core::export::Manifest::parse_json(&text)
@@ -965,7 +965,7 @@ fn cmd_export(g: &GlobalArgs, args: &ExportArgs) -> Result<(), String> {
         .map_err(|e| format!("{p}: {e}"))?;
         Ok(ExportRequest::Manifest {
             entries: manifest.entries,
-            include_path_props: args.from_props,
+            include_path_props,
         })
     };
     let request: ExportRequest = if let Some(name) = args.tag.clone() {
@@ -978,9 +978,12 @@ fn cmd_export(g: &GlobalArgs, args: &ExportArgs) -> Result<(), String> {
             raw: args.raw,
         }
     } else if let Some(p) = &args.manifest {
-        read_manifest(p)?
+        // An explicit manifest is exact; path-prop derivation is opt-in via --from-props.
+        read_manifest(p, args.from_props)?
     } else if let Some(default) = default_manifest.filter(|_| !args.follow_links && !args.raw) {
-        read_manifest(&default.to_string_lossy())?
+        // The default export.toml always also derives from block `path`/`filename` properties, so
+        // blocks can own their output without a manifest entry (export.toml stays minimal).
+        read_manifest(&default.to_string_lossy(), true)?
     } else if args.from_props {
         // No manifest, but the user asked to export from block properties: a pure path-prop export.
         ExportRequest::Manifest {

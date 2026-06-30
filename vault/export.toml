@@ -3,17 +3,16 @@
 # (a ULID or an exact block title). This is the on-disk twin of the export options a CLI
 # command computes — one command ≈ one [[doc]].
 #
+# Blocks can also declare their own output via `path` + `filename` properties (rendered with
+# `mkb export --from-props`, which the default-manifest export turns on); those need no [[doc]]
+# entry here. The skills below have been migrated to that — see their source blocks.
+#
 # Optional manifest-level [defaults] (e.g. `raw = true`) apply to every doc; a per-entry
 # `raw = …` overrides them. The skills keep their own YAML frontmatter, so the @generated
 # banner is spliced after it.
 
-[[doc]]
-path  = "docs/skills/mkb-cli/SKILL.md"
-block = "CLI skill page"
-
-[[doc]]
-path  = "docs/skills/mkb-knowledge/SKILL.md"
-block = "MCP skill page"
+# The mkb-cli and mkb-knowledge skills are derived from their source blocks' path/filename
+# properties (docs/skills/mkb-cli/SKILL.md, docs/skills/mkb-knowledge/SKILL.md), not mapped here.
 
 # The on-disk format spec, authored as blocks.
 [[doc]]
@@ -50,14 +49,8 @@ block = "Architecture page"
 path  = "docs/CONTRIBUTING.md"
 block = "CONTRIBUTING page"
 
-# Dedup/audit skill — repair side of the search-before-write discipline.
-[[doc]]
-path  = "docs/skills/mkb-dedup/SKILL.md"
-block = "Dedup skill page (CLI)"
-
-[[doc]]
-path  = "docs/skills/mkb-dedup-mcp/SKILL.md"
-block = "Dedup skill page (MCP)"
+# The dedup skills are likewise derived from their blocks' path/filename properties
+# (docs/skills/mkb-dedup/SKILL.md, docs/skills/mkb-dedup-mcp/SKILL.md).
 
 # Docs-as-data workflow skill — edit the source block, re-export.
 [[doc]]

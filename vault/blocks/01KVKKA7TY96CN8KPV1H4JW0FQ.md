@@ -1,6 +1,9 @@
 ---
 title: Dedup skill page (MCP)
 tags: [skill, skill-page, dedup, mcp]
+updated: 2026-06-30T23:06:31Z
+path: docs/skills/mkb-dedup-mcp
+filename: SKILL.md
 ---
 
 ---
