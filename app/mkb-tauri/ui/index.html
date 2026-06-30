@@ -653,6 +653,7 @@
       let indexCache = null;   // [{id,title}] of ALL blocks (picker)
       let active = null;       // current block id
       let mode = "read";       // read (clean) | blocks (interactive) | edit (raw)
+      let currentView = "empty"; // which main pane is showing: block | graph | tags | settings | search | edit | empty
       let graphCache = null;
 
       const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
@@ -737,7 +738,7 @@
         if (select && roots.some((b) => b.id === select)) openBlock(select);
         else if (active && roots.some((b) => b.id === active)) openBlock(active);
         else if (roots.length) openBlock(roots[0].id);
-        else mainEl.innerHTML = '<div class="pad"><p class="muted">No blocks yet. Click ＋ Block to create one.</p></div>';
+        else mainEl.innerHTML = '<div class="pad"><p class="muted">No blocks yet. Click ＋ Block to create one.</p></div>', currentView = "empty";
         refreshStatus();
       }
 
@@ -788,6 +789,7 @@
       // keeps the mode you're in. Mode only changes via the view tabs or creating a block.
       async function openBlock(id, _keepMode) {
         active = id;
+        currentView = "block";
         hideTip();
         renderNav();
         mainEl.scrollTop = 0;
@@ -1452,7 +1454,7 @@
       // Escape or Cancel discards it, so clicking + and changing your mind never leaves a stray
       // empty block. Creation happens on save via create_block.
       function newBlock() {
-        active = null; renderNav(); mode = "edit"; mainEl.scrollTop = 0;
+        active = null; currentView = "edit"; renderNav(); mode = "edit"; mainEl.scrollTop = 0;
         mainEl.innerHTML = topbarDraft() + `<div class="pad" id="body"></div>`;
         const body = mainEl.querySelector("#body");
         body.innerHTML = `<input class="titleedit" id="t" placeholder="Title (optional)" />
@@ -1516,7 +1518,7 @@
 
       // ---------- graph ----------
       async function showGraph() {
-        active = null; renderNav();
+        active = null; currentView = "graph"; renderNav();
         mainEl.innerHTML = `<div id="graphview"></div>
           <div class="glegend" id="glegend">
             <div class="glegend-body">
@@ -1788,7 +1790,7 @@
 
       // ---------- tag browser ----------
       async function showTags() {
-        active = null; renderNav();
+        active = null; currentView = "tags"; renderNav();
         let tags;
         try { tags = await invoke("list_tags"); }
         catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
@@ -1807,7 +1809,7 @@
 
       // ---------- settings ----------
       async function showSettings() {
-        active = null; renderNav();
+        active = null; currentView = "settings"; renderNav();
         const cfg = await invoke("get_settings");
         const isLocal = cfg.mode === "local";
         mainEl.innerHTML = `<div class="topbar"><h1>Settings</h1></div>
@@ -1917,7 +1919,7 @@
       let timer = null;
       async function runSearch(q) {
         if (!q) { if (active) openBlock(active); return; }
-        active = null; renderNav();
+        active = null; currentView = "search"; renderNav();
         try { mainEl.innerHTML = `<div class="pad" id="sr">${await invoke("search", { query: q })}</div>`; }
         catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
         mainEl.querySelectorAll('#sr a[href^="/block/"]').forEach((a) => {
@@ -1973,13 +1975,20 @@
       window.__TAURI__.event.listen("vault-changed", async () => {
         invalidate();
         previewCache.clear();
-        // Always refresh the sidebar (add/delete/rename elsewhere). But if the user is mid-edit,
-        // do NOT rebuild the open block — that would discard their unsaved draft. The save-time
-        // conflict guard still protects the eventual write; a proactive in-editor banner is a
-        // follow-up. Preserve the sidebar's selection on the block being edited.
-        const editing = mode === "edit" && active;
-        await loadBlocks(editing ? active : undefined, { navOnly: editing });
-        if (active && !editing) await openBlock(active, true);
+        // Always refresh the sidebar (an external add/delete/rename should show up). But never
+        // navigate the user off whatever main view they're on — re-sync only that view in place.
+        // Mid-edit, don't rebuild at all (it would discard an unsaved draft); the save-time conflict
+        // guard still protects the eventual write. A proactive in-editor banner is a follow-up.
+        if (mode === "edit") { await loadBlocks(active || undefined, { navOnly: true }); return; }
+        await loadBlocks(active || undefined, { navOnly: true });
+        if (currentView === "block" && active) {
+          await openBlock(active, true); // re-render the open block so external edits are reflected
+        } else if (currentView === "tags") {
+          await showTags();              // cheap list; re-render so tag changes show
+        }
+        // graph / settings / search / empty: leave the main pane as-is. Caches were invalidated
+        // above, so re-entering (or Reheat on the graph) picks up fresh data without yanking the
+        // user away or resetting their graph layout.
       });
 
       // Startup loader: the full-window #bootbanner (in the static HTML) shows instantly — even
