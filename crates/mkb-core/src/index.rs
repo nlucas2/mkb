@@ -485,6 +485,22 @@ pub trait Index {
         Ok(false)
     }
 
+    /// Persist a block's source-content hash, keyed by a `version` string (the embedder/model id),
+    /// so a restarted daemon can skip re-ingesting unchanged blocks. Default: no-op — a
+    /// non-persistent index simply forces a full reconcile each start. Must be written *after* the
+    /// block's content + embedding so the only crash-failure mode is a missing hash (→ safe
+    /// re-ingest), never a hash without its content.
+    fn set_content_hash(&mut self, _id: &BlockId, _version: &str, _hash: u64) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load all persisted content hashes for `version` (`id → hash`). A different `version`
+    /// (e.g. a new embedding model) returns no matches, so those blocks are re-ingested — this is
+    /// how an embedder change auto-invalidates stale vectors. Default: empty (full reconcile).
+    fn content_hashes(&self, _version: &str) -> Result<HashMap<BlockId, u64>> {
+        Ok(HashMap::new())
+    }
+
     /// Rebuild the entire index from a vault (clear + reindex every block).
     fn rebuild(&mut self, vault: &Vault) -> Result<()> {
         self.clear()?;

@@ -5,6 +5,7 @@
 //! is a **rebuildable cache** of the `blocks/` directory: it can be thrown away and
 //! reconstructed from the files at any time, so it is never the source of truth.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use mkb_core::{
@@ -275,6 +276,11 @@ impl Index for SqliteIndex {
             params![id.as_str()],
         )
         .map_err(err)?;
+        tx.execute(
+            "DELETE FROM block_hashes WHERE id = ?1",
+            params![id.as_str()],
+        )
+        .map_err(err)?;
         tx.commit().map_err(err)?;
         Ok(())
     }
@@ -283,7 +289,8 @@ impl Index for SqliteIndex {
         self.conn
             .execute_batch(
                 "DELETE FROM block_fts; DELETE FROM blocks; DELETE FROM block_tags; \
-                 DELETE FROM block_langs; DELETE FROM links; DELETE FROM block_vectors;",
+                 DELETE FROM block_langs; DELETE FROM links; DELETE FROM block_vectors; \
+                 DELETE FROM block_hashes;",
             )
             .map_err(err)
     }
@@ -428,6 +435,44 @@ impl Index for SqliteIndex {
             .map_err(err)?;
         Ok(n > 0)
     }
+
+    fn set_content_hash(
+        &mut self,
+        id: &BlockId,
+        version: &str,
+        hash: u64,
+    ) -> Result<(), IndexError> {
+        // Store the u64 hash in SQLite's i64 column via a bit-preserving cast (read back the same
+        // way). One row per id (PRIMARY KEY) so a re-ingest under a new version just replaces it.
+        self.conn
+            .execute(
+                "INSERT INTO block_hashes(id, version, hash) VALUES (?1,?2,?3) \
+                 ON CONFLICT(id) DO UPDATE SET version=?2, hash=?3",
+                params![id.as_str(), version, hash as i64],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+
+    fn content_hashes(&self, version: &str) -> Result<HashMap<BlockId, u64>, IndexError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, hash FROM block_hashes WHERE version = ?1")
+            .map_err(err)?;
+        let rows = stmt
+            .query_map(params![version], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
+            .map_err(err)?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (id, hash) = row.map_err(err)?;
+            if let Ok(id) = BlockId::parse(&id) {
+                out.insert(id, hash as u64);
+            }
+        }
+        Ok(out)
+    }
 }
 
 fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<BlockRecord> {
@@ -560,12 +605,19 @@ CREATE TABLE IF NOT EXISTS block_vectors (
     dim       INTEGER NOT NULL,
     embedding BLOB NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS block_hashes (
+    id      TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    hash    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hashes_version ON block_hashes(version);
 "#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mkb_core::{block_links, BlockRecord, Vault};
+    use mkb_core::{block_links, BlockRecord, SyncEngine, Vault};
 
     fn indexed(blocks: &[&str]) -> (SqliteIndex, Vault, Vec<BlockId>) {
         let mut v = Vault::new();
@@ -684,6 +736,68 @@ mod tests {
         idx.remove_block(&ids[0]).unwrap();
         assert_eq!(idx.stats().unwrap().blocks, 0);
         assert!(idx.search(&SearchQuery::text("alpha")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn content_hashes_round_trip_and_version_invalidate() {
+        let mut idx = SqliteIndex::open_in_memory().unwrap();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        idx.set_content_hash(&a, "model-v1", 111).unwrap();
+        idx.set_content_hash(&b, "model-v1", 222).unwrap();
+        // Round-trips for the matching version.
+        let got = idx.content_hashes("model-v1").unwrap();
+        assert_eq!(got.get(&a), Some(&111));
+        assert_eq!(got.get(&b), Some(&222));
+        // A different version (e.g. a new embedding model) sees nothing — forces a re-embed.
+        assert!(idx.content_hashes("model-v2").unwrap().is_empty());
+        // Re-ingest under a new version replaces the row (one hash per id).
+        idx.set_content_hash(&a, "model-v2", 999).unwrap();
+        assert!(!idx.content_hashes("model-v1").unwrap().contains_key(&a));
+        assert_eq!(idx.content_hashes("model-v2").unwrap().get(&a), Some(&999));
+        // Removal drops the persisted hash.
+        idx.remove_block(&b).unwrap();
+        assert!(!idx.content_hashes("model-v1").unwrap().contains_key(&b));
+    }
+
+    #[test]
+    fn fresh_engine_skips_unchanged_blocks_via_persisted_hashes() {
+        // End-to-end: a daemon restart (new SyncEngine over the *same* persisted index file) must
+        // not re-ingest blocks whose source is unchanged, while still populating the in-memory
+        // vault so the daemon can serve them.
+        let vault = tempfile::tempdir().unwrap();
+        let dbfile = tempfile::tempdir().unwrap();
+        let dbpath = dbfile.path().join("index.db");
+        let id;
+        {
+            let idx = SqliteIndex::open(&dbpath).unwrap();
+            let mut e = SyncEngine::new(vault.path(), idx);
+            id = e.create_block(Some("Title"), "the body\n").unwrap();
+        }
+        // Reopen the persisted index in a brand-new engine and reconcile.
+        let idx2 = SqliteIndex::open(&dbpath).unwrap();
+        let mut e2 = SyncEngine::new(vault.path(), idx2);
+        let report = e2.reconcile().unwrap();
+        // Unchanged since last run: nothing re-ingested...
+        assert!(
+            report.changed.is_empty(),
+            "unchanged block should be skipped, got {:?}",
+            report.changed
+        );
+        // ...yet the vault is still populated so the block is serveable.
+        assert_eq!(e2.vault().block(&id).unwrap().body, "the body\n");
+
+        // An external edit while "down" is still detected and re-ingested on the next start.
+        std::fs::write(
+            vault.path().join(format!("blocks/{id}.md")),
+            "---\ntitle: Title\n---\nedited offline\n",
+        )
+        .unwrap();
+        let idx3 = SqliteIndex::open(&dbpath).unwrap();
+        let mut e3 = SyncEngine::new(vault.path(), idx3);
+        let report = e3.reconcile().unwrap();
+        assert_eq!(report.changed, vec![id.to_string()]);
+        assert_eq!(e3.vault().block(&id).unwrap().body, "edited offline\n");
     }
 
     #[test]

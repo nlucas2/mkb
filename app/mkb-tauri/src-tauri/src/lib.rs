@@ -127,6 +127,22 @@ fn allow_vault_assets(app: &tauri::AppHandle, cfg: &ConnectionConfig) {
 /// The returned client is marked [`Client::as_app`]: the desktop app is the human surface, so it
 /// announces the app scope (lock management) on each request. Over a remote transport the daemon
 /// ignores the announce, so lock/unlock is simply unavailable there.
+/// Build a [`Client`] **descriptor** without contacting (or spawning) the daemon. Used at startup
+/// so the window appears instantly: the actual connect/auto-start happens lazily on the first
+/// `connected()` call, which runs on a background/worker thread rather than blocking the UI. A
+/// cold daemon's initial reconcile no longer freezes the window — the UI shows an "Indexing…"
+/// placeholder until the first data load returns.
+fn client_descriptor(cfg: &ConnectionConfig) -> Client {
+    match cfg {
+        ConnectionConfig::Remote { host, token } => Client::tcp(host.clone(), token.clone()).as_app(),
+        ConnectionConfig::Local { vault } => Client::new(DaemonPaths::from_vault(vault).socket).as_app(),
+    }
+}
+
+/// Resolve a [`Client`] for `cfg`, **ensuring** a daemon is reachable (auto-starting a local one
+/// or building a TCP client). Used where a connection should be established and validated right
+/// away — e.g. the Settings page reconnect — rather than lazily. Startup uses
+/// [`client_descriptor`] instead so the window never blocks on a cold daemon.
 fn resolve_client(app: &tauri::AppHandle, cfg: &ConnectionConfig) -> Client {
     match connect(cfg, bundled_mkbd(app).as_deref()) {
         Ok(client) => {
@@ -619,7 +635,11 @@ pub fn run() {
         .setup(|app| {
             let cfg = current_config();
             let mkbd = bundled_mkbd(app.handle());
-            let client = resolve_client(app.handle(), &cfg);
+            // Build a client *descriptor* only — do NOT connect or spawn the daemon here, or a cold
+            // daemon's initial reconcile would freeze the window before it appears. The daemon is
+            // auto-started lazily by the first `connected()` call (heartbeat thread / UI command),
+            // which runs off the main thread; the UI shows an "Indexing…" placeholder until then.
+            let client = client_descriptor(&cfg);
             // Allow the WebView to load images stored in the local vault (asset protocol).
             allow_vault_assets(app.handle(), &cfg);
             app.manage(AppState {

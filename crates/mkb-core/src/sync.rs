@@ -44,6 +44,9 @@ pub struct SyncEngine<I: Index> {
     hashes: HashMap<BlockId, u64>,
     embedder: Option<Box<dyn Embedder>>,
     conflicts: Vec<String>,
+    /// Whether `self.hashes` has been seeded from the persisted index yet (done lazily on the
+    /// first reconcile, so it runs after the embedder is attached and thus uses the right version).
+    seeded: bool,
 }
 
 fn hash_bytes(b: &[u8]) -> u64 {
@@ -129,6 +132,7 @@ impl<I: Index> SyncEngine<I> {
             hashes: HashMap::new(),
             embedder: None,
             conflicts: Vec::new(),
+            seeded: false,
         }
     }
 
@@ -136,6 +140,16 @@ impl<I: Index> SyncEngine<I> {
     pub fn with_embedder(mut self, embedder: Box<dyn Embedder>) -> Self {
         self.embedder = Some(embedder);
         self
+    }
+
+    /// The version string under which content hashes are persisted: the embedder's model id (so a
+    /// model change invalidates all stored hashes and forces a re-embed), or `noembed` when no
+    /// embedder is attached. Persisted hashes are only trusted for a matching version.
+    fn version(&self) -> String {
+        self.embedder
+            .as_ref()
+            .map(|e| e.model_id())
+            .unwrap_or_else(|| "noembed".to_string())
     }
 
     /// The vault root directory.
@@ -181,6 +195,18 @@ impl<I: Index> SyncEngine<I> {
     /// Reconcile the whole `blocks/` directory: ingest new/changed block files, drop deleted
     /// ones. Files whose content hash is unchanged since the last pass are skipped.
     pub fn reconcile(&mut self) -> Result<SyncReport, IndexError> {
+        // Seed the in-memory hash map from the persisted index once, so a freshly started daemon
+        // skips re-ingesting (and re-embedding) blocks whose source is unchanged since last run.
+        // Lazy (not in `new`) so it runs after the embedder is attached and uses the right version.
+        // Merge rather than replace: any hash already set by a write earlier this session is at
+        // least as fresh as the persisted one, so it wins; the index only fills in blocks the
+        // in-memory map doesn't know about yet.
+        if !self.seeded {
+            for (id, h) in self.index.content_hashes(&self.version())? {
+                self.hashes.entry(id).or_insert(h);
+            }
+            self.seeded = true;
+        }
         let files = read_block_files(&self.root).map_err(io_err)?;
         let mut report = SyncReport::default();
         let mut seen = HashSet::new();
@@ -196,10 +222,18 @@ impl<I: Index> SyncEngine<I> {
             seen.insert(id.clone());
             let h = hash_bytes(source.as_bytes());
             if self.hashes.get(&id) == Some(&h) {
+                // Source unchanged since it was last indexed. On a warm daemon the vault already
+                // holds the block, so there's nothing to do. On a freshly started daemon the hash
+                // was seeded from the persisted index but the vault is still empty — parse the
+                // block into the vault (cheap) while skipping the costly reindex + embedding the
+                // index already holds. This is the cold-start win: no re-embed of unchanged blocks.
+                if self.vault.block(&id).is_none() {
+                    self.vault.insert_source(id.clone(), &source);
+                }
                 continue;
             }
             self.ingest(id.clone(), &source)?;
-            self.hashes.insert(id.clone(), h);
+            self.record_hash(&id, h)?;
             report.changed.push(id.to_string());
         }
 
@@ -235,6 +269,17 @@ impl<I: Index> SyncEngine<I> {
         self.hashes.clear();
         self.conflicts.clear();
         self.reconcile()
+    }
+
+    /// Record a block's source hash in both the in-memory map (drives the optimistic-concurrency
+    /// guard) and the persisted index (so a restart can skip re-embedding it). Always called
+    /// *after* the block's content + embedding are written, so a crash can at worst lose the hash
+    /// (→ a safe re-ingest next start), never leave a hash without its indexed content.
+    fn record_hash(&mut self, id: &BlockId, hash: u64) -> Result<(), IndexError> {
+        let version = self.version();
+        self.index.set_content_hash(id, &version, hash)?;
+        self.hashes.insert(id.clone(), hash);
+        Ok(())
     }
 
     /// Ingest one block (parse, index, embed). Does not touch disk.
@@ -281,8 +326,7 @@ impl<I: Index> SyncEngine<I> {
         let source = write_block(title, &[], false, Some(now.as_str()), &[], body);
         self.write_file(&id, &source)?;
         self.ingest(id.clone(), &source)?;
-        self.hashes
-            .insert(id.clone(), hash_bytes(source.as_bytes()));
+        self.record_hash(&id, hash_bytes(source.as_bytes()))?;
         self.refresh_links()?;
         Ok(id)
     }
@@ -396,8 +440,7 @@ impl<I: Index> SyncEngine<I> {
         );
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
-        self.hashes
-            .insert(id.clone(), hash_bytes(source.as_bytes()));
+        self.record_hash(id, hash_bytes(source.as_bytes()))?;
         self.refresh_links()?;
         Ok(())
     }
@@ -432,8 +475,7 @@ impl<I: Index> SyncEngine<I> {
         );
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
-        self.hashes
-            .insert(id.clone(), hash_bytes(source.as_bytes()));
+        self.record_hash(id, hash_bytes(source.as_bytes()))?;
         self.refresh_links()?;
         Ok(())
     }
@@ -460,8 +502,7 @@ impl<I: Index> SyncEngine<I> {
         );
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
-        self.hashes
-            .insert(id.clone(), hash_bytes(source.as_bytes()));
+        self.record_hash(id, hash_bytes(source.as_bytes()))?;
         self.refresh_links()?;
         Ok(())
     }
@@ -540,8 +581,7 @@ impl<I: Index> SyncEngine<I> {
         );
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
-        self.hashes
-            .insert(id.clone(), hash_bytes(source.as_bytes()));
+        self.record_hash(id, hash_bytes(source.as_bytes()))?;
         self.refresh_links()?;
         Ok(())
     }
@@ -577,8 +617,7 @@ impl<I: Index> SyncEngine<I> {
         );
         self.write_file(id, &source)?;
         self.ingest(id.clone(), &source)?;
-        self.hashes
-            .insert(id.clone(), hash_bytes(source.as_bytes()));
+        self.record_hash(id, hash_bytes(source.as_bytes()))?;
         self.refresh_links()?;
         Ok(())
     }

@@ -24,7 +24,7 @@
         --panel:#181825; --border:#313244; --hover:#272840; --ok:#a6e3a1; --bad:#f38ba8; --mauve:#cba6f7;
       }
       * { box-sizing: border-box; }
-      html, body { height:100%; }
+      html, body { height:100%; background:#1e1e2e; }
       body { margin:0; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
       .layout { display:flex; height:100vh; }
       nav { width:var(--navw,270px); flex:0 0 var(--navw,270px); background:var(--panel); padding:1rem; display:flex; flex-direction:column; min-width:0; overflow:hidden; }
@@ -198,6 +198,8 @@
       .glegend code { font-size:.9em; }
       .gcontrols input[type=checkbox] { accent-color:var(--accent); }
       .gcontrols .gtoggle { cursor:pointer; }
+      .spinner { display:inline-block; width:1.1rem; height:1.1rem; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; }
+      @keyframes spin { to { transform:rotate(360deg); } }
       .gcontrols { position:absolute; right:1rem; top:1rem; z-index:6; display:flex; align-items:center; gap:.5rem; background:rgba(24,24,37,.9); border:1px solid var(--border); border-radius:8px; padding:.4rem .6rem; font-size:.82em; }
       .gcontrols label { display:flex; align-items:center; gap:.4rem; color:var(--muted); }
       .gcontrols input[type=range] { width:7rem; accent-color:var(--accent); }
@@ -247,6 +249,10 @@
     </style>
   </head>
   <body>
+    <div id="bootbanner" style="position:fixed;inset:0;z-index:9999;background:#1e1e2e;color:#cdd6f4;display:flex;align-items:center;justify-content:center;font:15px -apple-system,sans-serif;text-align:center;padding:2rem">
+      <div><div style="font-size:1.2rem;margin-bottom:.6rem;display:flex;align-items:center;gap:.6rem;justify-content:center"><span class="spinner"></span> Indexing your vault…</div>
+      <div id="bootbannermsg" style="color:#9399b2">Loading your knowledge base.</div></div>
+    </div>
     <div class="toastwrap" id="toasts"></div>
     <div class="layout">
       <nav id="nav">
@@ -269,6 +275,17 @@
     </div>
 
     <script type="module">
+      // Surface any uncaught UI error visibly instead of failing to a blank window — both during
+      // module evaluation and from async rejections. `hideBanner` removes the startup loader.
+      const hideBanner = () => { try { const b = document.getElementById("bootbanner"); if (b) b.remove(); } catch {} };
+      const showError = (m) => {
+        document.body.innerHTML =
+          '<pre style="color:#f38ba8;background:#1e1e2e;margin:0;padding:1rem;white-space:pre-wrap;font:13px ui-monospace,Menlo,monospace">UI error:\n' +
+          String(m).replace(/[<&]/g, (c) => (c === "<" ? "&lt;" : "&amp;")) + "</pre>";
+      };
+      window.addEventListener("error", (e) => showError((e.error && e.error.stack) || e.message || e));
+      window.addEventListener("unhandledrejection", (e) =>
+        showError("Unhandled promise rejection:\n" + ((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
       const { invoke, convertFileSrc } = window.__TAURI__.core;
       const blocksEl = document.getElementById("blocks");
       const mainEl = document.getElementById("main");
@@ -1672,7 +1689,26 @@
         if (active && !editing) await openBlock(active, true);
       });
 
-      loadBlocks();
+      // Startup loader: the full-window #bootbanner (in the static HTML) shows instantly — even
+      // before this script runs — so the window never appears blank. The first data load may wait
+      // on a cold daemon's initial reconcile (re-embedding a new or just-changed vault); escalate
+      // the copy if it's slow so the wait is explained, then remove the banner once blocks load.
+      let indexingTimer = setTimeout(() => {
+        const b = document.getElementById("bootbannermsg");
+        if (b) b.textContent =
+          "First load can take a moment — embedding your blocks so search works offline. This only happens once.";
+      }, 1500);
+      // Let the browser paint the loading banner BEFORE we start the (potentially slow, cold-daemon)
+      // first data load. WKWebView defers its first contentful paint until the initial synchronous
+      // script settles and a frame composites, so kicking off loadBlocks() immediately would leave
+      // the banner unpainted until the work finished (a "flash at the end"). Two rAFs guarantee at
+      // least one painted frame first; then we load.
+      function startLoad() {
+        loadBlocks()
+          .then(() => { clearTimeout(indexingTimer); hideBanner(); })
+          .catch(() => { clearTimeout(indexingTimer); hideBanner(); });
+      }
+      requestAnimationFrame(() => requestAnimationFrame(startLoad));
     </script>
   </body>
 </html>
