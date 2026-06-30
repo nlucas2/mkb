@@ -4,6 +4,9 @@
 
 # mkb local index (never synced, never committed)
 .mkb/
+# Legacy index name (pre-0.2.0 rename) + any stray vault index dir — never committed.
+.mdkb/
+**/.mdkb/
 
 # Tauri / node (added in later phases)
 app/**/node_modules/
