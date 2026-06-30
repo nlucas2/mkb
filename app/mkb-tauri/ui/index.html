@@ -414,7 +414,13 @@
           '<pre style="color:var(--bad);background:var(--bg);margin:0;padding:1rem;white-space:pre-wrap;font:13px ui-monospace,Menlo,monospace">UI error:\n' +
           String(m).replace(/[<&]/g, (c) => (c === "<" ? "&lt;" : "&amp;")) + "</pre>";
       };
-      window.addEventListener("error", (e) => showError((e.error && e.error.stack) || e.message || e));
+      window.addEventListener("error", (e) => {
+        // "ResizeObserver loop …" notices are benign browser warnings (no stack, no broken
+        // state — most often emitted by the graph view's auto-sizing observer). They are NOT
+        // fatal, so ignore them rather than wiping the whole app to the fatal-error screen.
+        if (typeof e.message === "string" && e.message.startsWith("ResizeObserver loop")) return;
+        showError((e.error && e.error.stack) || e.message || e);
+      });
       window.addEventListener("unhandledrejection", (e) =>
         showError("Unhandled promise rejection:\n" + ((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
       const { invoke, convertFileSrc } = window.__TAURI__.core;
@@ -2043,7 +2049,18 @@
         // Re-frame once per requested (re)layout, after it settles.
         let refitNext = true;
         fg.onEngineStop(() => { if (refitNext) { refitNext = false; fg.zoomToFit(400, 40); } });
-        const ro = new ResizeObserver(() => { if (fg) fg.width(el.clientWidth).height(el.clientHeight); });
+        // Re-size on the next frame (not synchronously inside the observer) so resizing the
+        // canvas can't re-enter this same observer in the current frame — which is what emits
+        // the benign "ResizeObserver loop completed with undelivered notifications" warning.
+        let roPending = false;
+        const ro = new ResizeObserver(() => {
+          if (roPending) return;
+          roPending = true;
+          requestAnimationFrame(() => {
+            roPending = false;
+            if (fg) fg.width(el.clientWidth).height(el.clientHeight);
+          });
+        });
         ro.observe(el);
         // Controls. Fit (or double-click) re-frames the graph. Reheat re-runs the layout. Spread
         // scales repulsion + link length so you can pull a dense graph tighter or spread it out.
