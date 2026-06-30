@@ -131,6 +131,34 @@
       nav li a { display:block; padding:.3rem .5rem; border-radius:6px; color:var(--fg); text-decoration:none; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       nav li a:hover { background:var(--hover); }
       nav li.active a { background:var(--accent); color:var(--panel); font-weight:600; }
+      /* Sidebar group-by select + grouped tree. */
+      .groupby { appearance:none; -webkit-appearance:none; background:var(--field); color:var(--fg); border:1px solid var(--border); border-radius:5px; padding:.15rem 1.3rem .15rem .4rem; font:inherit; font-size:.8em; cursor:pointer; background-image:linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position:calc(100% - 11px) center, calc(100% - 7px) center; background-size:4px 4px, 4px 4px; background-repeat:no-repeat; }
+      .groupby:hover { border-color:var(--accent); }
+      nav ul.grouped li { display:block; }
+      /* A tag/path node row (node = category, whole row toggles expand). */
+      .gb-row { display:flex; align-items:center; gap:.1rem; border-radius:6px; cursor:pointer; color:var(--muted); padding:.2rem .3rem; white-space:nowrap; overflow:hidden; }
+      .gb-row:hover { background:var(--hover); color:var(--fg); }
+      .gb-caret { flex:0 0 auto; width:1.1em; text-align:center; font-size:.8em; color:var(--muted); cursor:pointer; border-radius:4px; }
+      .gb-caret.leaf { cursor:default; opacity:.3; }
+      .gb-seg { overflow:hidden; text-overflow:ellipsis; }
+      .gb-count { margin-left:auto; font-size:.85em; opacity:.7; padding-left:.4rem; }
+      /* A hierarchy row: every node is a BLOCK — caret expands, the label opens (split click). */
+      .gb-hrow { display:flex; align-items:center; gap:.15rem; border-radius:6px; padding:.15rem .3rem; white-space:nowrap; overflow:hidden; }
+      .gb-hrow:hover { background:var(--hover); }
+      .gb-hrow.active { background:var(--accent); }
+      .gb-hrow.active .gb-hlabel, .gb-hrow.active .gb-edge { color:var(--panel); }
+      .gb-hrow .gb-caret:hover { background:color-mix(in srgb, var(--accent) 25%, transparent); color:var(--fg); }
+      .gb-hlabel { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; color:var(--fg); cursor:pointer; }
+      .gb-edge { flex:0 0 auto; font-size:.78em; width:.9em; text-align:center; }
+      .gb-edge.embed { color:var(--mauve); }
+      .gb-edge.ref { color:var(--accent); }
+      .gb-cyc { flex:0 0 auto; font-size:.78em; opacity:.6; padding-left:.3rem; }
+      /* A block leaf row under a tag/path node. */
+      .gb-block a { display:flex; align-items:center; gap:.4rem; }
+      .gb-block .dotr { flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--mauve); }
+      .gb-block .dotr.root { background:var(--accent); }
+      .gb-children { list-style:none; margin:0; padding:0 0 0 .75rem; }
+      .gb-unfiled-seg { color:var(--muted); font-style:italic; }
       .status { margin-top:.6rem; padding:.45rem .5rem; border-top:1px solid var(--border); font-size:.8em; color:var(--muted); display:flex; align-items:center; gap:.4rem; cursor:pointer; border-radius:6px; }
       .status:hover { background:var(--hover); color:var(--fg); }
       .status .gear { margin-left:auto; flex:0 0 auto; opacity:.8; font-size:1.05em; }
@@ -336,7 +364,12 @@
           <button id="tagsbtn"><span class="ico">#</span><span class="label">Tags</span></button>
         </div>
         <div class="navhd"><span>Blocks</span>
-          <div class="seg small"><button id="tabRoots" class="on">Roots</button><button id="tabAll">All</button></div>
+          <select id="groupby" class="groupby" title="How to organize the block list">
+            <option value="hierarchy" selected>Hierarchy</option>
+            <option value="none">Flat</option>
+            <option value="tags">Tags</option>
+            <option value="path">Path</option>
+          </select>
         </div>
         <ul id="blocks"></ul>
         <button id="newblock" class="addrow" title="New block (⌘↵ to save · Esc to discard)"><span class="ico">+</span> New block</button>
@@ -648,8 +681,15 @@
         });
       })();
 
-      let roots = [];          // current sidebar list [{id,title}]
-      let navScope = "roots";  // roots | all
+      let roots = [];          // current flat sidebar list [{id,title}] (group=none)
+      let groupBy = "hierarchy"; // sidebar organization: hierarchy | none | tags | <prop key, e.g. path>
+      let groupTree = null;    // cached GroupTree (tags/path) when that grouping is active
+      let hierTree = null;     // cached HierTree when grouping = hierarchy
+      const groupOpen = new Set(); // expanded node keys (persisted)
+      try {
+        groupBy = localStorage.getItem("mkb.groupBy") || "hierarchy";
+        JSON.parse(localStorage.getItem("mkb.groupOpen") || "[]").forEach((v) => groupOpen.add(v));
+      } catch {}
       let indexCache = null;   // [{id,title}] of ALL blocks (picker)
       let active = null;       // current block id
       let mode = "read";       // read (clean) | blocks (interactive) | edit (raw)
@@ -723,7 +763,19 @@
 
       async function loadBlocks(select, opts = {}) {
         try {
-          roots = navScope === "all" ? await invoke("block_index") : await invoke("list_blocks");
+          if (groupBy === "hierarchy") {
+            hierTree = await invoke("hierarchy");
+            groupTree = null;
+            roots = await invoke("block_index"); // for openBlock fallbacks
+          } else if (groupBy !== "none") {
+            const axis = groupBy === "tags" ? "tags" : "prop:" + groupBy;
+            groupTree = await invoke("group_blocks", { axis });
+            hierTree = null;
+            roots = await invoke("block_index");
+          } else {
+            groupTree = null; hierTree = null;
+            roots = await invoke("block_index"); // flat = every block
+          }
         }
         catch (e) {
           mainEl.innerHTML =
@@ -743,12 +795,13 @@
       }
 
       function renderNav() {
-        // Reflect the active scope on the toggle.
-        const tr = document.getElementById("tabRoots"), ta = document.getElementById("tabAll");
-        if (tr && ta) { tr.classList.toggle("on", navScope === "roots"); ta.classList.toggle("on", navScope === "all"); }
+        blocksEl.classList.toggle("grouped", groupBy !== "none");
         blocksEl.innerHTML = "";
+        if (groupBy === "hierarchy") { renderHierNav(); return; }
+        if (groupBy !== "none") { renderGroupNav(); return; }
+        // Flat: every block, plain list.
         if (!roots.length) {
-          blocksEl.innerHTML = `<li class="muted" style="padding:.3rem .5rem">No ${navScope === "all" ? "blocks" : "root blocks"}.</li>`;
+          blocksEl.innerHTML = `<li class="muted" style="padding:.3rem .5rem">No blocks.</li>`;
           return;
         }
         for (const b of roots) {
@@ -759,6 +812,140 @@
           a.onclick = () => openBlock(b.id);
           li.appendChild(a); blocksEl.appendChild(li);
         }
+      }
+
+      // Render the grouped sidebar tree (group_blocks result). Nodes are collapsible (expansion
+      // persisted by full value); block rows open the block and show a root/non-root dot.
+      function renderGroupNav() {
+        if (!groupTree || (!groupTree.roots.length && !groupTree.unfiled.length)) {
+          blocksEl.innerHTML = `<li class="muted" style="padding:.3rem .5rem">Nothing grouped by ${esc(groupBy)}.</li>`;
+          return;
+        }
+        const blockLi = (b) => {
+          const li = document.createElement("li");
+          li.className = "gb-block" + (b.id === active ? " active" : "");
+          const a = document.createElement("a");
+          a.title = b.id;
+          const dot = document.createElement("span");
+          dot.className = "dotr" + (b.root ? " root" : "");
+          dot.title = b.root ? "Root (a page — nothing embeds it)" : "Embedded / linked block";
+          const t = document.createElement("span");
+          t.textContent = b.title || b.id;
+          t.className = "gb-seg";
+          a.append(dot, t);
+          a.onclick = () => openBlock(b.id);
+          li.appendChild(a);
+          return li;
+        };
+        const nodeLi = (node) => {
+          const li = document.createElement("li");
+          const open = groupOpen.has(node.full_value);
+          const row = document.createElement("div");
+          row.className = "gb-row";
+          const childCount = node.blocks.length + node.children.length;
+          row.innerHTML =
+            `<span class="gb-caret">${open ? "▾" : "▸"}</span>` +
+            `<span class="gb-seg">${esc(node.segment)}</span>` +
+            `<span class="gb-count">${childCount}</span>`;
+          row.title = node.full_value;
+          const kids = document.createElement("ul");
+          kids.className = "gb-children";
+          if (!open) kids.hidden = true;
+          row.onclick = () => {
+            if (groupOpen.has(node.full_value)) groupOpen.delete(node.full_value);
+            else groupOpen.add(node.full_value);
+            try { localStorage.setItem("mkb.groupOpen", JSON.stringify([...groupOpen])); } catch {}
+            renderNav();
+          };
+          li.append(row, kids);
+          // Child segment nodes first, then the blocks filed directly at this node.
+          node.children.forEach((c) => kids.appendChild(nodeLi(c)));
+          node.blocks.forEach((b) => kids.appendChild(blockLi(b)));
+          return li;
+        };
+        groupTree.roots.forEach((n) => blocksEl.appendChild(nodeLi(n)));
+        if (groupTree.unfiled.length) {
+          // "Unfiled" is itself an expandable node so you can find and file these blocks. Use a
+          // sentinel key for its collapsed state (default collapsed — it can be large).
+          const KEY = "\u0000unfiled";
+          const li = document.createElement("li");
+          const open = groupOpen.has(KEY);
+          const row = document.createElement("div");
+          row.className = "gb-row";
+          row.innerHTML =
+            `<span class="gb-caret">${open ? "▾" : "▸"}</span>` +
+            `<span class="gb-seg gb-unfiled-seg">Unfiled</span>` +
+            `<span class="gb-count">${groupTree.unfiled.length}</span>`;
+          row.title = `Blocks with no ${groupBy} value`;
+          const kids = document.createElement("ul");
+          kids.className = "gb-children";
+          if (!open) kids.hidden = true;
+          row.onclick = () => {
+            if (groupOpen.has(KEY)) groupOpen.delete(KEY); else groupOpen.add(KEY);
+            try { localStorage.setItem("mkb.groupOpen", JSON.stringify([...groupOpen])); } catch {}
+            renderNav();
+          };
+          li.append(row, kids);
+          groupTree.unfiled.forEach((b) => kids.appendChild(blockLi(b)));
+          blocksEl.appendChild(li);
+        }
+      }
+
+      // Render the hierarchy (composition) tree. Unlike tags/path, every node IS a block, so the
+      // row has a SPLIT click: the caret toggles expansion; the label opens the block. A child's
+      // edge to its parent is marked (embed vs reference). Cyclic repeats are shown but not
+      // expandable. Expansion is keyed by the path of ids so the same block can be open in one
+      // place and closed in another.
+      function renderHierNav() {
+        if (!hierTree || !hierTree.roots.length) {
+          blocksEl.innerHTML = `<li class="muted" style="padding:.3rem .5rem">No blocks.</li>`;
+          return;
+        }
+        const nodeLi = (node, pathKey) => {
+          const li = document.createElement("li");
+          const key = pathKey + "/" + node.id;
+          const hasKids = node.children.length > 0 && !node.truncated;
+          const open = hasKids && groupOpen.has(key);
+          const row = document.createElement("div");
+          row.className = "gb-hrow" + (node.id === active ? " active" : "");
+          const caret = document.createElement("span");
+          caret.className = "gb-caret" + (hasKids ? "" : " leaf");
+          caret.textContent = hasKids ? (open ? "▾" : "▸") : "·";
+          if (hasKids) {
+            caret.title = open ? "Collapse" : "Expand";
+            caret.onclick = (e) => {
+              e.stopPropagation();
+              if (groupOpen.has(key)) groupOpen.delete(key); else groupOpen.add(key);
+              try { localStorage.setItem("mkb.groupOpen", JSON.stringify([...groupOpen])); } catch {}
+              renderNav();
+            };
+          }
+          // Edge marker: embed (●, mauve) vs reference (→, accent); top-level has none.
+          const edge = document.createElement("span");
+          if (node.edge === "embed") { edge.className = "gb-edge embed"; edge.textContent = "●"; edge.title = "Embedded ![[ ]]"; }
+          else if (node.edge === "reference") { edge.className = "gb-edge ref"; edge.textContent = "→"; edge.title = "Reference [[ ]]"; }
+          else { edge.className = "gb-edge"; edge.textContent = ""; }
+          const label = document.createElement("span");
+          label.className = "gb-hlabel";
+          label.textContent = node.title || node.id;
+          label.title = node.id;
+          label.onclick = () => openBlock(node.id);
+          row.append(caret, edge, label);
+          if (node.truncated) {
+            const c = document.createElement("span");
+            c.className = "gb-cyc"; c.textContent = "↩"; c.title = "Already shown above (cycle)";
+            row.appendChild(c);
+          }
+          li.appendChild(row);
+          if (open) {
+            const kids = document.createElement("ul");
+            kids.className = "gb-children";
+            node.children.forEach((c) => kids.appendChild(nodeLi(c, key)));
+            li.appendChild(kids);
+          }
+          return li;
+        };
+        hierTree.roots.forEach((n) => blocksEl.appendChild(nodeLi(n, "")));
       }
 
       // The topbar shows the title, an editable tag row, the view tabs, and delete. Managed
@@ -1945,8 +2132,20 @@
       document.getElementById("tagsbtn").onclick = showTags;
       applyTheme(false);
       document.getElementById("status").onclick = showSettings;
-      document.getElementById("tabRoots").onclick = () => { if (navScope !== "roots") { navScope = "roots"; loadBlocks(active); } };
-      document.getElementById("tabAll").onclick = () => { if (navScope !== "all") { navScope = "all"; loadBlocks(active); } };
+      // Sidebar organization: the "Group by" select reorganizes the block list — Hierarchy (roots →
+      // embeds/links, the default), Flat (every block), Tags (many-home /-tree), or a property like
+      // Path (single-home /-tree). Persisted. Replaces the old Roots/All toggle (Hierarchy collapsed
+      // IS "roots").
+      (() => {
+        const sel = document.getElementById("groupby");
+        const known = ["hierarchy", "none", "tags", "path"];
+        sel.value = known.includes(groupBy) ? groupBy : "path";
+        sel.onchange = () => {
+          groupBy = sel.value;
+          try { localStorage.setItem("mkb.groupBy", groupBy); } catch {}
+          loadBlocks(active, { navOnly: true });
+        };
+      })();
       window.__mkb = { settings: showSettings };
 
       // Global drop guard: dropping a file anywhere that isn't an editor textarea would otherwise

@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 
 use mkb_core::export::{ExportRequest, SlugSelection};
-use mkb_core::{BlockId, SearchQuery};
+use mkb_core::{BlockId, GroupAxis, GroupNode, HierEdge, HierNode, SearchQuery};
 use mkb_protocol::{
     connect_resolved, resolve_client, resolve_target, Client, ClientInputs, EnvSnapshot, Registry,
     ResolvedTarget,
@@ -149,6 +149,13 @@ enum Command {
     },
     /// All tags with block counts.
     Tags,
+    /// Group blocks into a `/`-nested tree by an axis: `tags` or a property key (e.g. `path`).
+    GroupBy {
+        /// Axis to group by: `tags`, or a property key like `path` / `status`.
+        axis: String,
+    },
+    /// The composition hierarchy (roots → embeds/links) as an indented tree.
+    Hierarchy,
     /// A block's properties (key<TAB>value per line).
     Props {
         /// Block id.
@@ -354,6 +361,8 @@ fn run(cli: Cli) -> Result<(), String> {
             },
         ),
         Command::Tags => cmd_tags(g),
+        Command::GroupBy { axis } => cmd_group_by(g, &axis),
+        Command::Hierarchy => cmd_hierarchy(g),
         Command::Props { id } => cmd_props(g, &id),
         Command::Info { id } => cmd_info(g, &id),
         Command::Backlinks { id } => cmd_links(g, &id, true),
@@ -621,6 +630,60 @@ fn cmd_tags(g: &GlobalArgs) -> Result<(), String> {
     for t in tags {
         println!("{:>4}  #{}", t.count, t.tag);
     }
+    Ok(())
+}
+
+fn cmd_group_by(g: &GlobalArgs, axis: &str) -> Result<(), String> {
+    let c = g.connect()?;
+    let group_axis = if axis == "tags" {
+        GroupAxis::Tags
+    } else {
+        GroupAxis::Property(axis.to_string())
+    };
+    let tree = c.group_blocks_by(group_axis).map_err(|e| e.to_string())?;
+    if tree.roots.is_empty() {
+        println!("(nothing grouped by {axis})");
+    }
+    fn print_nodes(nodes: &[GroupNode], depth: usize) {
+        for n in nodes {
+            println!("{}{}/", "  ".repeat(depth), n.segment);
+            for b in &n.blocks {
+                let marker = if b.root { "•" } else { "◦" };
+                println!("{}{} {}", "  ".repeat(depth + 1), marker, b.title);
+            }
+            print_nodes(&n.children, depth + 1);
+        }
+    }
+    print_nodes(&tree.roots, 0);
+    if !tree.unfiled.is_empty() {
+        println!("Unfiled/");
+        for b in &tree.unfiled {
+            let marker = if b.root { "•" } else { "◦" };
+            println!("  {} {}", marker, b.title);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_hierarchy(g: &GlobalArgs) -> Result<(), String> {
+    let c = g.connect()?;
+    let tree = c.hierarchy().map_err(|e| e.to_string())?;
+    if tree.roots.is_empty() {
+        println!("(no blocks)");
+    }
+    fn print_nodes(nodes: &[HierNode], depth: usize) {
+        for n in nodes {
+            let edge = match n.edge {
+                Some(HierEdge::Embed) => "▸ ",
+                Some(HierEdge::Reference) => "→ ",
+                None => "",
+            };
+            let cyc = if n.truncated { " ↩" } else { "" };
+            println!("{}{}{}{}", "  ".repeat(depth), edge, n.title, cyc);
+            print_nodes(&n.children, depth + 1);
+        }
+    }
+    print_nodes(&tree.roots, 0);
     Ok(())
 }
 

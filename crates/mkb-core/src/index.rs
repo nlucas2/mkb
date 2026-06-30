@@ -652,6 +652,311 @@ pub fn transclusion_reaches(vault: &Vault, start: &BlockId, goal: &BlockId) -> b
     false
 }
 
+// ---------- group-by (sidebar tree views) ----------
+
+/// Which axis to group blocks by when building a [`GroupTree`].
+///
+/// The two axes differ only in how many values a block contributes:
+/// - [`GroupAxis::Property`] reads a single scalar `props` value (0 or 1 per block — a block
+///   lands at exactly one node, giving a "single home" filing tree).
+/// - [`GroupAxis::Tags`] reads the block's tags (0..N per block — a block lands at every tag,
+///   giving a naturally multi-home browse tree).
+///
+/// Everything else (the `/`-nesting, parent-holds-own-blocks, ordering) is shared, so one
+/// engine produces both the property "folder" tree and the tag tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum GroupAxis {
+    /// Group by the block's tags (frontmatter + inline), multi-valued.
+    Tags,
+    /// Group by a single arbitrary frontmatter property key (scalar, at most one per block).
+    Property(String),
+}
+
+/// A block reference at a node of a [`GroupTree`] (enough to render a clickable row).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GroupBlockRef {
+    /// Block id.
+    pub id: BlockId,
+    /// Display title.
+    pub title: String,
+    /// Whether the block is a root (nothing transcludes it) — for the page/non-page marker.
+    pub root: bool,
+}
+
+/// One node in a [`GroupTree`]: a single `/`-separated path segment, the blocks filed exactly
+/// here, and any child segments below it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GroupNode {
+    /// This level's segment (e.g. `Apps` under `Desktop/Apps`).
+    pub segment: String,
+    /// The full value path to this node (e.g. `Desktop/Apps`).
+    pub full_value: String,
+    /// Blocks whose value is exactly `full_value` (i.e. filed at this node, not a descendant).
+    pub blocks: Vec<GroupBlockRef>,
+    /// Child segments, ordered.
+    pub children: Vec<GroupNode>,
+}
+
+/// Blocks grouped by an axis and arranged into a `/`-nested tree.
+///
+/// A pure projection over the vault — no new stored state. Values are normalized at read time
+/// only (trimmed, split on `/`, empty segments dropped); the underlying property/tag strings are
+/// never rewritten. Blocks with no value on the axis are collected in `unfiled` (so they stay
+/// browsable — you can find and file them — not just counted).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GroupTree {
+    /// Top-level nodes, ordered.
+    pub roots: Vec<GroupNode>,
+    /// Blocks carrying no value on this axis (would render under an "Unfiled" bucket), ordered.
+    pub unfiled: Vec<GroupBlockRef>,
+}
+
+/// Split a raw axis value into clean path segments: trim the whole string and each segment,
+/// drop empties so `"/a"`, `"a/"`, `"a//b"`, and `"  a / b "` all normalize sensibly. Returns an
+/// empty vec when nothing usable remains (the block is then treated as unfiled for that value).
+fn group_segments(value: &str) -> Vec<String> {
+    value
+        .split('/')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Insert a block at the node addressed by `segments`, creating intermediate nodes as needed.
+fn attach_or_create(roots: &mut Vec<GroupNode>, segments: &[String], block: &GroupBlockRef) {
+    let mut level = roots;
+    let mut prefix = String::new();
+    for (i, seg) in segments.iter().enumerate() {
+        if prefix.is_empty() {
+            prefix = seg.clone();
+        } else {
+            prefix.push('/');
+            prefix.push_str(seg);
+        }
+        // Find-or-create the child for this segment (case-insensitive grouping is a future
+        // refinement; v1 groups on the exact segment string).
+        let idx = match level.iter().position(|n| n.segment == *seg) {
+            Some(i) => i,
+            None => {
+                level.push(GroupNode {
+                    segment: seg.clone(),
+                    full_value: prefix.clone(),
+                    blocks: Vec::new(),
+                    children: Vec::new(),
+                });
+                level.len() - 1
+            }
+        };
+        if i + 1 == segments.len() {
+            level[idx].blocks.push(block.clone());
+        } else {
+            level = &mut level[idx].children;
+        }
+    }
+}
+/// then id) so the tree is deterministic regardless of vault iteration order.
+fn group_sort(nodes: &mut [GroupNode]) {
+    nodes.sort_by(|a, b| {
+        a.segment
+            .to_lowercase()
+            .cmp(&b.segment.to_lowercase())
+            .then_with(|| a.segment.cmp(&b.segment))
+    });
+    for n in nodes.iter_mut() {
+        n.blocks.sort_by(|a, b| {
+            a.title
+                .to_lowercase()
+                .cmp(&b.title.to_lowercase())
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        group_sort(&mut n.children);
+    }
+}
+
+/// Build a [`GroupTree`] from the vault for the given axis.
+///
+/// Pure read projection: no writes, no validation. A block contributes 0..1 values for
+/// [`GroupAxis::Property`] (scalar) or 0..N for [`GroupAxis::Tags`]; each value is `/`-split into
+/// nested nodes and the block is filed at its leaf. Blocks with no usable value are counted in
+/// `unfiled`. Output is fully ordered.
+pub fn group_blocks_by(vault: &Vault, axis: &GroupAxis) -> GroupTree {
+    let roots: HashSet<BlockId> = vault.roots().into_iter().collect();
+    let mut tree = GroupTree::default();
+
+    for block in vault.blocks() {
+        let bref = GroupBlockRef {
+            id: block.id.clone(),
+            title: block.display_title(),
+            root: roots.contains(&block.id),
+        };
+        let values: Vec<String> = match axis {
+            GroupAxis::Tags => block.tags.clone(),
+            GroupAxis::Property(key) => block
+                .props
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| vec![v.clone()])
+                .unwrap_or_default(),
+        };
+        // Each value yields segments; a block with no value (or only empty segments) is unfiled.
+        let placements: Vec<Vec<String>> = values
+            .iter()
+            .map(|v| group_segments(v))
+            .filter(|segs| !segs.is_empty())
+            .collect();
+        if placements.is_empty() {
+            tree.unfiled.push(bref);
+            continue;
+        }
+        for segments in placements {
+            attach_or_create(&mut tree.roots, &segments, &bref);
+        }
+    }
+
+    group_sort(&mut tree.roots);
+    tree.unfiled.sort_by(|a, b| {
+        a.title
+            .to_lowercase()
+            .cmp(&b.title.to_lowercase())
+            .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+    });
+    tree
+}
+
+// ---------- hierarchy (composition tree: roots → embeds/links) ----------
+
+/// How a child block hangs off its parent in a [`HierTree`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HierEdge {
+    /// `![[ ]]` — the child is transcluded (composed) into the parent.
+    Embed,
+    /// `[[ ]]` — the child is referenced ("see also") by the parent.
+    Reference,
+}
+
+/// A node in the composition hierarchy: a block, the edge by which it hangs off its parent
+/// (`None` at the top level), and its own children.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct HierNode {
+    /// Block id.
+    pub id: BlockId,
+    /// Display title.
+    pub title: String,
+    /// Whether the block is a root (nothing transcludes it).
+    pub root: bool,
+    /// The edge from the parent (`None` for top-level roots).
+    pub edge: Option<HierEdge>,
+    /// Child blocks (embeds then references), each via its edge.
+    pub children: Vec<HierNode>,
+    /// True when this block already appears among its own ancestors on this path: it is shown but
+    /// NOT expanded, so reference cycles (`A → B → A`) can't loop forever.
+    pub truncated: bool,
+}
+
+/// The vault as a composition tree: roots at the top, each block expandable into the blocks it
+/// **embeds** (`![[ ]]`) and **links** (`[[ ]]`), distinguished by [`HierEdge`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct HierTree {
+    /// Top-level nodes (the roots), ordered by title.
+    pub roots: Vec<HierNode>,
+}
+
+/// Build a [`HierNode`] for `id`, recursing into its embeds+links while guarding against cycles.
+///
+/// `ancestors` holds the ids on the current path: if `id` is already among them the node is
+/// emitted with `truncated = true` and not expanded (so a reference loop terminates). Multi-parent
+/// blocks (reached by several distinct paths) are intentionally shown under each parent.
+fn hier_node(
+    vault: &Vault,
+    id: &BlockId,
+    edge: Option<HierEdge>,
+    ancestors: &mut Vec<BlockId>,
+    roots: &HashSet<BlockId>,
+) -> HierNode {
+    let title = vault
+        .block(id)
+        .map(|b| b.display_title())
+        .unwrap_or_else(|| id.to_string());
+    let mut node = HierNode {
+        id: id.clone(),
+        title,
+        root: roots.contains(id),
+        edge,
+        children: Vec::new(),
+        truncated: false,
+    };
+    if ancestors.contains(id) {
+        node.truncated = true;
+        return node;
+    }
+    let Some(block) = vault.block(id) else {
+        return node;
+    };
+    // Collect resolved children, deduped by target (an embed wins over a plain reference to the
+    // same block), then ordered embeds-first and alphabetically.
+    let mut kinds: Vec<(BlockId, HierEdge)> = Vec::new();
+    for row in block_links(vault, block) {
+        let Some(target) = row.target_id else {
+            continue;
+        };
+        if &target == id {
+            continue;
+        }
+        let edge = match row.kind {
+            LinkKind::Transcludes => HierEdge::Embed,
+            LinkKind::References => HierEdge::Reference,
+        };
+        match kinds.iter_mut().find(|(t, _)| *t == target) {
+            Some(existing) => {
+                if edge == HierEdge::Embed {
+                    existing.1 = HierEdge::Embed;
+                }
+            }
+            None => kinds.push((target, edge)),
+        }
+    }
+
+    ancestors.push(id.clone());
+    let children: Vec<HierNode> = kinds
+        .into_iter()
+        .map(|(target, edge)| hier_node(vault, &target, Some(edge), ancestors, roots))
+        .collect();
+    ancestors.pop();
+
+    // Children stay in DOCUMENT ORDER (the order the embeds/links appear in the body), not
+    // alphabetical — an index/collection block's authored ordering is meaningful and should be
+    // preserved. The embed-vs-reference distinction is carried by `edge`, not by sorting.
+    node.children = children;
+    node
+}
+
+/// Build the composition [`HierTree`] for the whole vault: roots at the top, each expandable into
+/// the blocks it embeds and links. A pure read projection (no stored state). Reference cycles are
+/// broken by an ancestor-path guard (see [`hier_node`]).
+pub fn hierarchy_tree(vault: &Vault) -> HierTree {
+    let roots: HashSet<BlockId> = vault.roots().into_iter().collect();
+    let mut nodes: Vec<HierNode> = vault
+        .roots()
+        .iter()
+        .map(|id| hier_node(vault, id, None, &mut Vec::new(), &roots))
+        .collect();
+    nodes.sort_by(|a, b| {
+        a.title
+            .to_lowercase()
+            .cmp(&b.title.to_lowercase())
+            .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+    });
+    HierTree { roots: nodes }
+}
+
 /// Fuse keyword and vector rankings into one ordering via Reciprocal Rank Fusion (RRF).
 ///
 /// `keyword` and `vector` are each `(BlockId, _)` lists already sorted best-first. RRF is
@@ -867,6 +1172,255 @@ mod tests {
         assert!(n.tags.contains(&"alpha".to_string()));
         assert!(n.tags.contains(&"beta".to_string()));
         assert!(n.tags.contains(&"gamma".to_string()));
+    }
+
+    // ---------- group-by ----------
+
+    /// Find a node by its `/`-joined full value in a (sub)tree.
+    fn find_node<'a>(nodes: &'a [GroupNode], full: &str) -> Option<&'a GroupNode> {
+        for n in nodes {
+            if n.full_value == full {
+                return Some(n);
+            }
+            if full.starts_with(&format!("{}/", n.full_value)) {
+                if let Some(found) = find_node(&n.children, full) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn group_by_property_nests_on_slash_single_home() {
+        let mut v = Vault::new();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        v.insert_source(
+            a.clone(),
+            "---\ntitle: Raycast\npath: Desktop/Apps\n---\nx\n",
+        );
+        v.insert_source(
+            b.clone(),
+            "---\ntitle: Launchd\npath: Desktop/Services\n---\nx\n",
+        );
+        let t = group_blocks_by(&v, &GroupAxis::Property("path".into()));
+        // One top-level "Desktop" with two children, each holding its one block.
+        assert_eq!(t.roots.len(), 1);
+        assert_eq!(t.roots[0].segment, "Desktop");
+        let apps = find_node(&t.roots, "Desktop/Apps").unwrap();
+        assert_eq!(apps.blocks.len(), 1);
+        assert_eq!(apps.blocks[0].id, a);
+        let svc = find_node(&t.roots, "Desktop/Services").unwrap();
+        assert_eq!(svc.blocks.len(), 1);
+        assert_eq!(svc.blocks[0].id, b);
+        assert_eq!(t.unfiled.len(), 0);
+    }
+
+    #[test]
+    fn group_by_tags_is_multi_home() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        // A block with two tags lands under BOTH (many-to-many), unlike a scalar property.
+        v.insert_source(
+            id.clone(),
+            "---\ntitle: Both\ntags: [Area/Office, fun]\n---\nx\n",
+        );
+        let t = group_blocks_by(&v, &GroupAxis::Tags);
+        let office = find_node(&t.roots, "Area/Office").unwrap();
+        assert_eq!(office.blocks.len(), 1);
+        let fun = find_node(&t.roots, "fun").unwrap();
+        assert_eq!(fun.blocks.len(), 1);
+        assert_eq!(office.blocks[0].id, fun.blocks[0].id);
+    }
+
+    #[test]
+    fn group_parent_holds_its_own_blocks() {
+        let mut v = Vault::new();
+        let parent = BlockId::generate();
+        let child = BlockId::generate();
+        // A block filed exactly at "Desktop" sits at the parent node; another nests below it.
+        v.insert_source(parent.clone(), "---\ntitle: P\npath: Desktop\n---\nx\n");
+        v.insert_source(child.clone(), "---\ntitle: C\npath: Desktop/Apps\n---\nx\n");
+        let t = group_blocks_by(&v, &GroupAxis::Property("path".into()));
+        let desktop = find_node(&t.roots, "Desktop").unwrap();
+        assert_eq!(desktop.blocks.len(), 1, "parent holds its own block");
+        assert_eq!(desktop.blocks[0].id, parent);
+        let apps = find_node(&t.roots, "Desktop/Apps").unwrap();
+        assert_eq!(apps.blocks[0].id, child);
+    }
+
+    #[test]
+    fn group_drops_empty_and_dirty_segments() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        // Leading/trailing/doubled slashes + whitespace normalize to clean segments.
+        v.insert_source(
+            id.clone(),
+            "---\ntitle: Messy\npath: \" /Desktop// Apps/ \"\n---\nx\n",
+        );
+        let t = group_blocks_by(&v, &GroupAxis::Property("path".into()));
+        assert_eq!(t.roots.len(), 1);
+        let apps = find_node(&t.roots, "Desktop/Apps").unwrap();
+        assert_eq!(apps.blocks.len(), 1);
+    }
+
+    #[test]
+    fn group_counts_unfiled_when_value_absent_or_empty() {
+        let mut v = Vault::new();
+        let has = BlockId::generate();
+        let missing = BlockId::generate();
+        let blank = BlockId::generate();
+        v.insert_source(has.clone(), "---\ntitle: A\npath: Home\n---\nx\n");
+        v.insert_source(missing.clone(), "---\ntitle: B\n---\nx\n");
+        v.insert_source(blank.clone(), "---\ntitle: C\npath: \"/// \"\n---\nx\n");
+        let t = group_blocks_by(&v, &GroupAxis::Property("path".into()));
+        assert_eq!(t.roots.len(), 1);
+        assert_eq!(t.roots[0].blocks.len(), 1);
+        assert_eq!(
+            t.unfiled.len(),
+            2,
+            "missing key + all-empty-segments are unfiled"
+        );
+    }
+
+    #[test]
+    fn group_flat_axis_has_no_nesting() {
+        let mut v = Vault::new();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        // A property whose values never contain "/" yields a single flat level.
+        v.insert_source(a.clone(), "---\ntitle: A\nstatus: draft\n---\nx\n");
+        v.insert_source(b.clone(), "---\ntitle: B\nstatus: done\n---\nx\n");
+        let t = group_blocks_by(&v, &GroupAxis::Property("status".into()));
+        assert_eq!(t.roots.len(), 2);
+        assert!(t.roots.iter().all(|n| n.children.is_empty()));
+        // Sorted case-insensitively: "done" before "draft".
+        assert_eq!(t.roots[0].segment, "done");
+        assert_eq!(t.roots[1].segment, "draft");
+    }
+
+    #[test]
+    fn group_ordering_is_deterministic() {
+        let mut v = Vault::new();
+        // Insert out of order; output must be sorted by segment then block title.
+        let zeb = BlockId::generate();
+        let app = BlockId::generate();
+        let mid = BlockId::generate();
+        v.insert_source(zeb.clone(), "---\ntitle: Zebra\npath: Animals\n---\nx\n");
+        v.insert_source(app.clone(), "---\ntitle: Apple\npath: Animals\n---\nx\n");
+        v.insert_source(mid.clone(), "---\ntitle: M\npath: Bots\n---\nx\n");
+        let t = group_blocks_by(&v, &GroupAxis::Property("path".into()));
+        assert_eq!(t.roots[0].segment, "Animals");
+        assert_eq!(t.roots[1].segment, "Bots");
+        // Blocks within "Animals" sorted by title: Apple before Zebra.
+        assert_eq!(t.roots[0].blocks[0].title, "Apple");
+        assert_eq!(t.roots[0].blocks[1].title, "Zebra");
+    }
+
+    #[test]
+    fn group_marks_root_blocks() {
+        let mut v = Vault::new();
+        let parent = BlockId::generate();
+        let child = BlockId::generate();
+        // child is transcluded by parent → not a root; both filed under the same path.
+        v.insert_source(
+            parent.clone(),
+            &format!("---\ntitle: P\npath: Docs\n---\n![[{child}]]\n"),
+        );
+        v.insert_source(child.clone(), "---\ntitle: C\npath: Docs\n---\nleaf\n");
+        let t = group_blocks_by(&v, &GroupAxis::Property("path".into()));
+        let docs = find_node(&t.roots, "Docs").unwrap();
+        let p = docs.blocks.iter().find(|b| b.id == parent).unwrap();
+        let c = docs.blocks.iter().find(|b| b.id == child).unwrap();
+        assert!(p.root);
+        assert!(!c.root);
+    }
+
+    // ---------- hierarchy ----------
+
+    #[test]
+    fn hierarchy_roots_expand_into_embeds_and_links() {
+        let mut v = Vault::new();
+        let root = BlockId::generate();
+        let emb = BlockId::generate();
+        let lnk = BlockId::generate();
+        v.insert_source(emb.clone(), "---\ntitle: Embedded\n---\nx\n");
+        v.insert_source(lnk.clone(), "---\ntitle: Linked\n---\nx\n");
+        v.insert_source(
+            root.clone(),
+            &format!("---\ntitle: Root\n---\n![[{emb}]] and [[{lnk}]]\n"),
+        );
+        let t = hierarchy_tree(&v);
+        // `lnk` is referenced (not transcluded) so it's still a root → appears at top level too.
+        // Top level = roots = Root + Linked (Embedded is transcluded, so not a root).
+        let top: Vec<&str> = t.roots.iter().map(|n| n.title.as_str()).collect();
+        assert!(top.contains(&"Root"));
+        assert!(top.contains(&"Linked"));
+        assert!(!top.contains(&"Embedded"));
+        let rn = t.roots.iter().find(|n| n.title == "Root").unwrap();
+        assert!(rn.edge.is_none(), "top-level node has no parent edge");
+        // Children stay in document order: the body is "![[emb]] and [[lnk]]", so embed then ref.
+        assert_eq!(rn.children.len(), 2);
+        assert_eq!(rn.children[0].title, "Embedded");
+        assert_eq!(rn.children[0].edge, Some(HierEdge::Embed));
+        assert_eq!(rn.children[1].title, "Linked");
+        assert_eq!(rn.children[1].edge, Some(HierEdge::Reference));
+    }
+
+    #[test]
+    fn hierarchy_breaks_reference_cycles() {
+        let mut v = Vault::new();
+        let a = BlockId::generate();
+        let b = BlockId::generate();
+        // A links B, B links A — a reference cycle. Neither is transcluded, so both are roots.
+        v.insert_source(a.clone(), &format!("---\ntitle: A\n---\nsee [[{b}]]\n"));
+        v.insert_source(b.clone(), &format!("---\ntitle: B\n---\nsee [[{a}]]\n"));
+        let t = hierarchy_tree(&v);
+        let an = t.roots.iter().find(|n| n.title == "A").unwrap();
+        // A → B → A: the second A is truncated (shown, not expanded) so the walk terminates.
+        let bn = &an.children[0];
+        assert_eq!(bn.title, "B");
+        let a_again = &bn.children[0];
+        assert_eq!(a_again.title, "A");
+        assert!(a_again.truncated);
+        assert!(a_again.children.is_empty());
+    }
+
+    #[test]
+    fn hierarchy_embed_wins_over_duplicate_reference() {
+        let mut v = Vault::new();
+        let parent = BlockId::generate();
+        let child = BlockId::generate();
+        v.insert_source(child.clone(), "---\ntitle: Child\n---\nx\n");
+        // Same target both embedded and referenced → one child, edge = Embed.
+        v.insert_source(
+            parent.clone(),
+            &format!("---\ntitle: P\n---\n![[{child}]] and [[{child}]]\n"),
+        );
+        let t = hierarchy_tree(&v);
+        let pn = t.roots.iter().find(|n| n.title == "P").unwrap();
+        assert_eq!(pn.children.len(), 1);
+        assert_eq!(pn.children[0].edge, Some(HierEdge::Embed));
+    }
+
+    #[test]
+    fn hierarchy_children_keep_document_order() {
+        let mut v = Vault::new();
+        let parent = BlockId::generate();
+        let zoo = BlockId::generate();
+        let apple = BlockId::generate();
+        v.insert_source(zoo.clone(), "---\ntitle: Zoo\n---\nx\n");
+        v.insert_source(apple.clone(), "---\ntitle: Apple\n---\nx\n");
+        // Body embeds Zoo before Apple; the tree must preserve that order, not sort to Apple/Zoo.
+        v.insert_source(
+            parent.clone(),
+            &format!("---\ntitle: P\n---\n![[{zoo}]] then ![[{apple}]]\n"),
+        );
+        let t = hierarchy_tree(&v);
+        let pn = t.roots.iter().find(|n| n.title == "P").unwrap();
+        assert_eq!(pn.children[0].title, "Zoo");
+        assert_eq!(pn.children[1].title, "Apple");
     }
 
     #[test]

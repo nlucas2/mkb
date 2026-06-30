@@ -21,8 +21,9 @@ pub use paths::DaemonPaths;
 
 use mkb_core::export::{ExportRequest, PlannedDoc};
 use mkb_core::{
-    BlockId, BlockRecord, GraphData, Index, IndexStats, LinkOutcome, LinkRow, PageView,
-    RenderedBlock, RequestContext, SearchHit, SearchQuery, Service, TagCount, UpdateOutcome,
+    BlockId, BlockRecord, GraphData, GroupAxis, GroupTree, HierTree, Index, IndexStats,
+    LinkOutcome, LinkRow, PageView, RenderedBlock, RequestContext, SearchHit, SearchQuery, Service,
+    TagCount, UpdateOutcome,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +46,13 @@ pub enum Request {
     ListRoots,
     /// The block-level knowledge graph.
     Graph,
+    /// Group blocks by an axis (tags or a property key) into a `/`-nested tree (sidebar group-by).
+    GroupBlocks {
+        /// The axis to group by.
+        axis: GroupAxis,
+    },
+    /// The composition hierarchy (roots → embeds/links) as an expandable tree.
+    Hierarchy,
     /// All tags with per-tag block counts (tag discovery).
     ListTags,
     /// Plan the docs-as-data export against the live vault. The [`ExportRequest`] encodes the
@@ -353,6 +361,8 @@ impl Request {
             | Request::ListBlocks
             | Request::ListRoots
             | Request::Graph
+            | Request::GroupBlocks { .. }
+            | Request::Hierarchy
             | Request::ListTags
             | Request::PlanExports { .. }
             | Request::Search { .. }
@@ -393,6 +403,10 @@ pub enum Response {
     Names(Vec<String>),
     /// The block-level knowledge graph.
     Graph(GraphData),
+    /// Blocks grouped by an axis into a `/`-nested tree.
+    GroupTree(GroupTree),
+    /// The composition hierarchy tree.
+    Hierarchy(HierTree),
     /// Tags with per-tag block counts.
     Tags(Vec<TagCount>),
     /// Planned export docs (path + content per manifest entry).
@@ -492,6 +506,10 @@ fn handle<I: Index>(
         Request::ListBlocks => Response::Ids(service.list_blocks(ctx).map_err(to_str)?),
         Request::ListRoots => Response::Ids(service.list_roots(ctx).map_err(to_str)?),
         Request::Graph => Response::Graph(service.graph(ctx).map_err(to_str)?),
+        Request::GroupBlocks { axis } => {
+            Response::GroupTree(service.group_blocks_by(ctx, &axis).map_err(to_str)?)
+        }
+        Request::Hierarchy => Response::Hierarchy(service.hierarchy(ctx).map_err(to_str)?),
         Request::ListTags => Response::Tags(service.list_tags(ctx).map_err(to_str)?),
         Request::PlanExports { request } => {
             Response::Exports(service.plan_exports(ctx, &request).map_err(to_str)?)
@@ -959,6 +977,22 @@ impl Client {
     pub fn graph(&self) -> io::Result<GraphData> {
         match self.call(&Request::Graph)? {
             Response::Graph(g) => Ok(g),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: group blocks by an axis into a `/`-nested tree.
+    pub fn group_blocks_by(&self, axis: GroupAxis) -> io::Result<GroupTree> {
+        match self.call(&Request::GroupBlocks { axis })? {
+            Response::GroupTree(t) => Ok(t),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: the composition hierarchy tree.
+    pub fn hierarchy(&self) -> io::Result<HierTree> {
+        match self.call(&Request::Hierarchy)? {
+            Response::Hierarchy(t) => Ok(t),
             other => Err(unexpected(other)),
         }
     }
@@ -1691,6 +1725,18 @@ mod tests {
         match dispatch(&mut svc, &ctx, Request::Graph) {
             Response::Graph(g) => assert_eq!(g.nodes.len(), 2),
             o => panic!("expected graph, got {o:?}"),
+        }
+        // Group-by dispatch: both blocks are roots-or-not under no axis value, so the tree is
+        // empty and everything is unfiled until a property/tag is set.
+        match dispatch(
+            &mut svc,
+            &ctx,
+            Request::GroupBlocks {
+                axis: mkb_core::GroupAxis::Property("path".into()),
+            },
+        ) {
+            Response::GroupTree(t) => assert_eq!(t.unfiled.len(), 2),
+            o => panic!("expected group tree, got {o:?}"),
         }
     }
 

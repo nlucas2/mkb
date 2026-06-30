@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use mkb_core::{BlockId, GraphData, SearchQuery};
+use mkb_core::{BlockId, GraphData, GroupAxis, GroupTree, HierTree, SearchQuery};
 use mkb_protocol::{connect, Client, ConnectionConfig, DaemonPaths};
 use mkb_view::{block_title, markdown_to_html_with_assets, search_results_html, ResultRow};
 use serde::Serialize;
@@ -262,6 +262,26 @@ fn block_title_of(state: tauri::State<'_, AppState>, id: String) -> Result<Optio
 fn graph(state: tauri::State<'_, AppState>) -> Result<GraphData, String> {
     let client = state.connected()?;
     client.graph().map_err(|e| e.to_string())
+}
+
+/// Group blocks by an axis into a `/`-nested tree for the sidebar group-by view. `axis` is
+/// `"tags"` or `"prop:<key>"` (e.g. `"prop:path"`); anything else is treated as a property key.
+#[tauri::command]
+fn group_blocks(state: tauri::State<'_, AppState>, axis: String) -> Result<GroupTree, String> {
+    let client = state.connected()?;
+    let axis = match axis.strip_prefix("prop:") {
+        Some(key) => GroupAxis::Property(key.to_string()),
+        None if axis == "tags" => GroupAxis::Tags,
+        None => GroupAxis::Property(axis),
+    };
+    client.group_blocks_by(axis).map_err(|e| e.to_string())
+}
+
+/// The composition hierarchy (roots → embeds/links) as an expandable tree.
+#[tauri::command]
+fn hierarchy(state: tauri::State<'_, AppState>) -> Result<HierTree, String> {
+    let client = state.connected()?;
+    client.hierarchy().map_err(|e| e.to_string())
 }
 
 /// Backlinks (blocks that reference or transclude `id`), as nav blocks.
@@ -722,6 +742,8 @@ pub fn run() {
             block_title_of,
             block_version,
             graph,
+            group_blocks,
+            hierarchy,
             backlinks,
             search,
             save_block,

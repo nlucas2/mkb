@@ -494,6 +494,8 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
         Response::Links(l) => to_json(l),
         Response::Stats(s) => to_json(s),
         Response::Graph(g) => to_json(g),
+        Response::GroupTree(t) => to_json(t),
+        Response::Hierarchy(t) => to_json(t),
         Response::Tags(t) => to_json(t),
         Response::Exports(d) => to_json(d),
     }

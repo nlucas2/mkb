@@ -12,8 +12,9 @@
 
 use crate::id::BlockId;
 use crate::index::{
-    block_links, link_graph, transclusion_reaches, BlockRecord, GraphData, Index, IndexError,
-    IndexStats, LinkCrumb, LinkOutcome, LinkRow, PageView, SearchHit, SearchQuery, TagCount,
+    block_links, group_blocks_by, hierarchy_tree, link_graph, transclusion_reaches, BlockRecord,
+    GraphData, GroupAxis, GroupTree, HierTree, Index, IndexError, IndexStats, LinkCrumb,
+    LinkOutcome, LinkRow, PageView, SearchHit, SearchQuery, TagCount,
 };
 use crate::link::extract_references;
 use crate::render::{
@@ -487,6 +488,24 @@ impl<I: Index> Service<I> {
     pub fn graph(&self, ctx: &RequestContext) -> Result<GraphData, IndexError> {
         ctx.authorize(Capability::Read)?;
         Ok(link_graph(self.engine.vault()))
+    }
+
+    /// Group the vault's blocks by an axis (tags or an arbitrary property key) into a `/`-nested
+    /// tree, for the sidebar's group-by view. A pure read projection — no writes, no validation.
+    pub fn group_blocks_by(
+        &self,
+        ctx: &RequestContext,
+        axis: &GroupAxis,
+    ) -> Result<GroupTree, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(group_blocks_by(self.engine.vault(), axis))
+    }
+
+    /// The composition hierarchy: roots, each expandable into the blocks it embeds/links. A pure
+    /// read projection — no writes.
+    pub fn hierarchy(&self, ctx: &RequestContext) -> Result<HierTree, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        Ok(hierarchy_tree(self.engine.vault()))
     }
 
     /// All tags in the vault with the number of blocks carrying each (for tag discovery).
