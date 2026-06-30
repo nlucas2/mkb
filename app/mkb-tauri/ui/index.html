@@ -192,6 +192,17 @@
       .glegend { position:absolute; left:1rem; bottom:1rem; z-index:6; background:rgba(24,24,37,.9); border:1px solid var(--border); border-radius:8px; padding:.5rem .7rem; font-size:.82em; display:flex; flex-direction:column; gap:.25rem; }
       .glegend .lg { display:flex; align-items:center; gap:.45rem; }
       .glegend .sw { width:11px; height:11px; border-radius:50%; flex:0 0 auto; }
+      .glegend .sw.tag { border-radius:2px; transform:rotate(45deg); width:9px; height:9px; }
+      .glegend .edgekey { display:inline-block; width:16px; height:0; border-top:2px solid var(--muted); flex:0 0 auto; }
+      .glegend .edgekey.dashed { border-top-style:dashed; }
+      .glegend code { font-size:.9em; }
+      .gcontrols input[type=checkbox] { accent-color:var(--accent); }
+      .gcontrols .gtoggle { cursor:pointer; }
+      .gcontrols { position:absolute; right:1rem; top:1rem; z-index:6; display:flex; align-items:center; gap:.5rem; background:rgba(24,24,37,.9); border:1px solid var(--border); border-radius:8px; padding:.4rem .6rem; font-size:.82em; }
+      .gcontrols label { display:flex; align-items:center; gap:.4rem; color:var(--muted); }
+      .gcontrols input[type=range] { width:7rem; accent-color:var(--accent); }
+      .gcontrols button { padding:.25rem .5rem; }
+      .gcontrols button:hover { border-color:var(--accent); color:var(--accent); }
       .form { max-width:34rem; } .form label { display:block; margin:.8rem 0 .2rem; font-weight:600; }
       .form input[type=text] { width:100%; padding:.5rem .6rem; background:var(--panel); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
       .form .row { display:flex; gap:.5rem; align-items:center; }
@@ -1308,50 +1319,174 @@
       async function showGraph() {
         active = null; renderNav();
         mainEl.innerHTML = `<div id="graphview"></div>
+          <div class="gcontrols">
+            <label title="Spread connected nodes apart or pull them tighter">Spread
+              <input type="range" id="gspread" min="0.3" max="3" step="0.1" value="1"/></label>
+            <label title="Pull the whole graph toward the center (tighter) or let it relax (looser)">Gravity
+              <input type="range" id="ggravity" min="0" max="0.2" step="0.005" value="0.05"/></label>
+            <label class="gtoggle" title="Show each block's #tags as nodes in the graph">
+              <input type="checkbox" id="gtags"/> Tags</label>
+            <button id="greheat" title="Re-run the layout">↻ Reheat</button>
+            <button id="graphfit" title="Fit the whole graph on screen (or double-click the background)">⤢ Fit</button>
+          </div>
           <div class="glegend">
             <div class="lg"><span class="sw" style="background:#89b4fa"></span> Root block (nothing embeds it)</div>
             <div class="lg"><span class="sw" style="background:#cba6f7"></span> Embedded / linked block</div>
-            <div class="lg muted">Size = number of connections · arrows point source → target · click a node to open</div>
+            <div class="lg"><span class="sw tag" style="background:#f9e2af"></span> Tag (when shown)</div>
+            <div class="lg"><span class="edgekey solid" style="border-color:#cba6f7"></span> Embed&nbsp;<code>![[ ]]</code> &nbsp;<span class="edgekey dashed" style="border-color:#89b4fa"></span> Reference&nbsp;<code>[[ ]]</code></div>
+            <div class="lg muted">Size = connections · arrows source → target · click to open · drag background to pan · scroll to zoom · drag a node to move it</div>
           </div>`;
         let g;
         try { g = graphCache || (graphCache = await invoke("graph")); }
         catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
-        const deg = {};
-        g.edges.forEach((e) => { deg[e.source]=(deg[e.source]||0)+1; deg[e.target]=(deg[e.target]||0)+1; });
-        const nodes = g.nodes.map((n) => ({ id: n.id, label: n.title, d: (deg[n.id]||0), root: n.root }));
-        const links = g.edges.map((e) => ({ source: e.source, target: e.target }));
-        const neighbors = {};
-        links.forEach((l) => {
-          (neighbors[l.source] = neighbors[l.source] || new Set()).add(l.target);
-          (neighbors[l.target] = neighbors[l.target] || new Set()).add(l.source);
-        });
+        let tagsOn = false;
         let hover = null;
         const el = document.getElementById("graphview");
+        // Drawn radius of a node (grows with its connection count). Shared with the collision
+        // force below so nodes never visually overlap.
+        const nodeR = (n) => Math.max(2.4, Math.cbrt((n.d || 0) + 1) * 2.6);
+        // Build the force-graph nodes/links for the current toggle state. Block nodes + their
+        // edges always; tag nodes (id `tag:<name>`) + block→tag edges only when `showTags`.
+        // Recomputes per-node degree (drives size) and neighbour sets (drives hover-dim).
+        let nodes = [], links = [], neighbors = {};
+        function buildData() {
+          const deg = {};
+          g.edges.forEach((e) => { deg[e.source] = (deg[e.source] || 0) + 1; deg[e.target] = (deg[e.target] || 0) + 1; });
+          nodes = g.nodes.map((n) => ({ id: n.id, label: n.title, d: (deg[n.id] || 0), root: n.root, kind: "block" }));
+          links = g.edges.map((e) => ({ source: e.source, target: e.target, kind: e.kind }));
+          if (tagsOn) {
+            const tagDeg = {}, tagLinks = [];
+            g.nodes.forEach((n) => (n.tags || []).forEach((t) => {
+              const tid = "tag:" + t;
+              tagDeg[tid] = (tagDeg[tid] || 0) + 1;
+              tagLinks.push({ source: n.id, target: tid, kind: "tag" });
+            }));
+            nodes = nodes.concat(Object.keys(tagDeg).map((tid) => ({ id: tid, label: "#" + tid.slice(4), d: tagDeg[tid], kind: "tag" })));
+            links = links.concat(tagLinks);
+          }
+          neighbors = {};
+          links.forEach((l) => {
+            const s = l.source.id || l.source, t = l.target.id || l.target;
+            (neighbors[s] = neighbors[s] || new Set()).add(t);
+            (neighbors[t] = neighbors[t] || new Set()).add(s);
+          });
+        }
+        buildData();
         fg = ForceGraph()(el)
           .backgroundColor("#181825")
           .graphData({ nodes, links })
-          .linkColor(() => "rgba(147,153,178,.35)")
-          .linkDirectionalArrowLength(3)
+          // Edge kind, surfaced visually so embeds read differently from plain links:
+          //   • transclusion (![[embed]]) — solid, brighter, slightly thicker (the stronger tie)
+          //   • reference   ([[link]])   — dashed, cooler/dimmer, thinner
+          //   • block→tag membership      — dotted, warm, no arrow
+          // Core serializes the kind as PascalCase ("References"/"Transcludes"); compare lowercased.
+          .linkColor((l) => {
+            const k = String(l.kind || "").toLowerCase();
+            if (k === "tag") return "rgba(249,226,175,.28)";
+            if (k === "references") return "rgba(137,180,250,.45)"; // cool blue, dimmer
+            return "rgba(203,166,247,.6)";                          // mauve, brighter (embed)
+          })
+          .linkWidth((l) => String(l.kind || "").toLowerCase() === "transcludes" ? 1.6 : 0.7)
+          .linkLineDash((l) => {
+            const k = String(l.kind || "").toLowerCase();
+            return k === "references" ? [3, 2] : (k === "tag" ? [1, 3] : null);
+          })
+          .linkDirectionalArrowLength((l) => l.kind === "tag" ? 0 : 3)
           .nodeCanvasObject((n, ctx, scale) => {
-            const r = Math.max(2.4, Math.cbrt((n.d||0) + 1) * 2.6);
+            const r = nodeR(n);
             const dim = hover && hover !== n.id && !(neighbors[hover] && neighbors[hover].has(n.id));
             ctx.globalAlpha = dim ? 0.18 : 1;
-            ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2*Math.PI);
-            ctx.fillStyle = n.root ? "#89b4fa" : "#cba6f7"; ctx.fill();
-            if (scale > 1.1 || (hover && (hover===n.id || (neighbors[hover]&&neighbors[hover].has(n.id))))) {
+            if (n.kind === "tag") {
+              // Diamond + warm colour so tags never read as blocks.
+              ctx.beginPath();
+              ctx.moveTo(n.x, n.y - r); ctx.lineTo(n.x + r, n.y); ctx.lineTo(n.x, n.y + r); ctx.lineTo(n.x - r, n.y); ctx.closePath();
+              ctx.fillStyle = "#f9e2af"; ctx.fill();
+            } else {
+              ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
+              ctx.fillStyle = n.root ? "#89b4fa" : "#cba6f7"; ctx.fill();
+            }
+            if (scale > 1.1 || (hover && (hover === n.id || (neighbors[hover] && neighbors[hover].has(n.id))))) {
               ctx.globalAlpha = dim ? 0.25 : 1;
               ctx.font = `${11/scale}px -apple-system, sans-serif`;
-              ctx.fillStyle = "#cdd6f4"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+              ctx.fillStyle = n.kind === "tag" ? "#f9e2af" : "#cdd6f4"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
               ctx.fillText(n.label || n.id, n.x + r + 1.5, n.y);
             }
             ctx.globalAlpha = 1;
           })
           .onNodeHover((n) => { hover = n ? n.id : null; el.style.cursor = n ? "pointer" : "default"; })
-          .onNodeClick((n) => openBlock(n.id))
+          .onNodeClick((n) => { if (n.kind !== "tag") openBlock(n.id); })
           .width(el.clientWidth).height(el.clientHeight);
-        fg.d3Force("charge").strength(-130);
+        // Make movement explicit: drag the background to pan, scroll to zoom, drag a node to move
+        // it. (These are force-graph defaults, but set them explicitly so the canvas owns the
+        // gestures rather than the scrollable <main> around it.)
+        fg.enablePanInteraction(true).enableZoomInteraction(true).enableNodeDrag(true);
+        // Layout (single regime, matching a proven d3-force setup). Charge is a strong, constant,
+        // long-range repulsion that spreads and untangles the graph; it isn't "always pushing" —
+        // the simulation's alpha decays to zero and everything freezes, and a drag/Reheat just
+        // reheats with the SAME charge, so the layout stays spread instead of collapsing. The thing
+        // that stops two disconnected clusters drifting apart forever is a gentle gravity toward the
+        // origin (links only pull *connected* nodes). Collision keeps circles from overlapping.
+        const N = nodes.length;
+        const BASE_CHARGE = Math.min(-90, -70 - N * 1.5); // stronger with more nodes
+        const BASE_LINK = Math.max(34, 24 + N * 0.6);
+        let spread = 1;        // Spread slider multiplier
+        let gravityK = 0.05;   // Gravity slider: pull toward origin (tighter when higher)
+        fg.d3Force("charge").strength(() => BASE_CHARGE * spread);
+        fg.d3Force("link").distance(() => BASE_LINK * spread);
+        // Custom forces — the bundled d3 force factories are minified-away, so we supply our own.
+        // Gravity: pull every node toward the origin (≈ forceX(0)+forceY(0)) so components converge.
+        // Reads `gravityK` live so the Gravity slider takes effect without rebuilding the force.
+        const gravity = () => {
+          let ns = [];
+          const f = (alpha) => { for (const n of ns) { n.vx -= n.x * gravityK * alpha; n.vy -= n.y * gravityK * alpha; } };
+          f.initialize = (n) => { ns = n; };
+          return f;
+        };
+        // Collision: separate only the pairs whose circles actually overlap (radius + padding).
+        const collision = (pad) => {
+          let ns = [];
+          const f = () => {
+            for (let i = 0; i < ns.length; i++) {
+              const a = ns[i];
+              for (let j = i + 1; j < ns.length; j++) {
+                const b = ns[j];
+                let dx = b.x - a.x, dy = b.y - a.y;
+                const r = nodeR(a) + nodeR(b) + pad;
+                const d2 = dx * dx + dy * dy;
+                if (d2 > 1e-6 && d2 < r * r) {
+                  const d = Math.sqrt(d2);
+                  const push = (r - d) / d * 0.5;
+                  dx *= push; dy *= push;
+                  b.vx += dx; b.vy += dy; a.vx -= dx; a.vy -= dy;
+                }
+              }
+            }
+          };
+          f.initialize = (n) => { ns = n; };
+          return f;
+        };
+        fg.d3Force("gravity", gravity());
+        fg.d3Force("collision", collision(4));
+        // Re-frame once per requested (re)layout, after it settles.
+        let refitNext = true;
+        fg.onEngineStop(() => { if (refitNext) { refitNext = false; fg.zoomToFit(400, 40); } });
         const ro = new ResizeObserver(() => { if (fg) fg.width(el.clientWidth).height(el.clientHeight); });
         ro.observe(el);
+        // Controls. Fit (or double-click) re-frames the graph. Reheat re-runs the layout. Spread
+        // scales repulsion + link length so you can pull a dense graph tighter or spread it out.
+        const fit = () => fg.zoomToFit(400, 40);
+        const relayout = () => { refitNext = true; fg.d3ReheatSimulation(); };
+        document.getElementById("graphfit").onclick = fit;
+        el.addEventListener("dblclick", fit);
+        document.getElementById("greheat").onclick = relayout;
+        document.getElementById("gspread").oninput = (e) => { spread = parseFloat(e.target.value) || 1; relayout(); };
+        document.getElementById("ggravity").oninput = (e) => { gravityK = parseFloat(e.target.value) || 0; relayout(); };
+        document.getElementById("gtags").onchange = (e) => {
+          tagsOn = e.target.checked;
+          buildData();
+          fg.graphData({ nodes, links });
+          relayout();
+        };
       }
 
       // ---------- tag browser ----------

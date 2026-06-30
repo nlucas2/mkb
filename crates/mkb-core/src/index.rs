@@ -535,6 +535,9 @@ pub struct GraphNode {
     pub out_degree: usize,
     /// Whether this block is a root (nothing transcludes it).
     pub root: bool,
+    /// All tags on the block (frontmatter `tags:` + inline `#tag`), so a client can optionally
+    /// surface tags as graph nodes without a second per-block query.
+    pub tags: Vec<String>,
 }
 
 /// A directed edge between two blocks in the knowledge graph.
@@ -573,6 +576,7 @@ pub fn link_graph(vault: &Vault) -> GraphData {
                 in_degree: 0,
                 out_degree: 0,
                 root: false,
+                tags: block.tags.clone(),
             },
         );
     }
@@ -831,6 +835,22 @@ mod tests {
         let pn = g.nodes.iter().find(|n| n.id == parent).unwrap();
         assert!(pn.root);
         assert_eq!(pn.out_degree, 1);
+    }
+
+    #[test]
+    fn graph_nodes_carry_tags() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        v.insert_source(
+            id.clone(),
+            "---\ntitle: Tagged\ntags: [alpha, beta]\n---\nbody #gamma\n",
+        );
+        let g = link_graph(&v);
+        let n = g.nodes.iter().find(|n| n.id == id).unwrap();
+        // Both frontmatter tags and the inline #tag are surfaced so a client can build tag nodes.
+        assert!(n.tags.contains(&"alpha".to_string()));
+        assert!(n.tags.contains(&"beta".to_string()));
+        assert!(n.tags.contains(&"gamma".to_string()));
     }
 
     #[test]
