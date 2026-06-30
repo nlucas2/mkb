@@ -1,6 +1,6 @@
 ---
 title: "Skill: changing what's generated (the manifest)"
-tags: [skill, docs]
+tags: [skill, doc]
 ---
 
 ### Add or change a generated doc (the manifest)

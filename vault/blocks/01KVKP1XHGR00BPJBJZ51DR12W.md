@@ -1,6 +1,6 @@
 ---
 title: "Skill: find the source block from a generated file"
-tags: [skill, docs]
+tags: [skill, doc]
 ---
 
 ### Find the source block — don't edit the file

@@ -1,6 +1,6 @@
 ---
 title: Docs-as-data skill page
-tags: [skill, skill-page, docs, dev]
+tags: [skill, skill-page, doc, dev]
 ---
 
 ---
