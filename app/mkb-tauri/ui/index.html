@@ -13,9 +13,12 @@
     <script src="vendor/hljs-nginx.min.js"></script>
     <script src="vendor/hljs-properties.min.js"></script>
     <script src="vendor/hljs-kql.min.js"></script>
+    <script src="vendor/mermaid.min.js"></script>
     <script>
       // Kusto fences are commonly tagged `kusto`; the grammar registers as `kql`.
       try { window.hljs && window.hljs.registerAliases(["kusto", "azuremonitor", "loganalytics"], { languageName: "kql" }); } catch {}
+      // Mermaid: manual control (we render specific blocks ourselves), dark theme to match the app.
+      try { window.mermaid && window.mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" }); } catch {}
     </script>
     <link rel="stylesheet" href="vendor/highlight-theme.css" />
     <style>
@@ -96,6 +99,14 @@
       code { background:var(--panel); padding:.1rem .35rem; border-radius:4px; }
       pre { background:var(--panel); border:1px solid var(--border); padding:1rem; border-radius:8px; overflow-x:auto; }
       pre code { background:none; padding:0; }
+      .mermaid-fig { margin:1rem 0; border:1px solid var(--border); border-radius:8px; background:var(--panel); overflow:hidden; }
+      .mermaid-bar { display:flex; justify-content:flex-end; padding:.3rem .4rem; border-bottom:1px solid var(--border); }
+      .mermaid-bar button { font-size:.78em; padding:.15rem .5rem; color:var(--muted); }
+      .mermaid-bar button:hover { color:var(--accent); border-color:var(--accent); }
+      .mermaid-view { padding:1rem; overflow-x:auto; text-align:center; }
+      .mermaid-view svg { max-width:100%; height:auto; }
+      .mermaid-src { margin:0; border:none; border-radius:0; }
+      .mermaid-err { color:var(--bad); font-size:.85em; margin-top:.5rem; white-space:pre-wrap; }
       blockquote { border-left:3px solid var(--accent); margin:0; padding-left:1rem; color:var(--muted); }
       .muted { color:var(--muted); }
       .results { list-style:none; padding:0; } .results li { padding:.6rem 0; border-bottom:1px solid var(--border); }
@@ -736,6 +747,7 @@
         }
         resolveAssetImages(tmp);
         body.innerHTML = `<div class="content reading">${tmp.innerHTML}</div>`;
+        mermaidIn(body);
         highlightIn(body);
         attachChipHovers(body);
         // References stay navigable (the global mkb: handler covers them); no edit affordances.
@@ -760,6 +772,7 @@
           `<div class="content" id="content">${html}</div>` +
           `<div class="addrow"><button id="add">＋ Add block here</button></div>`;
         resolveAssetImages(body);
+        mermaidIn(body);
         highlightIn(body);
         attachChipHovers(body);
         const content = body.querySelector("#content");
@@ -1135,7 +1148,64 @@
       function highlightIn(root) {
         if (!window.hljs) return;
         root.querySelectorAll("pre code").forEach((el) => {
+          // Mermaid blocks are rendered as diagrams (mermaidIn), not syntax-highlighted.
+          if (el.classList.contains("language-mermaid")) return;
           try { window.hljs.highlightElement(el); } catch {}
+        });
+      }
+
+      // Render ` ```mermaid ` fenced blocks as diagrams (offline, vendored mermaid). Each becomes a
+      // figure holding the rendered SVG plus a small toggle to flip to the raw source and back —
+      // so the diagram is the default view but the text is always one click away. A parse/render
+      // failure degrades gracefully to the source with an error note (never a blank). Runs before
+      // highlightIn so those blocks are claimed before the syntax highlighter touches them.
+      let mermaidSeq = 0;
+      function mermaidIn(root) {
+        if (!window.mermaid) return;
+        root.querySelectorAll("pre > code.language-mermaid").forEach((code) => {
+          const pre = code.parentElement;
+          const src = code.textContent;
+          const fig = document.createElement("figure");
+          fig.className = "mermaid-fig";
+          const view = document.createElement("div");
+          view.className = "mermaid-view";
+          const srcPre = document.createElement("pre");
+          srcPre.className = "mermaid-src";
+          srcPre.style.display = "none";
+          const srcCode = document.createElement("code");
+          srcCode.textContent = src;
+          srcPre.appendChild(srcCode);
+          const bar = document.createElement("div");
+          bar.className = "mermaid-bar";
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = "</> Source";
+          btn.title = "Toggle between the rendered diagram and its source";
+          let showingSrc = false;
+          btn.onclick = () => {
+            showingSrc = !showingSrc;
+            view.style.display = showingSrc ? "none" : "";
+            srcPre.style.display = showingSrc ? "" : "none";
+            btn.textContent = showingSrc ? "▦ Diagram" : "</> Source";
+          };
+          bar.appendChild(btn);
+          fig.appendChild(bar);
+          fig.appendChild(view);
+          fig.appendChild(srcPre);
+          pre.replaceWith(fig);
+          const id = "mmd-" + (++mermaidSeq) + "-" + Date.now().toString(36);
+          window.mermaid.render(id, src)
+            .then(({ svg }) => { view.innerHTML = svg; })
+            .catch((e) => {
+              // Graceful fallback: show the source with an error note, source-view by default.
+              fig.classList.add("mermaid-failed");
+              view.innerHTML = `<div class="mermaid-err">⚠ Couldn't render this diagram — showing source.</div>`;
+              view.style.display = "none"; srcPre.style.display = "";
+              showingSrc = true; btn.textContent = "▦ Diagram";
+              const note = document.createElement("div");
+              note.className = "mermaid-err"; note.textContent = String(e && e.message || e);
+              srcPre.appendChild(note);
+            });
         });
       }
 
