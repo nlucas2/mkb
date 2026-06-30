@@ -197,6 +197,29 @@
       .tag .x:hover { opacity:1; color:var(--bad); }
       .tagadd { font-size:.78em; width:5.5rem; padding:.05rem .45rem; background:transparent; border:1px dashed var(--border); border-radius:999px; color:var(--fg); }
       .tagadd:focus { outline:none; border-color:var(--accent); width:8rem; }
+      /* Unified metadata control: a collapsed glanceable line (pinned path + truncated preview)
+         that expands to full tag + property editors. */
+      #metawrap { display:flex; align-items:flex-start; gap:.35rem; margin-top:.25rem; cursor:pointer; border-radius:6px; padding:.1rem .25rem; }
+      #metawrap:hover { background:var(--hover); }
+      #metawrap input, #metawrap .tag, #metawrap .prop { cursor:auto; }
+      #metawrap .tag, #metawrap .metatoggle { cursor:pointer; }
+      .metatoggle { background:none; border:none; padding:0 .25rem; font-size:.85em; color:var(--muted); cursor:pointer; line-height:1.6; flex:0 0 auto; border-radius:5px; }
+      .metatoggle:hover { color:var(--fg); }
+      .metapreview { display:flex; align-items:center; gap:.3rem; min-width:0; overflow:hidden; flex:1 1 auto; }
+      .metapreview .metarest { display:inline-flex; gap:.3rem; min-width:0; overflow:hidden; white-space:nowrap; }
+      .metaempty { font-size:.78em; color:var(--muted); cursor:pointer; }
+      .metafull { display:flex; flex-direction:column; gap:.3rem; min-width:0; flex:1 1 auto; }
+      /* Property chips (arbitrary key: value frontmatter). Square-ish, mauve, key emphasized. */
+      .propsbody { display:flex; flex-wrap:wrap; gap:.3rem; align-items:center; }
+      .prop { font-size:.78em; color:var(--mauve); background:var(--panel); border:1px solid var(--border); border-radius:5px; padding:.05rem .5rem; line-height:1.5; white-space:nowrap; }
+      .prop.pathchip { color:var(--accent); flex:0 0 auto; }
+      .prop b { font-weight:600; }
+      .prop .x { margin-left:.35rem; opacity:.7; font-weight:700; cursor:pointer; }
+      .prop .x:hover { opacity:1; color:var(--bad); }
+      .propadd { display:inline-flex; gap:.25rem; }
+      .propkey, .propval { font-size:.78em; padding:.05rem .45rem; background:transparent; border:1px dashed var(--border); border-radius:5px; color:var(--fg); }
+      .propkey { width:4rem; } .propval { width:6rem; }
+      .propkey:focus, .propval:focus { outline:none; border-color:var(--accent); }
       .results .crumb .tag { margin-left:.3rem; }
       .taglist { list-style:none; padding:0; max-width:34rem; }
       .taglist li { display:flex; align-items:center; gap:.6rem; padding:.35rem 0; border-bottom:1px solid var(--border); cursor:pointer; }
@@ -693,6 +716,9 @@
       let indexCache = null;   // [{id,title}] of ALL blocks (picker)
       let active = null;       // current block id
       let mode = "read";       // read (clean) | blocks (interactive) | edit (raw)
+      let metaOpen = false;    // topbar Metadata disclosure (tags + props), persisted
+      let metaView = null;     // cached block view for re-rendering the metadata control in place
+      try { metaOpen = localStorage.getItem("mkb.metaOpen") === "1"; } catch {}
       let currentView = "empty"; // which main pane is showing: block | graph | tags | settings | search | edit | empty
       let graphCache = null;
 
@@ -948,28 +974,99 @@
         hierTree.roots.forEach((n) => blocksEl.appendChild(nodeLi(n, "")));
       }
 
-      // The topbar shows the title, an editable tag row, the view tabs, and delete. Managed
-      // (frontmatter) tags are removable chips; inline #hashtags are shown muted (edit them in
-      // the body). The always-visible "+ tag" input adds a managed tag (no hover affordances).
+      // The topbar shows the title, the metadata control (tags + properties), view tabs, and
+      // delete/lock. Metadata is collapsed to a glanceable line by default — `path` (the filing
+      // location) is always pinned when present, plus a truncated preview of the rest — and
+      // expands in place to a full editor. Expanding swaps ONLY the metadata block, never the body
+      // (so an open editor keeps its unsaved text).
       function topbar(view) {
         const m = (id, label) => `<button data-m="${id}" class="${mode===id?"on":""}">${label}</button>`;
-        const fm = new Set((view.fm_tags || []).map((t) => t.toLowerCase()));
-        const chips = (view.tags || []).map((t) => {
-          const managed = fm.has(t.toLowerCase());
-          if (managed) {
-            return `<span class="tag managed" data-tag="${esc(t)}">#${esc(t)}<span class="x" data-del="${esc(t)}" title="Remove tag">×</span></span>`;
-          }
-          return `<span class="tag inline" data-tag="${esc(t)}" title="inline #tag — edit it in the body">#${esc(t)}</span>`;
-        }).join("");
-        const tagrow = `<div class="tagrow">${chips}<input class="tagadd" id="tagadd" placeholder="+ tag" /></div>`;
         const badge = view.locked ? `<span class="lockbadge" title="Human-only: AI clients can read this block but not modify it">🔒 Locked</span>` : "";
         const lockBtn = `<button id="lock" class="${view.locked?"on":""}" title="${view.locked?"Unlock — allow edits (incl. AI clients)":"Lock — make this block human-only (read-only to AI clients)"}" aria-label="${view.locked?"Unlock block":"Lock block"}">${view.locked?"🔒":"🔓"}</button>`;
         return `<div class="topbar">
-          <div class="titlewrap"><h1>${esc(view.title)}${badge}</h1>${tagrow}</div>
+          <div class="titlewrap"><h1>${esc(view.title)}${badge}</h1><div id="metawrap">${metaBlock(view)}</div></div>
           <div class="seg">${m("read","Read")}${m("blocks","Blocks")}${m("edit","Edit")}</div>
           ${lockBtn}
           <button id="del" class="danger" title="Delete block" aria-label="Delete block"><svg class="ico-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>
         </div>`;
+      }
+
+      // Build the metadata control for a block view: collapsed (a glanceable line — pinned `path`
+      // when present + a truncated preview of the other tags/props) or expanded (a full editor with
+      // add/remove for tags and properties). Pure markup; handlers are bound by bindMeta().
+      function metaBlock(view) {
+        const fm = new Set((view.fm_tags || []).map((t) => t.toLowerCase()));
+        const tags = view.tags || [], props = view.props || [];
+        const pathProp = props.find(([k]) => k.toLowerCase() === "path");
+        const tagPill = (t, withX) => {
+          const managed = fm.has(t.toLowerCase());
+          const x = withX && managed ? `<span class="x" data-del="${esc(t)}" title="Remove tag">×</span>` : "";
+          const cls = managed ? "tag managed" : "tag inline";
+          return `<span class="${cls}" data-tag="${esc(t)}">#${esc(t)}${x}</span>`;
+        };
+        const propChip = (k, v, withX) => {
+          const x = withX ? `<span class="x" data-pdel="${esc(k)}" title="Remove property">×</span>` : "";
+          return `<span class="prop" data-pkey="${esc(k)}" title="${esc(k)}: ${esc(v)}"><b>${esc(k)}</b>${v === "" ? "" : ": " + esc(v)}${x}</span>`;
+        };
+        const pathChip = pathProp
+          ? `<span class="prop pathchip" data-pkey="${esc(pathProp[0])}" title="path: ${esc(pathProp[1])}">📁 ${esc(pathProp[1])}</span>`
+          : "";
+        if (!metaOpen) {
+          // Collapsed: pinned path + the rest (other props, then tags) on one truncated line.
+          const rest = [
+            ...props.filter((p) => p !== pathProp).map(([k, v]) => propChip(k, v, false)),
+            ...tags.map((t) => tagPill(t, false)),
+          ].join("");
+          const empty = !pathProp && !tags.length && !props.length;
+          const inner = empty
+            ? `<span class="metaempty">+ tags &amp; properties</span>`
+            : `${pathChip}<span class="metarest">${rest}</span>`;
+          return `<button class="metatoggle" id="metatoggle" title="Show metadata">▸</button><span class="metapreview">${inner}</span>`;
+        }
+        // Expanded: full tag + property editors.
+        const tagPills = tags.map((t) => tagPill(t, true)).join("");
+        const propChips = props.map(([k, v]) => propChip(k, v, true)).join("");
+        return `<button class="metatoggle open" id="metatoggle" title="Hide metadata">▾</button>
+          <div class="metafull">
+            <div class="tagrow">${tagPills}<input class="tagadd" id="tagadd" placeholder="+ tag" /></div>
+            <div class="propsbody">${propChips}<span class="propadd"><input class="propkey" id="propkey" placeholder="+ key" /><input class="propval" id="propval" placeholder="value" /></span></div>
+          </div>`;
+      }
+
+      // Bind handlers inside #metawrap for the current block `id`, using the cached metaView. Called
+      // after a block renders and again whenever the metadata control is toggled (re-rendered in
+      // place so the body — incl. an open editor — is untouched).
+      function bindMeta(id) {
+        const wrap = mainEl.querySelector("#metawrap");
+        if (!wrap) return;
+        const toggle = wrap.querySelector("#metatoggle");
+        const openMeta = () => {
+          metaOpen = !metaOpen;
+          try { localStorage.setItem("mkb.metaOpen", metaOpen ? "1" : "0"); } catch {}
+          wrap.innerHTML = metaBlock(metaView);
+          bindMeta(id);
+        };
+        if (toggle) toggle.onclick = (ev) => { ev.stopPropagation(); openMeta(); };
+        // Clicking anywhere on the metadata row toggles it — both ways — EXCEPT on an interactive
+        // element (a tag/prop pill or its ×, or an input), which keeps its own behavior.
+        wrap.onclick = (ev) => { if (!ev.target.closest(".tag, .prop, input, button")) openMeta(); };
+        // Tag chips: body searches the tag; × removes it (managed only).
+        wrap.querySelectorAll(".tag").forEach((t) =>
+          (t.onclick = (ev) => { if (!ev.target.dataset.del) searchTag(t.dataset.tag); }));
+        wrap.querySelectorAll(".tag .x").forEach((x) =>
+          (x.onclick = (ev) => { ev.stopPropagation(); removeTag(id, metaView.fm_tags || [], x.dataset.del); }));
+        const add = wrap.querySelector("#tagadd");
+        if (add) add.onkeydown = (ev) => {
+          if (ev.key === "Enter") { ev.preventDefault(); addTag(id, metaView.fm_tags || [], add.value); }
+        };
+        // Property chips: × removes the key; the two inputs add/update a key (Enter on either).
+        wrap.querySelectorAll(".prop .x").forEach((x) =>
+          (x.onclick = (ev) => { ev.stopPropagation(); removeProp(id, x.dataset.pdel); }));
+        const pk = wrap.querySelector("#propkey"), pv = wrap.querySelector("#propval");
+        if (pk && pv) {
+          pk.onkeydown = (ev) => { if (ev.key === "Enter") { ev.preventDefault(); pv.focus(); } };
+          pv.onkeydown = (ev) => { if (ev.key === "Enter") { ev.preventDefault(); addProp(id, pk.value, pv.value); } };
+        }
       }
 
       // The current view (read / blocks / edit) is **sticky**: navigating to another block
@@ -989,15 +1086,10 @@
           (b.onclick = () => { mode = b.dataset.m; openBlock(id, true); }));
         mainEl.querySelector("#del").onclick = () => del(id);
         mainEl.querySelector("#lock").onclick = () => toggleLock(id, !!view.locked);
-        // Clicking a tag's body searches it; clicking its × removes it (managed tags only).
-        mainEl.querySelectorAll(".topbar .tag").forEach((t) =>
-          (t.onclick = (ev) => { if (!ev.target.dataset.del) searchTag(t.dataset.tag); }));
-        mainEl.querySelectorAll(".topbar .tag .x").forEach((x) =>
-          (x.onclick = (ev) => { ev.stopPropagation(); removeTag(id, view.fm_tags || [], x.dataset.del); }));
-        const add = mainEl.querySelector("#tagadd");
-        if (add) add.onkeydown = (ev) => {
-          if (ev.key === "Enter") { ev.preventDefault(); addTag(id, view.fm_tags || [], add.value); }
-        };
+        // Metadata (tags + properties) live in #metawrap; cache the view so the collapse toggle can
+        // re-render just that block without rebuilding the body.
+        metaView = view;
+        bindMeta(id);
         const body = mainEl.querySelector("#body");
         if (mode === "edit") await renderEdit(body, id, !!view.locked);
         else if (mode === "blocks") await renderBlocksView(body, id, view.html, !!view.locked);
@@ -1027,6 +1119,19 @@
       async function removeTag(id, fmTags, name) {
         const next = fmTags.filter((x) => x.toLowerCase() !== String(name).toLowerCase());
         try { await invoke("set_tags", { id, tags: next }); invalidate(); await openBlock(id, true); }
+        catch (e) { toast(String(e), "error"); }
+      }
+
+      // Add/update a property key:value (other props preserved), then refresh. Empty key is a no-op.
+      async function addProp(id, key, value) {
+        const k = String(key || "").trim();
+        if (!k) return;
+        try { await invoke("set_props", { id, props: [[k, String(value || "").trim()]] }); invalidate(); await openBlock(id, true); }
+        catch (e) { toast(String(e), "error"); }
+      }
+      // Remove a property key, then refresh.
+      async function removeProp(id, key) {
+        try { await invoke("unset_props", { id, keys: [String(key)] }); invalidate(); await openBlock(id, true); }
         catch (e) { toast(String(e), "error"); }
       }
 

@@ -81,6 +81,7 @@ struct BlockView {
     title: String,
     tags: Vec<String>,
     fm_tags: Vec<String>,
+    props: Vec<(String, String)>,
     content: String,
     html: String,
     locked: bool,
@@ -230,6 +231,7 @@ fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockVi
         title: rb.title,
         tags: rb.tags,
         fm_tags: rb.fm_tags,
+        props: rb.props,
         id: rb.id.to_string(),
         locked: rb.locked,
     })
@@ -500,6 +502,30 @@ fn set_tags(
     client.set_tags(bid, tags).map_err(|e| e.to_string())
 }
 
+/// Add/update a block's properties (other properties are preserved).
+#[tauri::command]
+fn set_props(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    props: Vec<(String, String)>,
+) -> Result<(), String> {
+    let client = state.connected()?;
+    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
+    client.set_props(bid, props).map_err(|e| e.to_string())
+}
+
+/// Remove named properties from a block (others preserved).
+#[tauri::command]
+fn unset_props(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    keys: Vec<String>,
+) -> Result<(), String> {
+    let client = state.connected()?;
+    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
+    client.unset_props(bid, keys).map_err(|e| e.to_string())
+}
+
 /// Whether a block is locked (human-only). Cheap lookup used by the Blocks view to show a clear
 /// "locked" cue instead of silently failing an edit.
 #[tauri::command]
@@ -755,6 +781,8 @@ pub fn run() {
             delete_block,
             link_blocks,
             set_tags,
+            set_props,
+            unset_props,
             set_lock,
             block_locked,
             list_tags,

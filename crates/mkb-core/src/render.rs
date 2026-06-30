@@ -69,6 +69,9 @@ pub struct RenderedBlock {
     /// The **managed** (frontmatter) tags — the subset the tag editor can add/remove. The rest
     /// of `tags` are inline `#hashtag` mentions edited in the body.
     pub fm_tags: Vec<String>,
+    /// Block properties (arbitrary frontmatter `key: value`), so the UI can show and edit them
+    /// (e.g. the `path:` filing convention) via `set_props`/`unset_props`.
+    pub props: Vec<(String, String)>,
     /// Original block body, for round-trip editing.
     pub raw: String,
     /// Resolved Markdown for display (references → links, children → embed cards).
@@ -98,6 +101,7 @@ pub fn rendered_block(vault: &Vault, id: &BlockId) -> Option<RenderedBlock> {
         title: block.display_title(),
         tags: block.tags.clone(),
         fm_tags: block.fm_tags.clone(),
+        props: block.props.clone(),
         raw: block.body.clone(),
         rendered: render_body(vault, block, &mut visited),
         locked: block.locked,
