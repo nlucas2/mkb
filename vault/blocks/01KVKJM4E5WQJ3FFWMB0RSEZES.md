@@ -1,6 +1,7 @@
 ---
 title: "Architecture: daemon & clients"
 tags: [doc, architecture]
+updated: 2026-06-30T08:25:19Z
 ---
 
 ## Daemon & clients
@@ -19,6 +20,19 @@ tags: [doc, architecture]
                     (block model,    (SQLite+FTS5+    (Embedder trait,
                      DAG, render,     vectors, RRF)    bundled/local/remote)
                      tags, search)
+```
+
+The same topology as a rendered diagram:
+
+```mermaid
+flowchart TD
+    cli["mkb-cli"] --> proto
+    mcp["mkb-mcp (MCP)"] --> proto
+    app["mkb-tauri (app)"] --> proto
+    proto["mkb-protocol<br/>JSON over local socket / TCP + token"] --> daemon["mkbd — single writer<br/>mkb-core::Service"]
+    daemon --> core["mkb-core<br/>block model, DAG, render, tags, search"]
+    daemon --> index["mkb-index<br/>SQLite + FTS5 + vectors, RRF"]
+    daemon --> embed["mkb-embed<br/>Embedder trait"]
 ```
 
 - **One daemon = one writer** over a vault. Local mode: a Unix socket (Windows named pipe),
