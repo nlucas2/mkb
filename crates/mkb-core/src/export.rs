@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use crate::block::Block;
 use crate::id::BlockId;
 use crate::render::{flat_reference_targets, render_flat, render_flat_in_set, FlatSet};
 use crate::vault::Vault;
@@ -50,7 +51,15 @@ pub enum ExportRequest {
     /// Explicit, already-parsed `path → block` entries (defaults resolved at parse time). The
     /// client parses the on-disk manifest (TOML or JSON) into these and ships them structured, so
     /// the daemon never parses the on-disk format and the protocol stays uniformly JSON.
-    Manifest(Vec<ExportEntry>),
+    Manifest {
+        /// The resolved manifest entries (may be empty for a pure path-property export).
+        entries: Vec<ExportEntry>,
+        /// Also derive entries from blocks carrying a `path` property (their `path` is the output
+        /// directory, `filename` or the title slug the file name). The explicit `entries` stay
+        /// **authoritative**: a block or output path the manifest already names is left to it.
+        #[cfg_attr(feature = "serde", serde(default))]
+        include_path_props: bool,
+    },
     /// Dump selected blocks to `<slug>.md`. `follow_links` closes the export set over explicit
     /// `[[links]]`; `raw` omits the `@generated` banner for every emitted file.
     Slugs {
@@ -421,6 +430,87 @@ pub fn manifest_for_tag(vault: &Vault, tag: &str, include_non_root: bool, raw: b
     manifest_from_ids(vault, &select_tag_ids(vault, tag, include_non_root), raw)
 }
 
+/// Ensure a file name carries an extension: append `.md` when it has none, so an override like
+/// `SKILL.md` is used verbatim while `README` becomes `README.md`.
+fn with_md_ext(name: &str) -> String {
+    if name.contains('.') {
+        name.to_string()
+    } else {
+        format!("{name}.md")
+    }
+}
+
+/// The export entry a block declares through its properties, if any. Opt-in: a block participates
+/// only when it carries a `path` property, which becomes the output **directory**; the file name is
+/// the `filename` property (extension added if missing) or, failing that, the block's title slug
+/// (falling back to its id). The directory is sanitized — empty, `.` and `..` segments are dropped
+/// — so a property can never escape the export root. `raw` sets the banner policy.
+fn path_prop_entry(vault: &Vault, block: &Block, raw: bool) -> Option<ExportEntry> {
+    let _ = vault; // kept for signature symmetry with the id-based builders
+    let dir_raw = block.prop("path")?;
+    let dir: Vec<&str> = dir_raw
+        .split('/')
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .collect();
+    let file = match block
+        .prop("filename")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(name) => with_md_ext(name),
+        None => {
+            let s = slug(&block.display_title());
+            if s.is_empty() {
+                format!("{}.md", block.id)
+            } else {
+                format!("{s}.md")
+            }
+        }
+    };
+    let path = if dir.is_empty() {
+        file
+    } else {
+        format!("{}/{file}", dir.join("/"))
+    };
+    Some(ExportEntry {
+        path,
+        block: block.id.to_string(),
+        raw,
+    })
+}
+
+/// Append entries derived from blocks' `path`/`filename` properties to `manifest`, keeping the
+/// existing (manifest) entries **authoritative**: a block the manifest already names, or an output
+/// path it already writes, is left to the manifest. Derived entries are added in path order; a
+/// collision among derived entries themselves keeps the first (deterministic) and drops the rest.
+/// Derived docs always carry the `@generated` banner (`raw = false`).
+pub fn merge_path_prop_entries(vault: &Vault, manifest: &mut Manifest) {
+    use std::collections::HashSet;
+    let covered_ids: HashSet<BlockId> = manifest
+        .entries
+        .iter()
+        .filter_map(|e| vault.resolve(&e.block))
+        .collect();
+    let mut used_paths: HashSet<String> = manifest.entries.iter().map(|e| e.path.clone()).collect();
+    let mut derived: Vec<ExportEntry> = vault
+        .blocks()
+        .iter()
+        .filter_map(|b| path_prop_entry(vault, b, false))
+        .filter(|e| {
+            vault
+                .resolve(&e.block)
+                .map_or(true, |id| !covered_ids.contains(&id))
+        })
+        .collect();
+    derived.sort_by(|a, b| a.path.cmp(&b.path));
+    for e in derived {
+        if used_paths.insert(e.path.clone()) {
+            manifest.entries.push(e);
+        }
+    }
+}
+
 /// Grow `ids` to its closure over **explicit** `[[references]]`: any resolvable block linked from
 /// an already-selected block (transitively, including links surfaced through dissolved embeds) is
 /// pulled into the set. This is what `--follow-links` does — so a doc that links a sibling doc
@@ -452,9 +542,18 @@ pub fn expand_follow_links(vault: &Vault, ids: &mut Vec<BlockId>) {
 /// links, then names them `<slug>.md`.
 pub fn manifest_for_request(vault: &Vault, request: &ExportRequest) -> Manifest {
     match request {
-        ExportRequest::Manifest(entries) => Manifest {
-            entries: entries.clone(),
-        },
+        ExportRequest::Manifest {
+            entries,
+            include_path_props,
+        } => {
+            let mut manifest = Manifest {
+                entries: entries.clone(),
+            };
+            if *include_path_props {
+                merge_path_prop_entries(vault, &mut manifest);
+            }
+            manifest
+        }
         ExportRequest::Slugs {
             selection,
             follow_links,
@@ -913,5 +1012,122 @@ raw = false
             "follow-links should add Linked: {:?}",
             with.entries
         );
+    }
+
+    // ---------- export from block properties ----------
+
+    #[test]
+    fn path_prop_derives_dir_and_title_slug_filename() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        // `path` is the output dir; no `filename` → file name is the title slug.
+        v.insert_source(
+            id.clone(),
+            "---\ntitle: MCP Skill\npath: docs/skills\n---\nbody\n",
+        );
+        let mut m = Manifest::default();
+        merge_path_prop_entries(&v, &mut m);
+        assert_eq!(m.entries.len(), 1);
+        assert_eq!(m.entries[0].path, "docs/skills/mcp-skill.md");
+        assert_eq!(m.entries[0].block, id.to_string());
+    }
+
+    #[test]
+    fn path_prop_filename_override_keeps_title() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        // Title stays human-friendly; `filename` overrides the output file name verbatim.
+        v.insert_source(
+            id.clone(),
+            "---\ntitle: MCP Skill\npath: docs/skills/mkb-knowledge\nfilename: SKILL.md\n---\nbody\n",
+        );
+        let mut m = Manifest::default();
+        merge_path_prop_entries(&v, &mut m);
+        assert_eq!(m.entries[0].path, "docs/skills/mkb-knowledge/SKILL.md");
+    }
+
+    #[test]
+    fn path_prop_filename_without_extension_gets_md() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        v.insert_source(
+            id.clone(),
+            "---\ntitle: Readme\npath: .\nfilename: README\n---\nbody\n",
+        );
+        let mut m = Manifest::default();
+        merge_path_prop_entries(&v, &mut m);
+        // `path: .` normalizes to the export root; `README` gains a `.md`.
+        assert_eq!(m.entries[0].path, "README.md");
+    }
+
+    #[test]
+    fn path_prop_blocks_without_path_are_skipped() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        v.insert_source(id.clone(), "---\ntitle: Loose\ntags: [doc]\n---\nbody\n");
+        let mut m = Manifest::default();
+        merge_path_prop_entries(&v, &mut m);
+        assert!(m.entries.is_empty(), "no `path` property → not exported");
+    }
+
+    #[test]
+    fn manifest_entry_wins_over_derived_for_same_block() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        v.insert_source(
+            id.clone(),
+            "---\ntitle: Doc\npath: derived/place\n---\nbody\n",
+        );
+        // The manifest already names this block at an explicit path; the derived entry is dropped.
+        let mut m = Manifest {
+            entries: vec![ExportEntry {
+                path: "docs/DOC.md".into(),
+                block: id.to_string(),
+                raw: false,
+            }],
+        };
+        merge_path_prop_entries(&v, &mut m);
+        assert_eq!(m.entries.len(), 1);
+        assert_eq!(m.entries[0].path, "docs/DOC.md");
+    }
+
+    #[test]
+    fn path_prop_sanitizes_traversal_segments() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        v.insert_source(
+            id.clone(),
+            "---\ntitle: Sneaky\npath: ../../etc\nfilename: passwd.md\n---\nx\n",
+        );
+        let mut m = Manifest::default();
+        merge_path_prop_entries(&v, &mut m);
+        // `..` segments are dropped so the path can't escape the export root.
+        assert_eq!(m.entries[0].path, "etc/passwd.md");
+    }
+
+    #[test]
+    fn manifest_for_request_includes_path_props_when_requested() {
+        let mut v = Vault::new();
+        let id = BlockId::generate();
+        v.insert_source(id.clone(), "---\ntitle: P\npath: docs\n---\nbody\n");
+        // Off by default.
+        let off = manifest_for_request(
+            &v,
+            &ExportRequest::Manifest {
+                entries: Vec::new(),
+                include_path_props: false,
+            },
+        );
+        assert!(off.entries.is_empty());
+        // On: the path-prop block is derived.
+        let on = manifest_for_request(
+            &v,
+            &ExportRequest::Manifest {
+                entries: Vec::new(),
+                include_path_props: true,
+            },
+        );
+        assert_eq!(on.entries.len(), 1);
+        assert_eq!(on.entries[0].path, "docs/p.md");
     }
 }

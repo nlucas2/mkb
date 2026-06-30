@@ -311,6 +311,10 @@ struct ExportArgs {
     /// Omit the @generated banner.
     #[arg(long)]
     raw: bool,
+    /// Also export blocks that carry a `path` property (their `path` is the output directory,
+    /// their `filename` property or title slug the file name). The manifest stays authoritative.
+    #[arg(long = "from-props")]
+    from_props: bool,
 }
 
 fn main() -> ExitCode {
@@ -959,7 +963,10 @@ fn cmd_export(g: &GlobalArgs, args: &ExportArgs) -> Result<(), String> {
             mkb_core::export::Manifest::parse(&text)
         }
         .map_err(|e| format!("{p}: {e}"))?;
-        Ok(ExportRequest::Manifest(manifest.entries))
+        Ok(ExportRequest::Manifest {
+            entries: manifest.entries,
+            include_path_props: args.from_props,
+        })
     };
     let request: ExportRequest = if let Some(name) = args.tag.clone() {
         ExportRequest::Slugs {
@@ -974,6 +981,12 @@ fn cmd_export(g: &GlobalArgs, args: &ExportArgs) -> Result<(), String> {
         read_manifest(p)?
     } else if let Some(default) = default_manifest.filter(|_| !args.follow_links && !args.raw) {
         read_manifest(&default.to_string_lossy())?
+    } else if args.from_props {
+        // No manifest, but the user asked to export from block properties: a pure path-prop export.
+        ExportRequest::Manifest {
+            entries: Vec::new(),
+            include_path_props: true,
+        }
     } else {
         ExportRequest::Slugs {
             selection: SlugSelection::AllRoots,
