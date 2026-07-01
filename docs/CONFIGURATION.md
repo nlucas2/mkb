@@ -61,3 +61,45 @@ The format is a list of named vaults plus the `default` to use when no vault is 
 ```
 
 A `local` vault is a directory (a leading `~` is expanded, so the same file works across machines); a `remote` vault is a token-gated `mkbd --listen` over TCP. If `default` names a vault that isn't in the list, mkb falls back to the built-in default rather than guessing.
+
+## Environment variables
+
+mkb honours a small set of environment variables — the canonical names the daemon and every
+client read (so an override is seen the same everywhere). All are optional.
+
+| Variable | What it does |
+|----------|--------------|
+| `MKB_VAULT` | Vault directory a client connects to / the daemon serves (a leading `~` is expanded). |
+| `MKB_REMOTE` | `host:port` of a remote daemon to connect to over TCP (client side). |
+| `MKB_TOKEN` | Shared token — presented by a client to a remote daemon, or required by a `--listen` daemon. |
+| `MKB_SOCKET` | Explicit local socket path to dial instead of deriving one from the vault (client side). |
+| `MKB_INDEX_DIR` | Base directory for the machine-local per-vault index dirs (overrides the OS local-data dir). |
+| `MKB_CONFIG_DIR` | Per-user config directory holding the client's `vaults.json` registry. |
+| `MKB_READY_TIMEOUT_SECS` | Seconds a client waits for a freshly auto-started daemon to answer its first ping — raise it on slow, network-backed, or CI storage where the initial reconcile is slow. |
+| `MKB_BUNDLED_MODEL_DIR` | Directory holding an on-disk embedding model that overrides the compiled-in one. |
+| `MKB_MCP_TOOLS` | `full` (or `all`) opts the MCP server into the advanced tool tier (`set_props`, `unset_props`, `carve_block`, `flatten_block`); the default is the lean core surface. |
+
+The vault-selection precedence is `--vault` (flag) → `$MKB_VAULT` → the registry default → the
+built-in `~/mkb-vault`; the connection variables (`MKB_REMOTE`/`MKB_TOKEN`/`MKB_SOCKET`) let a
+client target a specific daemon without a registry entry.
+
+## The daemon (`mkbd`)
+
+The desktop app and the CLI **auto-start** a background `mkbd` for a local vault and reuse it, so
+you rarely run it by hand. When you do — a service unit, a remote host, or tuning — these are its
+flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--vault <DIR>` | Vault to serve (default: `$MKB_VAULT`, else `~/mkb-vault`). |
+| `--db <PATH>` | Index database (default: a machine-local per-vault dir). |
+| `--socket <PATH>` | Local socket / Windows named pipe (default: beside `--db`). |
+| `--listen <ADDR>` | **Also** serve over TCP, e.g. `0.0.0.0:7820` — opt-in, and **fails closed** without a token. |
+| `--token <TOKEN>` | Shared token network clients must present (`$MKB_TOKEN` is also accepted). |
+| `--idle-timeout <SECS>` | Self-shut down after this many seconds with no requests **and** no interactive lease (`0` = never; the default when run manually). |
+
+The index, socket, lock, and log are machine-local and live **outside** the vault by default —
+under the OS local-data dir, keyed by a hash of the vault path — so a cloud-synced vault never
+syncs the live index (set `$MKB_INDEX_DIR` to relocate the base). The network listener is off
+unless `--listen` is given, and refuses to start without a token, so a local vault is never exposed
+by accident.

@@ -1,6 +1,7 @@
 ---
 title: Docs-as-data skill page
 tags: [skill, skill-page, doc, dev]
+updated: 2026-07-01T03:20:15Z
 ---
 
 ---
@@ -26,3 +27,5 @@ export**. This skill is the workflow for changing those docs correctly.
 ![[01KVKP1XM4AZ3DPS25ZVZR8G22]]
 
 ![[01KVKP1XPDAWGSDEGAQ3S3KSJZ]]
+
+![[01KWDV22A07NH4NVDFXF639GCC]]
