@@ -120,6 +120,9 @@ each client auto-starts it on first use and it self-reaps when idle.
 Everything works with AI turned off; semantic search runs entirely on a local model built into the
 daemon (see the **[configuration guide](docs/CONFIGURATION.md)**).
 
+For a tour of the everyday features — searching, browsing and grouping, human-only blocks, and
+exporting — see the **[usage guide](docs/USAGE.md)**.
+
 ### Command line (`mkb`)
 
 Every `mkb` command targets a vault via the global `--vault <dir>` flag (or `$MKB_VAULT`, or the

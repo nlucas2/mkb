@@ -61,3 +61,8 @@ block = "Docs-as-data skill page"
 [[doc]]
 path  = "docs/CONFIGURATION.md"
 block = "CONFIGURATION page"
+
+# Feature guide: searching, browsing/group-by, human-only blocks, exporting (the README links here).
+[[doc]]
+path  = "docs/USAGE.md"
+block = "USAGE page"
