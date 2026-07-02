@@ -696,6 +696,44 @@ impl<I: Index> SyncEngine<I> {
         self.update_block(id, title.as_deref(), &body)
     }
 
+    /// Splice a directive into a block's body at a source byte offset, as its own blank-line-
+    /// separated paragraph, then persist. The offset is clamped to the body length and nudged to
+    /// the nearest char boundary; the surrounding text is trimmed at the seam so no stray blank
+    /// lines accumulate. Used to insert a block at an arbitrary position (e.g. above/below any
+    /// rendered block via its outline offset).
+    pub fn insert_directive_at_offset(
+        &mut self,
+        id: &BlockId,
+        directive: &str,
+        offset: usize,
+    ) -> Result<(), IndexError> {
+        let block = self
+            .vault
+            .block(id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
+        let title = block.title.clone();
+        let old = block.body.clone();
+
+        let mut off = offset.min(old.len());
+        while !old.is_char_boundary(off) {
+            off -= 1;
+        }
+        let head = old[..off].trim_end();
+        let tail = old[off..].trim_start();
+        let mut body = String::with_capacity(old.len() + directive.len() + 4);
+        if !head.is_empty() {
+            body.push_str(head);
+            body.push_str("\n\n");
+        }
+        body.push_str(directive);
+        if !tail.is_empty() {
+            body.push_str("\n\n");
+            body.push_str(tail);
+        }
+        body.push('\n');
+        self.update_block(id, title.as_deref(), &body)
+    }
+
     /// Remove every directive that targets `target` from `id`'s body (the "remove from page" /
     /// unlink action), then persist. Collapses the blank line the directive occupied so the body
     /// stays tidy. Returns `true` if at least one directive was removed. A no-op (no such directive)

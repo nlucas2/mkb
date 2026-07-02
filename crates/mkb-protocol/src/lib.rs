@@ -281,6 +281,18 @@ pub enum Request {
         /// `true` inserts after the anchor directive, `false` before it.
         after: bool,
     },
+    /// Link/embed a block at a **source byte offset** in the source body (snapped to paragraph
+    /// boundaries) — for inserting above/below any rendered block via its outline offset.
+    LinkBlocksAtOffset {
+        /// Source block id (the one whose body gains the directive).
+        source_id: BlockId,
+        /// Target block id (the one being linked/embedded).
+        target_id: BlockId,
+        /// `true` to embed (`![[...]]`), `false` to reference (`[[...]]`).
+        embed: bool,
+        /// Byte offset into the source body where the directive is spliced.
+        offset: usize,
+    },
     /// Remove every directive that targets `target_id` from `source_id`'s body (unlink / "remove
     /// from page"). The target block itself is left intact.
     UnlinkBlocks {
@@ -378,6 +390,7 @@ impl Request {
             | Request::FlattenBlock { .. }
             | Request::LinkBlocks { .. }
             | Request::LinkBlocksAt { .. }
+            | Request::LinkBlocksAtOffset { .. }
             | Request::UnlinkBlocks { .. }
             | Request::SetLock { .. } => true,
             Request::Ping
@@ -700,6 +713,16 @@ fn handle<I: Index>(
                     embed,
                     Some((&anchor_id, after)),
                 )
+                .map_err(to_str)?,
+        ),
+        Request::LinkBlocksAtOffset {
+            source_id,
+            target_id,
+            embed,
+            offset,
+        } => Response::Linked(
+            service
+                .link_blocks_at_offset(ctx, &source_id, &target_id, embed, offset)
                 .map_err(to_str)?,
         ),
         Request::UnlinkBlocks {
@@ -1384,6 +1407,26 @@ impl Client {
             target_id,
         })? {
             Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: link/embed `target` at a source byte `offset` in `source`'s body (snapped to
+    /// paragraph boundaries). Returns the [`LinkOutcome`].
+    pub fn link_at_offset(
+        &self,
+        source_id: BlockId,
+        target_id: BlockId,
+        embed: bool,
+        offset: usize,
+    ) -> io::Result<LinkOutcome> {
+        match self.call(&Request::LinkBlocksAtOffset {
+            source_id,
+            target_id,
+            embed,
+            offset,
+        })? {
+            Response::Linked(o) => Ok(o),
             other => Err(unexpected(other)),
         }
     }

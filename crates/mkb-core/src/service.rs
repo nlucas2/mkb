@@ -112,6 +112,16 @@ pub enum Capability {
     ManageLocks,
 }
 
+/// Where a new link/embed directive is written into the source block's body.
+enum LinkPlacement<'a> {
+    /// Append to the end of the body (the default).
+    Append,
+    /// Insert immediately before/after the existing directive that targets `anchor_id`.
+    Anchor { anchor_id: &'a BlockId, after: bool },
+    /// Splice at a source byte offset (snapped to paragraph boundaries).
+    Offset(usize),
+}
+
 /// The set of capabilities a caller has been granted — a small, explicit authorization scope.
 /// Locked-block writes are governed by the block's own state (a locked block is immutable to
 /// *every* scope via the write path); `ManageLocks` gates the unlock that precedes an edit.
@@ -990,14 +1000,14 @@ impl<I: Index> Service<I> {
         target_id: &BlockId,
         embed: bool,
     ) -> Result<LinkOutcome, IndexError> {
-        self.link_blocks_at(ctx, source_id, target_id, embed, None)
+        self.place_link(ctx, source_id, target_id, embed, LinkPlacement::Append)
     }
 
     /// Like [`link_blocks`], but places the new directive at a position instead of appending.
     /// `anchor` is `Some((anchor_id, after))`: insert the directive immediately before (`after ==
     /// false`) or after (`after == true`) the existing directive that targets `anchor_id` in the
     /// source body. `None` appends (the plain [`link_blocks`] behavior). Used by the UI's
-    /// "insert a block above/below this one" action.
+    /// "insert a block above/below this embed" action.
     pub fn link_blocks_at(
         &mut self,
         ctx: &RequestContext,
@@ -1005,6 +1015,46 @@ impl<I: Index> Service<I> {
         target_id: &BlockId,
         embed: bool,
         anchor: Option<(&BlockId, bool)>,
+    ) -> Result<LinkOutcome, IndexError> {
+        let placement = match anchor {
+            Some((anchor_id, after)) => LinkPlacement::Anchor { anchor_id, after },
+            None => LinkPlacement::Append,
+        };
+        self.place_link(ctx, source_id, target_id, embed, placement)
+    }
+
+    /// Like [`link_blocks`], but splices the new directive at a **source byte offset** in the
+    /// source body (snapped to the surrounding blank-line paragraph boundaries). Used to insert a
+    /// block at an arbitrary position — e.g. above/below any rendered block via its outline offset,
+    /// not only relative to an existing embed.
+    pub fn link_blocks_at_offset(
+        &mut self,
+        ctx: &RequestContext,
+        source_id: &BlockId,
+        target_id: &BlockId,
+        embed: bool,
+        offset: usize,
+    ) -> Result<LinkOutcome, IndexError> {
+        self.place_link(
+            ctx,
+            source_id,
+            target_id,
+            embed,
+            LinkPlacement::Offset(offset),
+        )
+    }
+
+    /// The shared, validated link path: authorize, confirm both blocks exist and the source is
+    /// writable, decide embed-vs-reference (downgrading a self/cyclic embed), then write the
+    /// directive into the source body at the requested [`LinkPlacement`]. All public link entry
+    /// points funnel through here so the rules live in exactly one place.
+    fn place_link(
+        &mut self,
+        ctx: &RequestContext,
+        source_id: &BlockId,
+        target_id: &BlockId,
+        embed: bool,
+        placement: LinkPlacement,
     ) -> Result<LinkOutcome, IndexError> {
         ctx.authorize(Capability::Write)?;
         // Linking writes a directive into the source block, so the source must be writable.
@@ -1033,11 +1083,14 @@ impl<I: Index> Service<I> {
         } else {
             format!("[[{target_id}]]")
         };
-        match anchor {
-            Some((anchor_id, after)) => self
+        match placement {
+            LinkPlacement::Append => self.engine.append_to_body(source_id, &directive)?,
+            LinkPlacement::Anchor { anchor_id, after } => self
                 .engine
                 .insert_directive_by_anchor(source_id, &directive, anchor_id, after)?,
-            None => self.engine.append_to_body(source_id, &directive)?,
+            LinkPlacement::Offset(offset) => self
+                .engine
+                .insert_directive_at_offset(source_id, &directive, offset)?,
         }
 
         Ok(match (embed, effective_embed) {
@@ -1433,6 +1486,33 @@ mod tests {
             .unwrap();
         let body = svc.get_block_source(&ctx, &parent).unwrap().unwrap();
         assert!(body.contains(a.as_str()), "link still landed: {body}");
+    }
+
+    #[test]
+    fn link_at_offset_inserts_between_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        // Parent with two prose paragraphs (no directive to anchor on).
+        let parent = svc
+            .create_block(&ctx, Some("Parent"), "First para.\n\nSecond para.")
+            .unwrap();
+        let child = svc.create_block(&ctx, Some("Child"), "c").unwrap();
+        // Insert at the boundary between the two paragraphs (offset = end of "First para.").
+        let boundary = "First para.".len();
+        svc.link_blocks_at_offset(&ctx, &parent, &child, true, boundary)
+            .unwrap();
+        let body = svc.get_block_source(&ctx, &parent).unwrap().unwrap();
+        let pfirst = body.find("First").unwrap();
+        let pembed = body.find(child.as_str()).unwrap();
+        let psecond = body.find("Second").unwrap();
+        assert!(
+            pfirst < pembed && pembed < psecond,
+            "embed landed between the paragraphs; got:\n{body}"
+        );
+        // The embed is its own paragraph (blank-line separated), so it renders as a card.
+        let rendered = svc.render_block(&ctx, &parent).unwrap().unwrap();
+        assert!(rendered.contains('c'));
     }
 
     #[test]
