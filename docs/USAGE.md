@@ -79,9 +79,10 @@ slashes — `ops/networking/dns`, or `path: docs/skills/mkb-cli` — nests in th
 namespace reads like folders. Blocks that don't carry the grouping value collect under an
 **Unfiled** node you can still open and browse.
 
-In the app's **Tags** view, a parent tag with children carries a small **≡** button — click it to
-*flatten* the subtree into one de-duped list of every block tagged `parent` or `parent/**`, without
-expanding each child in turn; click again to return to the nested view.
+In the app, any parent node with children in a `/`-nested group tree (the **Tags**, **Path**, or a
+property grouping — at any depth) carries a small **≡** button — click it to *flatten* that subtree
+into one de-duped list of every block under it, without expanding each child in turn; click again to
+return to the nested view.
 
 ## Human-only (locked) blocks
 

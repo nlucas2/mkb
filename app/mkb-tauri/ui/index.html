@@ -893,8 +893,9 @@
         const nodeLi = (node) => {
           const li = document.createElement("li");
           const open = groupOpen.has(node.full_value);
-          // Flatten is a tags-only browse toggle, and only meaningful where there's a subtree.
-          const canFlatten = isTags && node.children.length > 0;
+          // Flatten collapses this node's whole subtree into one de-duped list. It applies to any
+          // `/`-nested group axis (tags or a property/path), so it's gated only on having a subtree.
+          const canFlatten = node.children.length > 0;
           const flat = canFlatten && groupFlat.has(node.full_value);
           const row = document.createElement("div");
           row.className = "gb-row" + (isTags ? " gb-rowsearch" : "");
@@ -913,7 +914,7 @@
             const fb = document.createElement("span");
             fb.className = "gb-flat" + (flat ? " on" : "");
             fb.textContent = "≡";
-            fb.title = flat ? "Show nested subtree" : `Flatten — list every block under #${node.full_value}`;
+            fb.title = flat ? "Show nested subtree" : `Flatten — list every block under ${isTags ? "#" : ""}${node.full_value}`;
             fb.onclick = (e) => {
               e.stopPropagation();
               if (groupFlat.has(node.full_value)) groupFlat.delete(node.full_value);
