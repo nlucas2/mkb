@@ -526,6 +526,29 @@ fn link_block_at(
     })
 }
 
+/// Link/embed `target` at a source byte `offset` in `source`'s body (snapped to paragraph
+/// boundaries) — inserting a block above/below any rendered block via its outline offset.
+#[tauri::command]
+fn link_block_at_offset(
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+    target_id: String,
+    embed: bool,
+    offset: usize,
+) -> Result<String, String> {
+    let client = state.connected()?;
+    let s = BlockId::parse(&source_id).map_err(|e| e.to_string())?;
+    let t = BlockId::parse(&target_id).map_err(|e| e.to_string())?;
+    let outcome = client
+        .link_at_offset(s, t, embed, offset)
+        .map_err(|e| e.to_string())?;
+    Ok(match outcome {
+        mkb_core::LinkOutcome::Reference => "reference".to_string(),
+        mkb_core::LinkOutcome::Transclusion => "transclusion".to_string(),
+        mkb_core::LinkOutcome::DowngradedToReference => "downgraded".to_string(),
+    })
+}
+
 /// Remove an embed/reference from a page: drop every directive targeting `target_id` from
 /// `source_id`'s body (the block itself is untouched). The "remove from page" action.
 #[tauri::command]
@@ -831,6 +854,7 @@ pub fn run() {
             delete_block,
             link_blocks,
             link_block_at,
+            link_block_at_offset,
             unlink_blocks,
             set_tags,
             set_props,
