@@ -359,11 +359,82 @@ fn inline_tag_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?:^|[^\w&/])#([A-Za-z][\w/-]*)").expect("inline tag re"))
 }
 
-/// Inline `#tag`s in the body, excluding fenced code blocks (so shell comments aren't tags).
+/// Matches a Markdown inline link/image **destination** — the `](…)` that follows the link text.
+/// Used to strip destinations before tag scanning so a URL fragment like `](#anchor)` isn't read
+/// as a `#tag`.
+fn link_dest_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\]\([^)]*\)").expect("link dest re"))
+}
+
+/// Blank out the spans of a line where a `#token` must NOT be read as a tag: **inline code spans**
+/// (`` `#NAME` `` — documentation about a tag, not a tag) and Markdown **link/image destinations**
+/// (`](#anchor)` — a URL fragment). Code spans are replaced with spaces (preserving length so
+/// nothing new abuts); link destinations are dropped, keeping the link text. Fenced code blocks are
+/// handled separately by [`non_code_lines`].
+fn mask_inline_noise(line: &str) -> String {
+    let masked = mask_code_spans(line);
+    link_dest_re().replace_all(&masked, "]").into_owned()
+}
+
+/// Replace inline code spans with spaces. A code span opens with a run of N backticks and closes at
+/// the next run of **exactly** N backticks (CommonMark); an unclosed run is left literal.
+fn mask_code_spans(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '`' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        // Measure the opening backtick run.
+        let start = i;
+        let mut n = 0;
+        while i < chars.len() && chars[i] == '`' {
+            n += 1;
+            i += 1;
+        }
+        // Find a closing run of exactly n backticks.
+        let mut j = i;
+        let mut close_end = None;
+        while j < chars.len() {
+            if chars[j] == '`' {
+                let mut m = 0;
+                while j < chars.len() && chars[j] == '`' {
+                    m += 1;
+                    j += 1;
+                }
+                if m == n {
+                    close_end = Some(j);
+                    break;
+                }
+            } else {
+                j += 1;
+            }
+        }
+        match close_end {
+            Some(end) => {
+                out.resize(out.len() + (end - start), ' ');
+                i = end;
+            }
+            None => {
+                out.resize(out.len() + n, '`');
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// Inline `#tag`s in the body, excluding fenced code blocks (so shell comments aren't tags), inline
+/// code spans (so `` `#NAME` `` documentation isn't a tag), and link destinations (so a `](#anchor)`
+/// URL fragment isn't a tag).
 fn inline_tags(body: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in non_code_lines(body) {
-        for caps in inline_tag_re().captures_iter(line) {
+        let line = mask_inline_noise(line);
+        for caps in inline_tag_re().captures_iter(&line) {
             if let Some(m) = caps.get(1) {
                 let t = m.as_str().to_string();
                 if !out.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
@@ -448,6 +519,30 @@ mod tests {
         let b = p("a #real tag\n\n```sh\n# not-a-tag shell comment\n```\n");
         assert!(b.tags.contains(&"real".to_string()));
         assert!(!b.tags.iter().any(|t| t == "not-a-tag"));
+    }
+
+    #[test]
+    fn inline_tags_ignore_code_spans_and_link_dests() {
+        // `#NAME` inside an inline code span is documentation about a tag, not a tag.
+        let b = p("prose `tag:NAME` or `#NAME` here, plus a real #keeper\n");
+        assert!(b.tags.contains(&"keeper".to_string()));
+        assert!(
+            !b.tags.iter().any(|t| t.eq_ignore_ascii_case("name")),
+            "got {:?}",
+            b.tags
+        );
+        // A Markdown link anchor `](#from-source)` is a URL fragment, not a tag.
+        let b2 = p("see [From source](#from-source) below, and #ok\n");
+        assert!(b2.tags.contains(&"ok".to_string()));
+        assert!(
+            !b2.tags.iter().any(|t| t == "from-source"),
+            "got {:?}",
+            b2.tags
+        );
+        // Double-backtick spans are masked too; an unclosed backtick stays literal (tag survives).
+        let b3 = p("edge ``#weird`` case, an unclosed ` then #tail\n");
+        assert!(b3.tags.contains(&"tail".to_string()));
+        assert!(!b3.tags.iter().any(|t| t == "weird"), "got {:?}", b3.tags);
     }
 
     #[test]
