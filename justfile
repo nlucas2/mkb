@@ -177,6 +177,30 @@ docs:
     cargo run -p mkb-cli -- export --vault vault
     cargo run -p mkb-cli -- export --vault vault --check
 
+# Launch the mkb MCP server for THIS repo's vault, for an AI client pointed at it (see the repo's
+# `.mcp.json`). Prefers an installed `mkb-mcp` (instant, no rebuild); falls back to `cargo run` when
+# it isn't on PATH (works from a fresh source checkout with no install). `just` runs this from the
+# justfile's directory, so `--vault vault` resolves to this repo's vault from any subdir/worktree.
+[unix]
+mcp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v mkb-mcp >/dev/null 2>&1; then
+        exec mkb-mcp --vault vault
+    else
+        exec cargo run -q -p mkb-mcp -- --vault vault
+    fi
+
+[windows]
+mcp:
+    #!powershell
+    $ErrorActionPreference = 'Stop'
+    if (Get-Command mkb-mcp -ErrorAction SilentlyContinue) {
+        mkb-mcp --vault vault
+    } else {
+        cargo run -q -p mkb-mcp -- --vault vault
+    }
+
 # Remove build artifacts (both workspaces).
 clean:
     cargo clean

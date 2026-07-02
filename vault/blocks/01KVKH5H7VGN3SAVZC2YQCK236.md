@@ -1,7 +1,7 @@
 ---
 title: AGENTS page
 tags: [doc/contributing, page, dev]
-updated: 2026-07-02T06:45:42Z
+updated: 2026-07-02T20:14:40Z
 ---
 
 # AGENTS.md — working rules for mkb
@@ -16,6 +16,8 @@ fix the approach before continuing.
 ![[01KVHJ76YA04MEM71HNDB7RT8G]]
 
 See `README.md` for the full overview and `docs/` for details.
+
+![[01KWJ7FTMWV8M89SE4KWT28SEC]]
 
 ## 🥇 Golden rules
 

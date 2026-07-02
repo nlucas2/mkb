@@ -1,0 +1,11 @@
+{
+  "//": "Repo-scoped MCP config: an MCP-capable agent (e.g. GitHub Copilot CLI) opened in this repo auto-gets an `mkb` server pinned to THIS checkout's vault — no per-user setup, and it resolves correctly in any clone or git worktree. `just mcp` prefers an installed `mkb-mcp` (instant) and falls back to `cargo run` from source when it isn't on PATH; requires `just` (already needed to build). Contributors without `just`/`mkb-mcp` can use the `mkb` CLI directly — see AGENTS.md.",
+  "mcpServers": {
+    "mkb": {
+      "type": "local",
+      "command": "just",
+      "args": ["mcp"],
+      "tools": ["*"]
+    }
+  }
+}
