@@ -201,6 +201,13 @@ mcp:
         cargo run -q -p mkb-mcp -- --vault vault
     }
 
+# One-time per clone: point git at the tracked hooks in `.githooks/`, installing the docs-as-data
+# pre-commit hook (regenerates & re-stages generated docs when you change vault blocks, so they
+# never drift in a commit). `git config` is cross-platform, so one recipe covers every OS.
+hooks:
+    git config core.hooksPath .githooks
+    @echo "Installed .githooks (pre-commit keeps docs-as-data in sync). Undo: git config --unset core.hooksPath"
+
 # Remove build artifacts (both workspaces).
 clean:
     cargo clean

@@ -47,6 +47,11 @@ you write** (a fact lives in exactly one block — don't fork a near-duplicate),
 block, never the generated file**, then run `mkb export --vault vault` and commit the regenerated
 file(s) in the **same** change.
 
+To automate that last step, run `just hooks` **once per clone**: it points git at the tracked
+`.githooks/`, whose `pre-commit` hook regenerates the docs and re-stages them whenever a commit
+touches `vault/` — so a generated file can never drift from its source block. It's a no-op on
+pure-code commits, and CI's `mkb export --vault vault --check` remains the hard backstop.
+
 ## 🥇 Golden rules
 
 ### Tests are mandatory

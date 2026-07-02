@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# mkb docs-as-data pre-commit hook.
+#
+# When a commit changes the vault (blocks or the export manifest), regenerate the docs those blocks
+# produce and re-stage the ones that changed — so a generated file (README.md, AGENTS.md, docs/…)
+# can never drift from its source block within a commit. Pure-code commits touch no vault files, so
+# this is a no-op and stays instant. CI's `mkb export --vault vault --check` is the hard backstop.
+#
+# Installed by `just hooks` (which sets `core.hooksPath` to this directory). To bypass once:
+#   git commit --no-verify
+set -euo pipefail
+
+# Only do work when this commit touches the vault — otherwise nothing is regenerated or re-staged.
+if ! git diff --cached --name-only | grep -qE '^vault/'; then
+    exit 0
+fi
+
+# Prefer an installed `mkb` (instant); fall back to `cargo run` from source; skip if neither exists
+# (a contributor with no toolchain — CI still enforces `--check`).
+if command -v mkb >/dev/null 2>&1; then
+    mkb=(mkb)
+elif command -v cargo >/dev/null 2>&1; then
+    mkb=(cargo run -q -p mkb-cli --)
+else
+    echo "pre-commit: neither 'mkb' nor 'cargo' found; skipping docs regen (CI will still check)." >&2
+    exit 0
+fi
+
+# Regenerate the docs-as-data outputs against the working-tree vault.
+if ! out="$("${mkb[@]}" export --vault vault 2>&1)"; then
+    echo "pre-commit: 'mkb export --vault vault' failed:" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+fi
+
+# Re-stage every doc the export wrote (its output lines are `updated <path>` / `created <path>`).
+changed="$(printf '%s\n' "$out" | sed -n -E 's/^(updated|created)[[:space:]]+//p')"
+if [ -n "$changed" ]; then
+    printf '%s\n' "$changed" | while IFS= read -r f; do
+        [ -n "$f" ] && git add -- "$f"
+    done
+    echo "pre-commit: regenerated & re-staged docs-as-data:" >&2
+    printf '%s\n' "$changed" | sed 's/^/  /' >&2
+fi
+exit 0
