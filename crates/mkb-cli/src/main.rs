@@ -105,6 +105,10 @@ enum Command {
         /// Show only a line range `START:END` (1-based, inclusive), with line numbers.
         #[arg(long, value_name = "START:END")]
         lines: Option<String>,
+        /// Rich read: body **plus** metadata, lineage (root pages / parents), and relationships
+        /// (backlinks in, links out) — the CLI equivalent of the MCP `get_block` fold, in one call.
+        #[arg(long)]
+        full: bool,
     },
     /// Append text to a block's body (read from stdin); the text starts on a fresh line.
     Append {
@@ -337,7 +341,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Ping => cmd_ping(g),
         Command::List => cmd_list(g),
         Command::Render { id, flat } => cmd_render(g, &id, flat),
-        Command::Get { id, lines } => cmd_get(g, &id, lines),
+        Command::Get { id, lines, full } => cmd_get(g, &id, lines, full),
         Command::Append { id } => cmd_append(g, &id),
         Command::Search {
             query,
@@ -457,9 +461,24 @@ fn cmd_render(g: &GlobalArgs, id: &str, flat: bool) -> Result<(), String> {
     }
 }
 
-fn cmd_get(g: &GlobalArgs, id: &str, lines: Option<String>) -> Result<(), String> {
+fn cmd_get(g: &GlobalArgs, id: &str, lines: Option<String>, full: bool) -> Result<(), String> {
     let c = g.connect()?;
     let id = parse_id(id)?;
+    if full {
+        if lines.is_some() {
+            return Err("--full and --lines are mutually exclusive".to_string());
+        }
+        return match c
+            .get_block_view(id, false, None, None)
+            .map_err(|e| e.to_string())?
+        {
+            Some(pv) => {
+                print_page_view(&pv);
+                Ok(())
+            }
+            None => Err("block not found".to_string()),
+        };
+    }
     match lines {
         None => match c.get_block_source(id).map_err(|e| e.to_string())? {
             Some(src) => {
@@ -484,6 +503,56 @@ fn cmd_get(g: &GlobalArgs, id: &str, lines: Option<String>) -> Result<(), String
                 None => Err("block not found".to_string()),
             }
         }
+    }
+}
+
+/// Print a [`PageView`] as a rich, human-readable read: metadata, lineage (root page(s) + direct
+/// embed parents), the body, then relationships (backlinks in / links out). Mirrors the fold the
+/// MCP `get_block` tool returns, so the CLI has one-call parity for "understand this block".
+fn print_page_view(pv: &mkb_core::PageView) {
+    let rec = &pv.block;
+    println!("id       {}", rec.id);
+    println!("title    {}", rec.display_title());
+    println!("created  {}", rec.created.as_deref().unwrap_or("—"));
+    println!("updated  {}", rec.updated.as_deref().unwrap_or("—"));
+    println!("locked   {}", rec.locked);
+    if !rec.tags.is_empty() {
+        println!("tags     {}", rec.tags.join(", "));
+    }
+    for (k, v) in &rec.props {
+        println!("prop     {k} = {v}");
+    }
+
+    let lin = &pv.lineage;
+    if lin.is_root {
+        println!("lineage  [root]");
+    } else {
+        let roots: Vec<&str> = lin.roots.iter().map(|c| c.title.as_str()).collect();
+        println!("lineage  depth {} · on: {}", lin.depth, roots.join(" · "));
+        if !lin.parents.is_empty() {
+            let parents: Vec<&str> = lin.parents.iter().map(|c| c.title.as_str()).collect();
+            println!("parents  {}", parents.join(" · "));
+        }
+    }
+
+    println!("\n--- body ---\n{}", rec.content.trim_end());
+
+    let crumbs = |rows: &[mkb_core::LinkCrumb]| {
+        for r in rows {
+            let kind = match r.kind {
+                mkb_core::LinkKind::Transcludes => "embed",
+                mkb_core::LinkKind::References => "ref",
+            };
+            println!("  {kind:>5}  {}  {}", r.id, r.title);
+        }
+    };
+    if !pv.backlinks.is_empty() {
+        println!("\n--- backlinks (in) ---");
+        crumbs(&pv.backlinks);
+    }
+    if !pv.links_out.is_empty() {
+        println!("\n--- links (out) ---");
+        crumbs(&pv.links_out);
     }
 }
 

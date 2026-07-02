@@ -116,6 +116,7 @@ Two commands **print an id on stdout you must capture** — `create` (new block 
 mkb list --vault <vault>                    # root blocks, "id  title" per line
 mkb get --vault <vault> <id>                # raw Markdown body (use before any update)
 mkb get --vault <vault> <id> --lines 10:20   # just lines 10-20 (1-based), numbered
+mkb get --vault <vault> <id> --full          # rich read: body + metadata + lineage + backlinks/links (one call)
 mkb render --vault <vault> <id>             # body with embeds resolved
 mkb render --vault <vault> <id> --flat      # published form: embeds dissolved, refs as titles
 mkb search --vault <vault> "how do I restart nginx" # hybrid keyword+semantic; prefer a natural phrase
