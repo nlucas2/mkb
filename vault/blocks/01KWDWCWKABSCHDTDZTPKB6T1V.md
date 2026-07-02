@@ -1,7 +1,7 @@
 ---
 title: "Usage: browsing & organizing"
 tags: [doc, usage]
-updated: 2026-07-01T03:43:39Z
+updated: 2026-07-02T04:21:02Z
 ---
 
 ## Browsing & organizing
@@ -27,3 +27,7 @@ From the **CLI**, the same two engines are:
 slashes — `ops/networking/dns`, or `path: docs/skills/mkb-cli` — nests in these trees, so a flat
 namespace reads like folders. Blocks that don't carry the grouping value collect under an
 **Unfiled** node you can still open and browse.
+
+In the app's **Tags** view, a parent tag with children carries a small **≡** button — click it to
+*flatten* the subtree into one de-duped list of every block tagged `parent` or `parent/**`, without
+expanding each child in turn; click again to return to the nested view.

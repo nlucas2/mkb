@@ -62,7 +62,8 @@ pub fn all_tool_definitions() -> Vec<ToolDef> {
                 "properties": {
                     "query": {"type": "string", "description": "Free-text query"},
                     "lang": {"type": "string", "description": "Restrict to a code-fence language (e.g. kusto)"},
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Require all of these tags"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Require all of these tags (hierarchical: 'kusto' matches any path where kusto is a whole /-segment, e.g. 'kusto/workersystemstats' or 'a/kusto/b'; 'doc/readme' matches that run anywhere)"},
+                    "tags_exact": {"type": "array", "items": {"type": "string"}, "description": "Require all of these tags by EXACT match (no hierarchy; 'kusto' matches only the 'kusto' tag)"},
                     "limit": {"type": "integer", "description": "Max results (default 50)"},
                     "created_after": {"type": "string", "description": "Only blocks created on/after this date (YYYY-MM-DD or RFC 3339)"},
                     "created_before": {"type": "string", "description": "Only blocks created before this date"},
@@ -286,6 +287,13 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
                 for t in arr.iter().filter_map(|x| x.as_str()) {
                     if !q.tags.iter().any(|e| e.eq_ignore_ascii_case(t)) {
                         q.tags.push(t.to_string());
+                    }
+                }
+            }
+            if let Some(arr) = args.get("tags_exact").and_then(|v| v.as_array()) {
+                for t in arr.iter().filter_map(|x| x.as_str()) {
+                    if !q.tags_exact.iter().any(|e| e.eq_ignore_ascii_case(t)) {
+                        q.tags_exact.push(t.to_string());
                     }
                 }
             }

@@ -79,13 +79,53 @@ impl SqliteIndex {
                 args.len()
             ));
         }
+        // Hierarchical tags: a query matches a tag where it appears as a contiguous run of whole
+        // `/`-segments — as the exact tag, at the start (`X/…`), the end (`…/X`), or the middle
+        // (`…/X/…`). So `tag:kusto` matches `kusto`, `kusto/a`, `z/kusto`, and `z/kusto/a`, but
+        // never `kustonomicon` (the boundaries are anchored on `/` or the string ends). Works for
+        // multi-segment queries too (`doc/readme` matches `a/doc/readme/b`) since the query's own
+        // `/` are literal. Escaped so `_`/`%`/`\` in a tag can't act as wildcards.
         for tag in &query.tags {
+            let tag = tag.to_lowercase();
+            let esc = Self::escape_like(&tag);
+            args.push(Box::new(tag));
+            let exact = args.len();
+            args.push(Box::new(format!("{esc}/%")));
+            let at_start = args.len();
+            args.push(Box::new(format!("%/{esc}")));
+            let at_end = args.len();
+            args.push(Box::new(format!("%/{esc}/%")));
+            let in_mid = args.len();
+            sql.push_str(&format!(
+                " AND b.id IN (SELECT block_id FROM block_tags WHERE tag = ?{exact} \
+                  OR tag LIKE ?{at_start} ESCAPE '\\' \
+                  OR tag LIKE ?{at_end} ESCAPE '\\' \
+                  OR tag LIKE ?{in_mid} ESCAPE '\\')"
+            ));
+        }
+        // Exact tags (`tag:NAME$`): the tag verbatim, no subtree.
+        for tag in &query.tags_exact {
             args.push(Box::new(tag.to_lowercase()));
             sql.push_str(&format!(
                 " AND b.id IN (SELECT block_id FROM block_tags WHERE tag = ?{})",
                 args.len()
             ));
         }
+    }
+
+    /// Escape a lowercased tag for safe use inside a `LIKE` pattern (paired with `ESCAPE '\'`): the
+    /// LIKE metacharacters `_`, `%`, and the escape `\` itself are backslash-escaped, so a tag
+    /// containing them can't behave as a wildcard. The caller wraps the result with the `/`-anchored
+    /// `%`/`/%` affixes that express "this run of whole segments, anywhere in the path".
+    fn escape_like(tag: &str) -> String {
+        let mut s = String::with_capacity(tag.len() + 4);
+        for c in tag.chars() {
+            if c == '\\' || c == '%' || c == '_' {
+                s.push('\\');
+            }
+            s.push(c);
+        }
+        s
     }
 
     fn keyword_hits(
@@ -701,6 +741,100 @@ mod tests {
             })
             .unwrap();
         assert_eq!(by_lang.len(), 1);
+    }
+
+    #[test]
+    fn hierarchical_tag_match() {
+        let (idx, _v, _ids) = indexed(&[
+            "---\ntitle: Root\ntags: [kusto]\n---\nx\n",
+            "---\ntitle: Mid\ntags: [kusto/workersystemstats]\n---\nx\n",
+            "---\ntitle: Leaf\ntags: [kusto/workersystemstats/df]\n---\nx\n",
+            "---\ntitle: Decoy\ntags: [kustonomicon]\n---\nx\n",
+            "---\ntitle: Kusto as leaf\ntags: [notkusto/kusto]\n---\nx\n",
+            "---\ntitle: Kusto in middle\ntags: [a/kusto/b]\n---\nx\n",
+        ]);
+        // Segment-anywhere: `kusto` matches it as a whole segment at the start, end, or middle of a
+        // path — but never `kustonomicon` (not a `/`-segment boundary).
+        let anywhere = idx
+            .search(&SearchQuery {
+                tags: vec!["kusto".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            anywhere.len(),
+            5,
+            "every block whose path has a `kusto` segment, not the decoy"
+        );
+        // A deeper parent still matches its descendants.
+        let deeper = idx
+            .search(&SearchQuery {
+                tags: vec!["kusto/workersystemstats".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(deeper.len(), 2, "the mid node + its leaf");
+        // Exact opts out entirely.
+        let exact = idx
+            .search(&SearchQuery {
+                tags_exact: vec!["kusto".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(exact.len(), 1, "only the bare `kusto` tag");
+    }
+
+    #[test]
+    fn hierarchical_tag_leaf_and_multisegment() {
+        let (idx, _v, _ids) = indexed(&[
+            "---\ntitle: A\ntags: [doc/readme]\n---\nx\n",
+            "---\ntitle: B\ntags: [a/doc/readme/b]\n---\nx\n",
+            "---\ntitle: C\ntags: [skill/readme]\n---\nx\n",
+            "---\ntitle: D\ntags: [mydoc/readme]\n---\nx\n",
+        ]);
+        // Leaf search: `readme` finds it wherever it's a whole segment.
+        let leaf = idx
+            .search(&SearchQuery {
+                tags: vec!["readme".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(leaf.len(), 4);
+        // A multi-segment query matches the contiguous run anywhere, but anchored on boundaries so
+        // `doc/readme` does NOT match `mydoc/readme` (no `/` before `doc`).
+        let span = idx
+            .search(&SearchQuery {
+                tags: vec!["doc/readme".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            span.len(),
+            2,
+            "doc/readme and a/doc/readme/b, not skill/readme or mydoc/readme"
+        );
+    }
+
+    #[test]
+    fn hierarchical_tag_underscore_is_literal() {
+        // A `_` in a tag must not act as a LIKE single-char wildcard: `foo_bar` must match
+        // `foo_bar/…` but not `fooxbar/…`.
+        let (idx, _v, _ids) = indexed(&[
+            "---\ntitle: A\ntags: [foo_bar]\n---\nx\n",
+            "---\ntitle: B\ntags: [foo_bar/child]\n---\nx\n",
+            "---\ntitle: C\ntags: [fooxbar/child]\n---\nx\n",
+        ]);
+        let hits = idx
+            .search(&SearchQuery {
+                tags: vec!["foo_bar".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            hits.len(),
+            2,
+            "foo_bar and foo_bar/child, not fooxbar/child"
+        );
     }
 
     #[test]

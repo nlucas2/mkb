@@ -144,6 +144,11 @@
       .gb-caret.leaf { cursor:default; opacity:.3; }
       .gb-seg { overflow:hidden; text-overflow:ellipsis; }
       .gb-count { margin-left:auto; font-size:.85em; opacity:.7; padding-left:.4rem; }
+      .gb-flat { flex:0 0 auto; margin-left:auto; font-size:.95em; line-height:1; padding:0 .25rem; border-radius:4px;
+                 color:var(--muted); opacity:.55; cursor:pointer; }
+      .gb-flat:hover { opacity:1; background:color-mix(in srgb, var(--accent) 25%, transparent); color:var(--fg); }
+      .gb-flat.on { opacity:1; color:var(--accent); background:color-mix(in srgb, var(--accent) 18%, transparent); }
+      .gb-flat + .gb-count { margin-left:.15rem; }
       /* A hierarchy row: every node is a BLOCK — caret expands, the label opens (split click). */
       .gb-hrow { display:flex; align-items:center; gap:.15rem; border-radius:6px; padding:.15rem .3rem; white-space:nowrap; overflow:hidden; }
       .gb-hrow:hover { background:var(--hover); }
@@ -716,9 +721,11 @@
       let groupTree = null;    // cached GroupTree (tags/path) when that grouping is active
       let hierTree = null;     // cached HierTree when grouping = hierarchy
       const groupOpen = new Set(); // expanded node keys (persisted)
+      const groupFlat = new Set(); // tag nodes whose subtree is flattened to one list (persisted)
       try {
         groupBy = localStorage.getItem("mkb.groupBy") || "hierarchy";
         JSON.parse(localStorage.getItem("mkb.groupOpen") || "[]").forEach((v) => groupOpen.add(v));
+        JSON.parse(localStorage.getItem("mkb.groupFlat") || "[]").forEach((v) => groupFlat.add(v));
       } catch {}
       let indexCache = null;   // [{id,title}] of ALL blocks (picker)
       let active = null;       // current block id
@@ -871,12 +878,26 @@
           return li;
         };
         const isTags = groupBy === "tags";
+        // All blocks in a node's subtree (itself + every descendant), de-duped by id and sorted by
+        // title — the "flattened" listing for a tag parent. A block carrying several descendant
+        // tags under the same parent appears once.
+        const subtreeBlocks = (node) => {
+          const seen = new Map();
+          (function walk(n) {
+            n.blocks.forEach((b) => { if (!seen.has(b.id)) seen.set(b.id, b); });
+            n.children.forEach(walk);
+          })(node);
+          return [...seen.values()].sort((a, b) =>
+            (a.title || a.id).toLowerCase().localeCompare((b.title || b.id).toLowerCase()));
+        };
         const nodeLi = (node) => {
           const li = document.createElement("li");
           const open = groupOpen.has(node.full_value);
+          // Flatten is a tags-only browse toggle, and only meaningful where there's a subtree.
+          const canFlatten = isTags && node.children.length > 0;
+          const flat = canFlatten && groupFlat.has(node.full_value);
           const row = document.createElement("div");
           row.className = "gb-row" + (isTags ? " gb-rowsearch" : "");
-          const childCount = node.blocks.length + node.children.length;
           const caret = document.createElement("span");
           caret.className = "gb-caret";
           caret.textContent = open ? "▾" : "▸";
@@ -885,8 +906,27 @@
           seg.textContent = node.segment;
           const count = document.createElement("span");
           count.className = "gb-count";
-          count.textContent = childCount;
-          row.append(caret, seg, count);
+          // Flattened rows count the de-duped subtree; nested rows count their immediate rows.
+          count.textContent = flat ? subtreeBlocks(node).length : node.blocks.length + node.children.length;
+          row.append(caret, seg);
+          if (canFlatten) {
+            const fb = document.createElement("span");
+            fb.className = "gb-flat" + (flat ? " on" : "");
+            fb.textContent = "≡";
+            fb.title = flat ? "Show nested subtree" : `Flatten — list every block under #${node.full_value}`;
+            fb.onclick = (e) => {
+              e.stopPropagation();
+              if (groupFlat.has(node.full_value)) groupFlat.delete(node.full_value);
+              else { groupFlat.add(node.full_value); groupOpen.add(node.full_value); }
+              try {
+                localStorage.setItem("mkb.groupFlat", JSON.stringify([...groupFlat]));
+                localStorage.setItem("mkb.groupOpen", JSON.stringify([...groupOpen]));
+              } catch {}
+              renderNav();
+            };
+            row.append(fb);
+          }
+          row.append(count);
           row.title = isTags ? `Search #${node.full_value}` : node.full_value;
           const kids = document.createElement("ul");
           kids.className = "gb-children";
@@ -901,14 +941,19 @@
             // Split click (mirrors Hierarchy): the caret expands the member blocks inline; clicking
             // the tag label runs a `tag:` search for the richer summary view.
             caret.onclick = (e) => { e.stopPropagation(); toggle(); };
-            row.onclick = (e) => { if (!e.target.closest(".gb-caret")) searchTag(node.full_value); };
+            row.onclick = (e) => { if (!e.target.closest(".gb-caret,.gb-flat")) searchTag(node.full_value); };
           } else {
             row.onclick = toggle;
           }
           li.append(row, kids);
-          // Child segment nodes first, then the blocks filed directly at this node.
-          node.children.forEach((c) => kids.appendChild(nodeLi(c)));
-          node.blocks.forEach((b) => kids.appendChild(blockLi(b)));
+          if (flat) {
+            // One de-duped list of the whole subtree — no intermediate segment nodes.
+            subtreeBlocks(node).forEach((b) => kids.appendChild(blockLi(b)));
+          } else {
+            // Child segment nodes first, then the blocks filed directly at this node.
+            node.children.forEach((c) => kids.appendChild(nodeLi(c)));
+            node.blocks.forEach((b) => kids.appendChild(blockLi(b)));
+          }
           return li;
         };
         groupTree.roots.forEach((n) => blocksEl.appendChild(nodeLi(n)));

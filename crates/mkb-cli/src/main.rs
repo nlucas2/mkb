@@ -119,9 +119,12 @@ enum Command {
         /// Restrict to a code-fence language.
         #[arg(long)]
         lang: Option<String>,
-        /// Require a tag (repeatable).
+        /// Require a tag (repeatable). Hierarchical: `--tag kusto` matches any `…/kusto/…` segment.
         #[arg(long = "tag")]
         tags: Vec<String>,
+        /// Require an exact tag, no hierarchy (repeatable). `--tag-exact kusto` matches only `kusto`.
+        #[arg(long = "tag-exact")]
+        tags_exact: Vec<String>,
         /// Maximum number of hits.
         #[arg(long)]
         limit: Option<usize>,
@@ -340,6 +343,7 @@ fn run(cli: Cli) -> Result<(), String> {
             query,
             lang,
             tags,
+            tags_exact,
             limit,
             created_after,
             created_before,
@@ -354,6 +358,7 @@ fn run(cli: Cli) -> Result<(), String> {
             SearchFlags {
                 lang,
                 tags,
+                tags_exact,
                 limit,
                 created_after,
                 created_before,
@@ -515,6 +520,7 @@ fn cmd_append(g: &GlobalArgs, id: &str) -> Result<(), String> {
 struct SearchFlags {
     lang: Option<String>,
     tags: Vec<String>,
+    tags_exact: Vec<String>,
     limit: Option<usize>,
     created_after: Option<String>,
     created_before: Option<String>,
@@ -537,6 +543,12 @@ fn cmd_search(g: &GlobalArgs, query_text: &str, flags: SearchFlags) -> Result<()
         let t = t.to_lowercase();
         if !q.tags.contains(&t) {
             q.tags.push(t);
+        }
+    }
+    for t in flags.tags_exact {
+        let t = t.to_lowercase();
+        if !q.tags_exact.contains(&t) {
+            q.tags_exact.push(t);
         }
     }
     if let Some(n) = flags.limit {

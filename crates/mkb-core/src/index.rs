@@ -190,8 +190,15 @@ pub struct SearchQuery {
     pub vector: Option<Vec<f32>>,
     /// The embedding model that produced `vector`; only same-model vectors are compared.
     pub vector_model: Option<String>,
-    /// Tags that must all be present (AND).
+    /// Tags required by **hierarchical** match (AND): a query matches a tag where it appears as a
+    /// contiguous run of whole `/`-segments — as the exact tag, or at the start, middle, or end of
+    /// a path. So `kusto` matches `kusto`, `kusto/workersystemstats`, `a/kusto`, and `a/kusto/b`;
+    /// `df` matches `kusto/workersystemstats/df` — but neither matches `kustonomicon` (boundaries
+    /// are anchored on `/` or the path ends).
     pub tags: Vec<String>,
+    /// Tags required by **exact** match (AND) — the opt-out from hierarchical matching (`tag:NAME$`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub tags_exact: Vec<String>,
     /// Required fenced-code language.
     pub lang: Option<String>,
     /// Keep only blocks **created** on/after this RFC 3339 UTC instant (inclusive).
@@ -229,7 +236,11 @@ impl SearchQuery {
     /// surface (the desktop search box, the CLI, an MCP raw query) parses it identically rather
     /// than re-implementing it. Recognised operators (case-insensitive keys):
     ///
-    /// - `tag:NAME` or `#NAME` — require the tag `NAME` (repeatable; all required, AND).
+    /// - `tag:NAME` or `#NAME` — require the tag `NAME` (repeatable; all required, AND). Matching
+    ///   is **hierarchical**: `tag:kusto` matches `kusto` and any path where `kusto` is a whole
+    ///   `/`-segment (`kusto/a`, `a/kusto`, `a/kusto/b`), and a multi-segment `tag:doc/readme`
+    ///   matches that contiguous run anywhere (`a/doc/readme/b`). Append `$` for an **exact** match:
+    ///   `tag:kusto$` matches only the `kusto` tag itself (the `#` shorthand is always hierarchical).
     /// - `lang:NAME` or `code:NAME` — require a fenced code block in language `NAME`.
     /// - `created:after:DATE` / `created:before:DATE` — bound by creation time.
     /// - `updated:after:DATE` / `updated:before:DATE` — bound by last-modified time. `DATE` is a
@@ -246,13 +257,18 @@ impl SearchQuery {
     /// Returns a query whose `text` is `None` when no free text remains.
     pub fn parse(input: &str) -> SearchQuery {
         let mut tags: Vec<String> = Vec::new();
+        let mut tags_exact: Vec<String> = Vec::new();
         let mut lang: Option<String> = None;
         let mut q = SearchQuery::default();
         let mut words: Vec<&str> = Vec::new();
 
         for token in input.split_whitespace() {
             if let Some(rest) = strip_ci_prefix(token, "tag:") {
-                push_unique(&mut tags, rest);
+                // A trailing `$` opts out of subtree matching (exact tag only).
+                match rest.strip_suffix('$') {
+                    Some(exact) => push_unique(&mut tags_exact, exact),
+                    None => push_unique(&mut tags, rest),
+                }
             } else if let Some(rest) = strip_ci_prefix(token, "lang:") {
                 set_lang(&mut lang, rest);
             } else if let Some(rest) = strip_ci_prefix(token, "code:") {
@@ -287,6 +303,7 @@ impl SearchQuery {
             Some(words.join(" "))
         };
         q.tags = tags;
+        q.tags_exact = tags_exact;
         q.lang = lang;
         q
     }
@@ -1478,6 +1495,15 @@ mod tests {
     fn parse_dedupes_tags_and_handles_no_free_text() {
         let q = SearchQuery::parse("tag:k8s #K8S tag:net");
         assert_eq!(q.tags, vec!["k8s", "net"]);
+        assert_eq!(q.text, None);
+    }
+
+    #[test]
+    fn parse_exact_tag_suffix() {
+        // `tag:NAME` is a subtree tag; a trailing `$` routes it to the exact list instead.
+        let q = SearchQuery::parse("tag:kusto tag:ops$ #net");
+        assert_eq!(q.tags, vec!["kusto", "net"], "subtree tags");
+        assert_eq!(q.tags_exact, vec!["ops"], "exact tag, `$` stripped");
         assert_eq!(q.text, None);
     }
 
