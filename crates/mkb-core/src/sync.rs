@@ -646,6 +646,108 @@ impl<I: Index> SyncEngine<I> {
         self.update_block(id, title.as_deref(), &body)
     }
 
+    /// Insert a directive as its own paragraph immediately before or after the first directive that
+    /// targets `anchor` in the source block's body, then persist. Used to link a new block at a
+    /// chosen position (e.g. "insert a block above/below this embed card"). Falls back to an append
+    /// when the anchor directive isn't present (so the caller still lands the link).
+    pub fn insert_directive_by_anchor(
+        &mut self,
+        id: &BlockId,
+        directive: &str,
+        anchor: &BlockId,
+        after: bool,
+    ) -> Result<(), IndexError> {
+        let block = self
+            .vault
+            .block(id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
+        let title = block.title.clone();
+        let old = block.body.clone();
+
+        // Find the anchor directive's byte span in the (code-masked) body. `anchor` matches a
+        // directive whose target resolves to it — by id, or by a title that resolves to this block.
+        let anchor_span = crate::link::extract_references(&old)
+            .into_iter()
+            .find_map(|r| {
+                let hit = r.target == anchor.as_str()
+                    || self.vault.resolve(&r.target).is_some_and(|t| &t == anchor);
+                hit.then_some(r.span)
+            });
+
+        let body = match anchor_span {
+            Some(span) => {
+                // Expand the anchor to its whole line(s), then splice the new directive as its own
+                // blank-line-separated paragraph on the chosen side.
+                let line_start = old[..span.start].rfind('\n').map_or(0, |i| i + 1);
+                let line_end = old[span.end..]
+                    .find('\n')
+                    .map_or(old.len(), |i| span.end + i);
+                if after {
+                    let (head, tail) = old.split_at(line_end);
+                    format!("{}\n\n{}{}", head.trim_end(), directive, tail)
+                } else {
+                    let (head, tail) = old.split_at(line_start);
+                    format!("{}{}\n\n{}", head, directive, tail.trim_start())
+                }
+            }
+            // Anchor not found (e.g. it was just removed): append rather than fail.
+            None => format!("{}\n\n{}\n", old.trim_end(), directive),
+        };
+        self.update_block(id, title.as_deref(), &body)
+    }
+
+    /// Remove every directive that targets `target` from `id`'s body (the "remove from page" /
+    /// unlink action), then persist. Collapses the blank line the directive occupied so the body
+    /// stays tidy. Returns `true` if at least one directive was removed. A no-op (no such directive)
+    /// returns `false` without a write.
+    pub fn remove_directives_to(
+        &mut self,
+        id: &BlockId,
+        target: &BlockId,
+    ) -> Result<bool, IndexError> {
+        let block = self
+            .vault
+            .block(id)
+            .ok_or_else(|| IndexError::new(format!("unknown block: {id}")))?;
+        let title = block.title.clone();
+        let old = block.body.clone();
+
+        // Collect the whole-line spans of matching directives, right-to-left so earlier byte offsets
+        // stay valid as we splice each out.
+        let mut spans: Vec<(usize, usize)> = crate::link::extract_references(&old)
+            .into_iter()
+            .filter(|r| {
+                r.target == target.as_str()
+                    || self.vault.resolve(&r.target).is_some_and(|t| &t == target)
+            })
+            .map(|r| {
+                let line_start = old[..r.span.start].rfind('\n').map_or(0, |i| i + 1);
+                let line_end = old[r.span.end..]
+                    .find('\n')
+                    .map_or(old.len(), |i| r.span.end + i);
+                (line_start, line_end)
+            })
+            .collect();
+        if spans.is_empty() {
+            return Ok(false);
+        }
+        spans.sort_by_key(|s| std::cmp::Reverse(s.0));
+
+        let mut body = old;
+        for (start, end) in spans {
+            // Also swallow one trailing newline so the paragraph gap doesn't linger as a blank line.
+            let mut cut_end = end;
+            if body[cut_end..].starts_with('\n') {
+                cut_end += 1;
+            }
+            body.replace_range(start..cut_end, "");
+        }
+        // Normalize: collapse any 3+ newline runs the removal may have left, and end with one NL.
+        let body = format!("{}\n", body.trim_end());
+        self.update_block(id, title.as_deref(), &body)?;
+        Ok(true)
+    }
+
     fn write_file(&self, id: &BlockId, source: &str) -> Result<(), IndexError> {
         let dir = self.blocks_dir();
         std::fs::create_dir_all(&dir).map_err(io_err)?;

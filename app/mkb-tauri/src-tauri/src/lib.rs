@@ -490,6 +490,43 @@ fn link_blocks(
     })
 }
 
+/// Link/embed `target` at a position: before or after the existing directive that targets
+/// `anchor_id` in `source`'s body (the "insert a block above/below this one" action).
+#[tauri::command]
+fn link_block_at(
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+    target_id: String,
+    embed: bool,
+    anchor_id: String,
+    after: bool,
+) -> Result<String, String> {
+    let client = state.connected()?;
+    let s = BlockId::parse(&source_id).map_err(|e| e.to_string())?;
+    let t = BlockId::parse(&target_id).map_err(|e| e.to_string())?;
+    let a = BlockId::parse(&anchor_id).map_err(|e| e.to_string())?;
+    let outcome = client.link_at(s, t, embed, a, after).map_err(|e| e.to_string())?;
+    Ok(match outcome {
+        mkb_core::LinkOutcome::Reference => "reference".to_string(),
+        mkb_core::LinkOutcome::Transclusion => "transclusion".to_string(),
+        mkb_core::LinkOutcome::DowngradedToReference => "downgraded".to_string(),
+    })
+}
+
+/// Remove an embed/reference from a page: drop every directive targeting `target_id` from
+/// `source_id`'s body (the block itself is untouched). The "remove from page" action.
+#[tauri::command]
+fn unlink_blocks(
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+    target_id: String,
+) -> Result<(), String> {
+    let client = state.connected()?;
+    let s = BlockId::parse(&source_id).map_err(|e| e.to_string())?;
+    let t = BlockId::parse(&target_id).map_err(|e| e.to_string())?;
+    client.unlink(s, t).map_err(|e| e.to_string())
+}
+
 /// Set a block's managed (frontmatter) tags to exactly `tags` (replaces them; empty clears).
 #[tauri::command]
 fn set_tags(
@@ -780,6 +817,8 @@ pub fn run() {
             carve_selection,
             delete_block,
             link_blocks,
+            link_block_at,
+            unlink_blocks,
             set_tags,
             set_props,
             unset_props,

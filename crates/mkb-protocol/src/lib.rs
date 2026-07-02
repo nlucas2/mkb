@@ -267,6 +267,28 @@ pub enum Request {
         /// `true` to embed (`![[...]]`), `false` to reference (`[[...]]`).
         embed: bool,
     },
+    /// Link/embed a block at a position: insert the directive immediately before or after the
+    /// existing directive that targets `anchor_id` in the source body (instead of appending).
+    LinkBlocksAt {
+        /// Source block id (the one whose body gains the directive).
+        source_id: BlockId,
+        /// Target block id (the one being linked/embedded).
+        target_id: BlockId,
+        /// `true` to embed (`![[...]]`), `false` to reference (`[[...]]`).
+        embed: bool,
+        /// The existing embed/reference to position relative to.
+        anchor_id: BlockId,
+        /// `true` inserts after the anchor directive, `false` before it.
+        after: bool,
+    },
+    /// Remove every directive that targets `target_id` from `source_id`'s body (unlink / "remove
+    /// from page"). The target block itself is left intact.
+    UnlinkBlocks {
+        /// Source block id (the one whose body loses the directive).
+        source_id: BlockId,
+        /// Target block id (the reference/embed being removed).
+        target_id: BlockId,
+    },
     /// Reconcile the `blocks/` directory with the index.
     Reconcile,
     /// Rebuild the entire index from the block files.
@@ -355,6 +377,8 @@ impl Request {
             | Request::CarveSelection { .. }
             | Request::FlattenBlock { .. }
             | Request::LinkBlocks { .. }
+            | Request::LinkBlocksAt { .. }
+            | Request::UnlinkBlocks { .. }
             | Request::SetLock { .. } => true,
             Request::Ping
             | Request::Stats
@@ -661,6 +685,32 @@ fn handle<I: Index>(
                 .link_blocks(ctx, &source_id, &target_id, embed)
                 .map_err(to_str)?,
         ),
+        Request::LinkBlocksAt {
+            source_id,
+            target_id,
+            embed,
+            anchor_id,
+            after,
+        } => Response::Linked(
+            service
+                .link_blocks_at(
+                    ctx,
+                    &source_id,
+                    &target_id,
+                    embed,
+                    Some((&anchor_id, after)),
+                )
+                .map_err(to_str)?,
+        ),
+        Request::UnlinkBlocks {
+            source_id,
+            target_id,
+        } => {
+            service
+                .unlink_blocks(ctx, &source_id, &target_id)
+                .map_err(to_str)?;
+            Response::Ok
+        }
         Request::Reconcile => {
             service.reconcile(ctx).map_err(to_str)?;
             Response::Ok
@@ -1301,6 +1351,39 @@ impl Client {
             embed,
         })? {
             Response::Linked(o) => Ok(o),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: link/embed `target` at a position — before or after the existing directive that
+    /// targets `anchor_id` in `source`'s body. Returns the [`LinkOutcome`].
+    pub fn link_at(
+        &self,
+        source_id: BlockId,
+        target_id: BlockId,
+        embed: bool,
+        anchor_id: BlockId,
+        after: bool,
+    ) -> io::Result<LinkOutcome> {
+        match self.call(&Request::LinkBlocksAt {
+            source_id,
+            target_id,
+            embed,
+            anchor_id,
+            after,
+        })? {
+            Response::Linked(o) => Ok(o),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: unlink — remove every directive targeting `target_id` from `source_id`'s body.
+    pub fn unlink(&self, source_id: BlockId, target_id: BlockId) -> io::Result<()> {
+        match self.call(&Request::UnlinkBlocks {
+            source_id,
+            target_id,
+        })? {
+            Response::Ok => Ok(()),
             other => Err(unexpected(other)),
         }
     }

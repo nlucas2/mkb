@@ -990,8 +990,24 @@ impl<I: Index> Service<I> {
         target_id: &BlockId,
         embed: bool,
     ) -> Result<LinkOutcome, IndexError> {
+        self.link_blocks_at(ctx, source_id, target_id, embed, None)
+    }
+
+    /// Like [`link_blocks`], but places the new directive at a position instead of appending.
+    /// `anchor` is `Some((anchor_id, after))`: insert the directive immediately before (`after ==
+    /// false`) or after (`after == true`) the existing directive that targets `anchor_id` in the
+    /// source body. `None` appends (the plain [`link_blocks`] behavior). Used by the UI's
+    /// "insert a block above/below this one" action.
+    pub fn link_blocks_at(
+        &mut self,
+        ctx: &RequestContext,
+        source_id: &BlockId,
+        target_id: &BlockId,
+        embed: bool,
+        anchor: Option<(&BlockId, bool)>,
+    ) -> Result<LinkOutcome, IndexError> {
         ctx.authorize(Capability::Write)?;
-        // Linking appends a directive to the source block, so the source must be writable.
+        // Linking writes a directive into the source block, so the source must be writable.
         self.ensure_writable(source_id)?;
         if self.engine.vault().block(source_id).is_none() {
             return Err(IndexError::new(format!(
@@ -1017,13 +1033,38 @@ impl<I: Index> Service<I> {
         } else {
             format!("[[{target_id}]]")
         };
-        self.engine.append_to_body(source_id, &directive)?;
+        match anchor {
+            Some((anchor_id, after)) => self
+                .engine
+                .insert_directive_by_anchor(source_id, &directive, anchor_id, after)?,
+            None => self.engine.append_to_body(source_id, &directive)?,
+        }
 
         Ok(match (embed, effective_embed) {
             (false, _) => LinkOutcome::Reference,
             (true, true) => LinkOutcome::Transclusion,
             (true, false) => LinkOutcome::DowngradedToReference,
         })
+    }
+
+    /// Remove every directive that targets `target_id` from `source_id`'s body (unlink / "remove
+    /// from page"). The `target` block itself is untouched — only the reference/embed in `source`
+    /// is dropped. Returns `true` if a directive was removed.
+    pub fn unlink_blocks(
+        &mut self,
+        ctx: &RequestContext,
+        source_id: &BlockId,
+        target_id: &BlockId,
+    ) -> Result<bool, IndexError> {
+        ctx.authorize(Capability::Write)?;
+        // Editing the source's body requires the source to be writable.
+        self.ensure_writable(source_id)?;
+        if self.engine.vault().block(source_id).is_none() {
+            return Err(IndexError::new(format!(
+                "unknown source block: {source_id}"
+            )));
+        }
+        self.engine.remove_directives_to(source_id, target_id)
     }
 
     /// Reconcile the `blocks/` directory with the index (startup + watcher).
@@ -1351,6 +1392,67 @@ mod tests {
         );
         let rendered = svc.render_block(&ctx, &host).unwrap().unwrap();
         assert!(rendered.contains("StormEvents | take 10"));
+    }
+
+    #[test]
+    fn link_at_inserts_before_and_after_anchor() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let parent = svc.create_block(&ctx, Some("Parent"), "Intro.").unwrap();
+        let a = svc.create_block(&ctx, Some("A"), "a").unwrap();
+        let b = svc.create_block(&ctx, Some("B"), "b").unwrap();
+        let c = svc.create_block(&ctx, Some("C"), "c").unwrap();
+        // Start: parent embeds A (appended).
+        svc.link_blocks(&ctx, &parent, &a, true).unwrap();
+        // Insert B *after* A, then C *before* A → source order should be C, A, B.
+        svc.link_blocks_at(&ctx, &parent, &b, true, Some((&a, true)))
+            .unwrap();
+        svc.link_blocks_at(&ctx, &parent, &c, true, Some((&a, false)))
+            .unwrap();
+        let body = svc.get_block_source(&ctx, &parent).unwrap().unwrap();
+        let pa = body.find(a.as_str()).unwrap();
+        let pb = body.find(b.as_str()).unwrap();
+        let pc = body.find(c.as_str()).unwrap();
+        assert!(pc < pa && pa < pb, "expected C, A, B order; got:\n{body}");
+        // Each embed is still its own paragraph (blank-line separated) and renders.
+        let rendered = svc.render_block(&ctx, &parent).unwrap().unwrap();
+        assert!(rendered.contains('a') && rendered.contains('b') && rendered.contains('c'));
+    }
+
+    #[test]
+    fn link_at_falls_back_to_append_when_anchor_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let parent = svc.create_block(&ctx, Some("Parent"), "Intro.").unwrap();
+        let a = svc.create_block(&ctx, Some("A"), "a").unwrap();
+        let ghost = svc.create_block(&ctx, Some("Ghost"), "g").unwrap();
+        // `ghost` isn't embedded in parent, so anchoring on it appends instead of failing.
+        svc.link_blocks_at(&ctx, &parent, &a, true, Some((&ghost, true)))
+            .unwrap();
+        let body = svc.get_block_source(&ctx, &parent).unwrap().unwrap();
+        assert!(body.contains(a.as_str()), "link still landed: {body}");
+    }
+
+    #[test]
+    fn unlink_removes_embed_from_page_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut svc = service(dir.path());
+        let ctx = RequestContext::local();
+        let parent = svc.create_block(&ctx, Some("Parent"), "Intro.").unwrap();
+        let a = svc.create_block(&ctx, Some("A"), "aaa").unwrap();
+        let b = svc.create_block(&ctx, Some("B"), "bbb").unwrap();
+        svc.link_blocks(&ctx, &parent, &a, true).unwrap();
+        svc.link_blocks(&ctx, &parent, &b, true).unwrap();
+        // Unlink A: its embed leaves the page, B's stays, and A itself still exists.
+        assert!(svc.unlink_blocks(&ctx, &parent, &a).unwrap());
+        let body = svc.get_block_source(&ctx, &parent).unwrap().unwrap();
+        assert!(!body.contains(a.as_str()), "A's embed removed: {body}");
+        assert!(body.contains(b.as_str()), "B's embed kept: {body}");
+        assert!(svc.get_block(&ctx, &a).unwrap().is_some(), "A still exists");
+        // Unlinking again is a no-op (returns false, no directive left).
+        assert!(!svc.unlink_blocks(&ctx, &parent, &a).unwrap());
     }
 
     #[test]
