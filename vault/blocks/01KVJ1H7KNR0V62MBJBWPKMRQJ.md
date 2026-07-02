@@ -1,6 +1,7 @@
 ---
-title: Skill: write safety
-tags: [skill, shared]
+title: "Skill: write safety"
+tags: [skill/shared]
+updated: 2026-07-02T06:45:40Z
 ---
 
 ## Safe writes - don't destroy knowledge

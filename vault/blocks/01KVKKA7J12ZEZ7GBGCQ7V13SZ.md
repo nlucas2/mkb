@@ -1,6 +1,7 @@
 ---
 title: "Skill: finding duplicates and orphans"
-tags: [skill, dedup]
+tags: [skill/dedup]
+updated: 2026-07-02T06:45:45Z
 ---
 
 ## Collect — sweep the whole vault first

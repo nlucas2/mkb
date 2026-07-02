@@ -1,7 +1,7 @@
 ---
 title: "Config: the daemon (mkbd)"
-tags: [doc, config]
-updated: 2026-07-01T03:18:33Z
+tags: [doc/config]
+updated: 2026-07-02T06:45:47Z
 ---
 
 ## The daemon (`mkbd`)

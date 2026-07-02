@@ -1,6 +1,7 @@
 ---
 title: "Skill: locked blocks"
-tags: [skill, shared]
+tags: [skill/shared]
+updated: 2026-07-02T06:45:46Z
 ---
 
 ## Human-only (locked) blocks

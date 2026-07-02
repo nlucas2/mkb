@@ -1,6 +1,7 @@
 ---
 title: AGENTS page
-tags: [doc, doc-page, dev]
+tags: [doc/contributing, page, dev]
+updated: 2026-07-02T06:45:42Z
 ---
 
 # AGENTS.md — working rules for mkb

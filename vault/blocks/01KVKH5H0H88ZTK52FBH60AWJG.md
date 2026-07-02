@@ -1,7 +1,7 @@
 ---
 title: "Rule: Docs are data"
-tags: [doc, contributing]
-updated: 2026-07-01T03:19:40Z
+tags: [doc/contributing]
+updated: 2026-07-02T06:45:41Z
 ---
 
 ### Docs are data — edit the block, regenerate; never hand-edit a generated file

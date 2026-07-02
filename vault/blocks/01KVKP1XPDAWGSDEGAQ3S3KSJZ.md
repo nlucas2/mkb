@@ -1,6 +1,7 @@
 ---
 title: "Skill: changing what's generated (the manifest)"
-tags: [skill, doc]
+tags: [skill/docs-as-data]
+updated: 2026-07-02T06:45:46Z
 ---
 
 ### Add or change a generated doc (the manifest)

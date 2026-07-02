@@ -1,7 +1,7 @@
 ---
 title: "Skill: CLI surface"
-tags: [skill, surface, cli]
-updated: 2026-06-25T08:13:56Z
+tags: [skill/surface, cli]
+updated: 2026-07-02T06:45:40Z
 ---
 
 ## The CLI surface

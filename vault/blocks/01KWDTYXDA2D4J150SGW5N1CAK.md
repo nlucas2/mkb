@@ -1,7 +1,7 @@
 ---
 title: "Config: environment variables"
-tags: [doc, config]
-updated: 2026-07-01T03:18:32Z
+tags: [doc/config]
+updated: 2026-07-02T06:45:47Z
 ---
 
 ## Environment variables

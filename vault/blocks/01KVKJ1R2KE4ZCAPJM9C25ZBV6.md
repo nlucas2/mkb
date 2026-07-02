@@ -1,6 +1,7 @@
 ---
 title: "README: How clients reach the daemon"
-tags: [doc, readme]
+tags: [doc/readme]
+updated: 2026-07-02T06:45:42Z
 ---
 
 ### How clients reach the daemon

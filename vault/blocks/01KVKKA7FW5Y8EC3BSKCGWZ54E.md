@@ -1,6 +1,7 @@
 ---
 title: "Skill: when to audit for duplicates"
-tags: [skill, dedup]
+tags: [skill/dedup]
+updated: 2026-07-02T06:45:45Z
 ---
 
 ## Auditing a vault for duplicates

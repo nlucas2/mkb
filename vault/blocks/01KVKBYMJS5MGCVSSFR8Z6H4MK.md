@@ -1,6 +1,7 @@
 ---
 title: SPEC page
-tags: [spec, doc, doc-page]
+tags: [doc/spec, page]
+updated: 2026-07-02T06:45:41Z
 ---
 
 # mkb vault on-disk format (SPEC)

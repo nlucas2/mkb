@@ -1,6 +1,7 @@
 ---
 title: Commit hygiene
-tags: [doc, contributing]
+tags: [doc/contributing]
+updated: 2026-07-02T06:45:42Z
 ---
 
 - Small, focused commits. One logical change each.

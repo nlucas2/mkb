@@ -1,7 +1,7 @@
 ---
 title: "Docs-as-data: a block can own its output"
-tags: [doc, dev]
-updated: 2026-07-01T03:20:15Z
+tags: [skill/docs-as-data]
+updated: 2026-07-02T06:45:47Z
 ---
 
 ### A block can own its output (`path` / `filename`)

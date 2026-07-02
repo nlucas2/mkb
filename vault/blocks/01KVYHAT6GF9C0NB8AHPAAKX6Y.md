@@ -1,6 +1,7 @@
 ---
-title: "Prerequisites (list)"
-tags: [doc, install]
+title: Prerequisites (list)
+tags: [doc/install]
+updated: 2026-07-02T06:45:47Z
 ---
 
 Building **from source** (`just install`, `cargo install`, or `cargo tauri build`) needs these on

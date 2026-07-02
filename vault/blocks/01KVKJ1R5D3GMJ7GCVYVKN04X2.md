@@ -1,6 +1,7 @@
 ---
 title: "README: Install — from source"
-tags: [doc, readme]
+tags: [doc/readme]
+updated: 2026-07-02T06:45:43Z
 ---
 
 ## From source

@@ -1,6 +1,7 @@
 ---
 title: "Skill: the edit-block to re-export loop"
-tags: [skill, doc]
+tags: [skill/docs-as-data]
+updated: 2026-07-02T06:45:46Z
 ---
 
 ### The loop: edit the block, then re-export

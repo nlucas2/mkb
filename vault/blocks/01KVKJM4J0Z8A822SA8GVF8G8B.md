@@ -1,6 +1,7 @@
 ---
 title: Architecture page
-tags: [doc, doc-page, dev]
+tags: [doc/architecture, page, dev]
+updated: 2026-07-02T06:45:44Z
 ---
 
 # mkb architecture — the file-per-block model

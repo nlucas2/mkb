@@ -1,6 +1,7 @@
 ---
 title: "Shared note: vault & connection"
-tags: [mkb, config]
+tags: [run/shared]
+updated: 2026-07-02T06:45:39Z
 ---
 
 **Shared note — the vault is the source of truth.** *(Edit this one block; everything that

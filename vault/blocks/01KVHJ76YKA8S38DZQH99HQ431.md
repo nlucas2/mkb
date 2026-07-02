@@ -1,6 +1,7 @@
 ---
 title: Run mkb with Docker
-tags: [mkb, run, docker]
+tags: [run/docker]
+updated: 2026-07-02T06:45:39Z
 ---
 
 # Run mkb with Docker

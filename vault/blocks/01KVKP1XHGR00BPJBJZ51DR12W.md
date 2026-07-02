@@ -1,6 +1,7 @@
 ---
 title: "Skill: find the source block from a generated file"
-tags: [skill, doc]
+tags: [skill/docs-as-data]
+updated: 2026-07-02T06:45:46Z
 ---
 
 ### Find the source block — don't edit the file

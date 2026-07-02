@@ -1,7 +1,7 @@
 ---
 title: "README: Roadmap"
-tags: [doc, readme]
-updated: 2026-06-29T07:00:32Z
+tags: [doc/readme]
+updated: 2026-07-02T06:45:43Z
 ---
 
 ## Roadmap

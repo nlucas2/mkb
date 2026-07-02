@@ -1,7 +1,7 @@
 ---
 title: Pre-commit checklist
-tags: [doc, contributing]
-updated: 2026-06-25T10:14:29Z
+tags: [doc/contributing]
+updated: 2026-07-02T06:45:42Z
 ---
 
 1. `cargo fmt --all` — code is formatted.

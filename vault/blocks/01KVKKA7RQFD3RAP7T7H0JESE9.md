@@ -1,7 +1,7 @@
 ---
 title: Dedup skill page (CLI)
-tags: [skill, skill-page, dedup, cli]
-updated: 2026-06-30T23:06:30Z
+tags: [skill/dedup, page, cli]
+updated: 2026-07-02T06:45:45Z
 path: docs/skills/mkb-dedup
 filename: SKILL.md
 ---

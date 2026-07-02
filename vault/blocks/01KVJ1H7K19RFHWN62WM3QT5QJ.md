@@ -1,7 +1,7 @@
 ---
 title: "Skill: search operators"
-tags: [skill, shared]
-updated: 2026-06-25T07:51:05Z
+tags: [skill/shared]
+updated: 2026-07-02T06:45:39Z
 ---
 
 ## Search - hybrid + operators

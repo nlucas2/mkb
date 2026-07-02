@@ -1,7 +1,7 @@
 ---
 title: "Architecture: daemon & clients"
-tags: [doc, architecture]
-updated: 2026-06-30T08:25:19Z
+tags: [doc/architecture]
+updated: 2026-07-02T06:45:44Z
 ---
 
 ## Daemon & clients

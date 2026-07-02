@@ -1,6 +1,7 @@
 ---
 title: "Skill: embed vs reference"
-tags: [skill, shared]
+tags: [skill/shared]
+updated: 2026-07-02T06:45:39Z
 ---
 
 ## Embed vs. reference - pick deliberately

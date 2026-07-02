@@ -1,7 +1,7 @@
 ---
 title: "Usage: MCP tool tiers"
-tags: [doc, usage]
-updated: 2026-07-01T03:43:40Z
+tags: [doc/usage]
+updated: 2026-07-02T06:45:48Z
 ---
 
 ## MCP tool tiers

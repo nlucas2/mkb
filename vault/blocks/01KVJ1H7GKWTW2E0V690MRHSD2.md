@@ -1,6 +1,7 @@
 ---
-title: Skill: DRY search-first
-tags: [skill, shared]
+title: "Skill: DRY search-first"
+tags: [skill/shared]
+updated: 2026-07-02T06:45:39Z
 ---
 
 ## DRY — search before you write

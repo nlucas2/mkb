@@ -1,6 +1,7 @@
 ---
 title: "Skill: dedup anti-patterns"
-tags: [skill, dedup]
+tags: [skill/dedup]
+updated: 2026-07-02T06:45:45Z
 ---
 
 ## Dedup anti-patterns - don't

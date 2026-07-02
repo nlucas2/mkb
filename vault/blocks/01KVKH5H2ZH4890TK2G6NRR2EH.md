@@ -1,6 +1,7 @@
 ---
 title: "Rule: One shared core"
-tags: [doc, contributing, concept]
+tags: [doc/contributing, concept]
+updated: 2026-07-02T06:45:42Z
 ---
 
 ### One shared core — the UI and the MCP server must never diverge ⚠️ critical

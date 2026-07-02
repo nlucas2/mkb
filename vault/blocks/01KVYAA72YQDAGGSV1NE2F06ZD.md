@@ -1,6 +1,7 @@
 ---
 title: "README: Where your vault lives"
-tags: [doc, readme]
+tags: [doc/readme]
+updated: 2026-07-02T06:45:46Z
 ---
 
 ### Where your vault lives — local or synced

@@ -1,6 +1,7 @@
 ---
 title: "Rule: Run the full suite before every commit"
-tags: [doc, contributing]
+tags: [doc/contributing]
+updated: 2026-07-02T06:45:41Z
 ---
 
 ### Always run the full suite before every commit — and it must be green

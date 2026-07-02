@@ -1,6 +1,7 @@
 ---
 title: "Architecture: the model is a DAG"
-tags: [doc, architecture]
+tags: [doc/architecture]
+updated: 2026-07-02T06:45:44Z
 ---
 
 ## The model is a DAG

@@ -1,7 +1,7 @@
 ---
 title: "Config: choosing an embedder"
-tags: [doc, config]
-updated: 2026-06-25T09:51:07Z
+tags: [doc/config]
+updated: 2026-07-02T06:45:43Z
 ---
 
 ## Choosing an embedder (`config.json`)

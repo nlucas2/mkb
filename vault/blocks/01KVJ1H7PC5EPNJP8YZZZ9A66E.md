@@ -1,7 +1,7 @@
 ---
 title: CLI skill page
-tags: [skill, skill-page, cli]
-updated: 2026-06-30T23:06:30Z
+tags: [skill, page, cli]
+updated: 2026-07-02T06:45:40Z
 path: docs/skills/mkb-cli
 filename: SKILL.md
 ---

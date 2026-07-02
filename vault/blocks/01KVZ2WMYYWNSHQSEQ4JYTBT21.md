@@ -1,7 +1,7 @@
 ---
 title: "Config: multiple vaults (the registry)"
-tags: [doc, config]
-updated: 2026-06-25T09:48:47Z
+tags: [doc/config]
+updated: 2026-07-02T06:45:47Z
 ---
 
 ## Multiple vaults (the registry)

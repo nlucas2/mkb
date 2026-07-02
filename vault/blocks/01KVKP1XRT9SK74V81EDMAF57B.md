@@ -1,7 +1,7 @@
 ---
 title: Docs-as-data skill page
-tags: [skill, skill-page, doc, dev]
-updated: 2026-07-01T03:20:15Z
+tags: [skill/docs-as-data, page, dev]
+updated: 2026-07-02T06:45:46Z
 ---
 
 ---

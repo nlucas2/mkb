@@ -1,6 +1,7 @@
 ---
 title: "Architecture: a block is a file"
-tags: [doc, architecture]
+tags: [doc/architecture]
+updated: 2026-07-02T06:45:44Z
 ---
 
 ## The core idea: a block is a file

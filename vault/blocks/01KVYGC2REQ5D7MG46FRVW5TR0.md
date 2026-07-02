@@ -1,7 +1,7 @@
 ---
 title: "README: Install"
-tags: [doc, readme]
-updated: 2026-06-25T10:18:10Z
+tags: [doc/readme]
+updated: 2026-07-02T06:45:46Z
 ---
 
 ### Install

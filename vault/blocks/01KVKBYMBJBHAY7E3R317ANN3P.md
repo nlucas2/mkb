@@ -1,6 +1,7 @@
 ---
 title: "SPEC: Layout"
-tags: [spec, doc]
+tags: [doc/spec]
+updated: 2026-07-02T06:45:40Z
 ---
 
 ## Layout

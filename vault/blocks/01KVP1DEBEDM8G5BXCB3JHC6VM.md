@@ -1,6 +1,7 @@
 ---
 title: "SPEC: Human-only (locked) blocks"
-tags: [spec, doc]
+tags: [doc/spec]
+updated: 2026-07-02T06:45:46Z
 ---
 
 ## Human-only (locked) blocks

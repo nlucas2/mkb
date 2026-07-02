@@ -1,6 +1,7 @@
 ---
 title: "Architecture: non-negotiables"
-tags: [doc, architecture]
+tags: [doc/architecture]
+updated: 2026-07-02T06:45:45Z
 ---
 
 ## Non-negotiables

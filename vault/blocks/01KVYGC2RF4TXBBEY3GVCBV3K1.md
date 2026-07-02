@@ -1,6 +1,7 @@
 ---
-title: "INSTALL page"
-tags: [doc, doc-page]
+title: INSTALL page
+tags: [doc/install, page]
+updated: 2026-07-02T06:45:47Z
 ---
 
 # Installing mkb

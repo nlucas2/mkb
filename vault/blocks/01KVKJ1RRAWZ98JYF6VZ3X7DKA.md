@@ -1,7 +1,7 @@
 ---
 title: README page
-tags: [doc, doc-page, user]
-updated: 2026-06-25T21:15:45Z
+tags: [doc/readme, page, user]
+updated: 2026-07-02T06:45:44Z
 ---
 
 # mkb — Modular Knowledge Base

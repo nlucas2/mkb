@@ -1,7 +1,7 @@
 ---
 title: "README: Choosing your vault"
-tags: [doc, readme]
-updated: 2026-06-25T09:53:55Z
+tags: [doc/readme]
+updated: 2026-07-02T06:45:46Z
 ---
 
 ### Choosing your vault

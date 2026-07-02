@@ -1,6 +1,7 @@
 ---
 title: Workspace layout
-tags: [doc, concept]
+tags: [doc/concept]
+updated: 2026-07-02T06:45:41Z
 ---
 
 | Crate | Kind | Role |

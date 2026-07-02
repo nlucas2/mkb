@@ -1,7 +1,7 @@
 ---
 title: "Usage: browsing & organizing"
-tags: [doc, usage]
-updated: 2026-07-02T04:21:02Z
+tags: [doc/usage]
+updated: 2026-07-02T06:45:47Z
 ---
 
 ## Browsing & organizing

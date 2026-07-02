@@ -1,6 +1,7 @@
 ---
 title: Connecting an MCP client
-tags: [doc, concept]
+tags: [doc/concept]
+updated: 2026-07-02T06:45:42Z
 ---
 
 The MCP server (`mkb-mcp`) is a thin client of the daemon; point any MCP client at it and it

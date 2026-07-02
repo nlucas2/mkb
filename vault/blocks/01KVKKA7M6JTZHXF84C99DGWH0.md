@@ -1,6 +1,7 @@
 ---
 title: "Skill: consolidating a duplicate"
-tags: [skill, dedup]
+tags: [skill/dedup]
+updated: 2026-07-02T06:45:45Z
 ---
 
 ## Act — execute the approved batch

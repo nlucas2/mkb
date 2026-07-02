@@ -1,6 +1,7 @@
 ---
 title: "README: CLI usage"
-tags: [doc, readme]
+tags: [doc/readme]
+updated: 2026-07-02T06:45:43Z
 ---
 
 ### Command line (`mkb`)

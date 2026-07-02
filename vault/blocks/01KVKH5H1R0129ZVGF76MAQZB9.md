@@ -1,6 +1,7 @@
 ---
 title: "Rule: Do not duplicate code"
-tags: [doc, contributing]
+tags: [doc/contributing]
+updated: 2026-07-02T06:45:42Z
 ---
 
 ### Do not duplicate code — always look for reuse

@@ -1,6 +1,7 @@
 ---
-title: "CONTRIBUTING page"
-tags: [doc, doc-page, dev]
+title: CONTRIBUTING page
+tags: [doc/contributing, page, dev]
+updated: 2026-07-02T06:45:47Z
 ---
 
 # Contributing to mkb

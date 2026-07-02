@@ -1,7 +1,7 @@
 ---
 title: "Skill: MCP surface"
-tags: [skill, surface, mcp]
-updated: 2026-06-25T09:25:20Z
+tags: [skill/surface, mcp]
+updated: 2026-07-02T06:45:40Z
 ---
 
 ## The MCP tool surface

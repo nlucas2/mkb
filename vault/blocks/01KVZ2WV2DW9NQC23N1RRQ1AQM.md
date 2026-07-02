@@ -1,7 +1,7 @@
 ---
 title: CONFIGURATION page
-tags: [doc, doc-page]
-updated: 2026-07-01T03:18:34Z
+tags: [doc/config, page]
+updated: 2026-07-02T06:45:47Z
 ---
 
 # Configuration

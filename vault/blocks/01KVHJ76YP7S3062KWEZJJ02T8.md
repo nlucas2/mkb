@@ -1,6 +1,7 @@
 ---
 title: Use mkb from an AI client (MCP)
-tags: [mkb, run, mcp]
+tags: [run/mcp, mcp]
+updated: 2026-07-02T06:45:39Z
 ---
 
 # Use mkb from an AI client (MCP)

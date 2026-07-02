@@ -1,6 +1,7 @@
 ---
 title: "Architecture: recoverability & export"
-tags: [doc, architecture]
+tags: [doc/architecture]
+updated: 2026-07-02T06:45:44Z
 ---
 
 ## Recoverability & export

@@ -1,6 +1,7 @@
 ---
 title: Run mkb locally
-tags: [mkb, run]
+tags: [run/local]
+updated: 2026-07-02T06:45:39Z
 ---
 
 # Run mkb locally

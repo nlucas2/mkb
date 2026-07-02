@@ -1,6 +1,7 @@
 ---
 title: "SPEC: Rebuilding knowledge from a raw directory"
-tags: [spec, doc]
+tags: [doc/spec]
+updated: 2026-07-02T06:45:41Z
 ---
 
 ## Rebuilding knowledge from a raw directory

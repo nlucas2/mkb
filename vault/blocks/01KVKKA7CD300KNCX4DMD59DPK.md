@@ -1,6 +1,7 @@
 ---
 title: "Skill: audit is human-driven (don't delete on your own)"
-tags: [skill, dedup]
+tags: [skill/dedup]
+updated: 2026-07-02T06:45:45Z
 ---
 
 ## Audit is human-driven — collect, itemize, act

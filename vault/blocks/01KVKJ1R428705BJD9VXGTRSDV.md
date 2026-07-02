@@ -1,6 +1,7 @@
 ---
 title: "README: Core principles"
-tags: [doc, readme]
+tags: [doc/readme]
+updated: 2026-07-02T06:45:42Z
 ---
 
 ## Core principles

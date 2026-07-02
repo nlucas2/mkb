@@ -1,6 +1,7 @@
 ---
 title: Run mkb on Kubernetes
-tags: [mkb, run, k8s]
+tags: [run/k8s]
+updated: 2026-07-02T06:45:39Z
 ---
 
 # Run mkb on Kubernetes

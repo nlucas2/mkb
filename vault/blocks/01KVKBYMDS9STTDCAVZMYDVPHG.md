@@ -1,6 +1,7 @@
 ---
 title: "SPEC: Daemon lifetime: idle self-shutdown"
-tags: [spec, doc]
+tags: [doc/spec]
+updated: 2026-07-02T06:45:41Z
 ---
 
 ## Daemon lifetime: idle self-shutdown

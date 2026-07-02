@@ -1,6 +1,7 @@
 ---
 title: "SPEC: Single daemon per vault"
-tags: [spec, doc]
+tags: [doc/spec]
+updated: 2026-07-02T06:45:40Z
 ---
 
 ## Single daemon per vault

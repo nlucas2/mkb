@@ -1,5 +1,6 @@
 ---
-tags: [skill, shared]
+tags: [skill/shared]
+updated: 2026-07-02T06:47:09Z
 ---
 
 ## Anti-patterns - don't
