@@ -240,17 +240,40 @@
 
       .content > :first-child { margin-top:.2rem; }
       .content { cursor:text; }
-      /* Blocks view: highlight text to carve. A covered top-level block gets a subtle outline so
-         it's obvious carve snaps to whole blocks; a small floating chip offers the action. No
-         permanent chrome — everything appears only while text is highlighted. */
-      .content > [data-bi] { border-radius:6px; }
-      .content > [data-bi].bcover { background:color-mix(in srgb, var(--accent) 12%, transparent);
-        outline:2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset:1px; }
-      .bhint { margin-top:.8rem; font-size:.76rem; color:var(--muted); text-align:center; opacity:.7; }
-      .carvechip { position:fixed; z-index:66; background:var(--accent); color:var(--panel); border:0;
-        border-radius:7px; padding:.35rem .7rem; font-size:.82rem; font-weight:600; cursor:pointer;
-        box-shadow:0 4px 14px rgba(0,0,0,.35); }
+      /* Blocks view: highlight text → a small FIXED button (bottom-right) carves exactly that text. */
+      .bhint { margin-top:.8rem; font-size:.76rem; color:var(--muted); text-align:center; opacity:.6; }
+      .carvechip { position:fixed; right:1.1rem; bottom:1.1rem; z-index:66; display:inline-flex; gap:.4rem;
+        align-items:center; background:var(--accent); color:var(--panel); border:0; border-radius:8px;
+        padding:.45rem .7rem; font-size:.85rem; font-weight:600; cursor:pointer; box-shadow:0 6px 20px rgba(0,0,0,.4); }
+      .carvechip[hidden] { display:none; }
       .carvechip:hover { filter:brightness(1.08); }
+      .carvechip .kbd { font-size:.72em; font-weight:600; opacity:.85; padding:.05rem .3rem; border-radius:4px;
+        background:color-mix(in srgb, var(--panel) 30%, transparent); }
+      /* Hover-to-insert: a ZERO-height zone straddling the natural gap between blocks — it adds no
+         layout space (the page looks the same as without it). An absolutely-positioned hit strip
+         gives a hover/click target; hovering reveals a thin line + a CSS-drawn "+" (drawn with bars
+         so it's mathematically centered, unlike the glyph). Unselectable so drags never catch it. */
+      /* Hover-to-insert: a zone at each block seam. It has a real height but equal NEGATIVE margins,
+         so it nets ZERO added space (page reads normally) yet — unlike a zero-height empty box — it
+         does NOT "collapse through" the neighbouring margins, so it lands in a consistent spot at
+         every seam (a zero-height box's position depends on the neighbours' margins, which is why it
+         looked bottom-aligned under text but top-aligned under embed cards). Nothing resizes on
+         hover — only the line + "+" fade in — so there's no flicker, and the "+" is centred on the
+         seam right under the cursor. */
+      .insertzone { position:relative; height:1.4rem; margin:-.7rem 0; user-select:none; -webkit-user-select:none; }
+      .insertzone .hit { position:absolute; inset:0; cursor:pointer; z-index:2; }
+      .insertzone .iline { position:absolute; left:8%; right:8%; top:50%; height:2px; transform:translateY(-50%);
+        background:var(--accent); border-radius:2px; opacity:0; transition:opacity .12s ease; pointer-events:none; }
+      .insertzone .iplus { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+        width:.95rem; height:.95rem; border-radius:3px; background:var(--panel);
+        opacity:0; transition:opacity .12s ease; pointer-events:none; z-index:1; }
+      .insertzone .iplus::before, .insertzone .iplus::after { content:""; position:absolute; top:50%; left:50%;
+        background:var(--accent); transform:translate(-50%,-50%); }
+      .insertzone .iplus::before { width:.5rem; height:2px; }   /* horizontal bar */
+      .insertzone .iplus::after  { width:2px; height:.5rem; }   /* vertical bar */
+      .insertzone:hover .iline, .insertzone:hover .iplus { opacity:.95; }
+      .insertzone.empty { height:1.4rem; margin:.4rem 0; }
+      .insertzone.open { height:auto; margin:.6rem 0; }
       /* Vault images: never overflow the reading pane; scale down, keep aspect ratio. */
       .content img { max-width:100%; height:auto; border-radius:6px; }
       /* Clean reading view: embeds dissolved inline, references as subtle links, no chrome. */
@@ -1218,7 +1241,7 @@
         const body = mainEl.querySelector("#body");
         if (mode !== "blocks") { blocksSel = null; carveChip.hidden = true; }
         if (mode === "edit") await renderEdit(body, id, !!view.locked);
-        else if (mode === "blocks") await renderBlocksView(body, id, view.html, !!view.locked, view.outline || []);
+        else if (mode === "blocks") await renderBlocksView(body, id, view.html, !!view.locked, view.outline || [], view.content || "");
         else await renderReading(body, id, view.html);
       }
 
@@ -1294,76 +1317,110 @@
         });
       }
 
-      // ---------- BLOCKS: interactive view (highlight to carve · dbl-click edit · right-click) ----------
-      // The carve chip that floats near a text highlight spanning ≥1 top-level block. Module-scoped
-      // so a single document `selectionchange` listener drives it; it self-hides when the active
-      // Blocks content is gone or the selection collapses.
-      let blocksSel = null; // { content, outline, id } for the live Blocks view, or null
+      // ---------- BLOCKS: interactive view (highlight→carve · hover +insert · dbl-click edit) ----------
+      // A small, FIXED "Carve" button anchored bottom-right that appears whenever text is highlighted
+      // inside the live Blocks content. It stays put (no dizzying follow-the-selection movement) and
+      // carves EXACTLY the highlighted text into a new block. A platform hotkey triggers it too.
+      const isMac = /Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent);
+      const carveHotkeyLabel = isMac ? "⌘⇧X" : "Ctrl+Shift+X";
+      let blocksSel = null; // { content, outline, rawBody, id } for the live Blocks view, or null
       const carveChip = (() => {
         const el = document.createElement("button");
         el.className = "carvechip"; el.hidden = true;
-        el.textContent = "⑂ Carve";
-        el.onmousedown = (e) => e.preventDefault(); // keep the text selection alive through click
+        el.innerHTML = `⑂ Carve <span class="kbd">${carveHotkeyLabel}</span>`;
+        el.onmousedown = (e) => e.preventDefault(); // keep the text selection alive through the click
         document.body.appendChild(el);
         return el;
       })();
-      // The contiguous run of top-level [data-bi] blocks a selection Range touches, as [lo,hi], or
-      // null. Whole-block granularity: any block the range intersects is fully included.
-      function selectedBlockRange() {
+
+      // Map the current text highlight to a [startByte, endByte] range in the raw body — the exact
+      // source the user highlighted — or null. Selection endpoints are located inside their own
+      // top-level block's raw source (via the data-bi ↔ outline map), so duplicate text elsewhere
+      // doesn't confuse it; byte offsets are computed with TextEncoder so non-ASCII is correct. If a
+      // side can't be isolated (inline markup makes the rendered text not a literal source
+      // substring), that side falls back to the block boundary.
+      function highlightSourceRange() {
         if (!blocksSel || !document.body.contains(blocksSel.content)) return null;
         const sel = window.getSelection();
         if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
         const rng = sel.getRangeAt(0);
-        if (!blocksSel.content.contains(rng.commonAncestorContainer)) return null;
-        const covered = [...blocksSel.content.querySelectorAll("[data-bi]")]
-          .filter((b) => rng.intersectsNode(b))
-          .map((b) => +b.dataset.bi);
-        if (!covered.length) return null;
-        return [Math.min(...covered), Math.max(...covered)];
+        const { content, outline, rawBody } = blocksSel;
+        if (!content.contains(rng.commonAncestorContainer)) return null;
+        const blockOf = (node) => {
+          const el = node.nodeType === 1 ? node : node.parentElement;
+          return el && content.contains(el) ? el.closest("[data-bi]") : null;
+        };
+        const sBlk = blockOf(rng.startContainer), eBlk = blockOf(rng.endContainer);
+        if (!sBlk || !eBlk) return null;
+        const sbi = +sBlk.dataset.bi, ebi = +eBlk.dataset.bi;
+        if (!outline[sbi] || !outline[ebi]) return null;
+        const enc = new TextEncoder();
+        const bytes = enc.encode(rawBody);
+        const blockSrc = (bi) => new TextDecoder().decode(bytes.slice(outline[bi][0], outline[bi][1]));
+        const byteLen = (s) => enc.encode(s).length;
+        // Text the highlight covers within the start block (to its end if the selection continues).
+        const headRange = document.createRange();
+        headRange.setStart(rng.startContainer, rng.startOffset);
+        if (sbi === ebi) headRange.setEnd(rng.endContainer, rng.endOffset);
+        else headRange.setEndAfter(sBlk);
+        const headText = headRange.toString();
+        const srcS = blockSrc(sbi);
+        const hi = srcS.indexOf(headText);
+        const startByte = hi >= 0 ? outline[sbi][0] + byteLen(srcS.slice(0, hi)) : outline[sbi][0];
+        let endByte;
+        if (sbi === ebi) {
+          endByte = hi >= 0 ? startByte + byteLen(headText) : outline[ebi][1];
+        } else {
+          // Text the highlight covers within the end block (from its start to the selection end).
+          const tailRange = document.createRange();
+          tailRange.setStartBefore(eBlk);
+          tailRange.setEnd(rng.endContainer, rng.endOffset);
+          const tailText = tailRange.toString();
+          const srcE = blockSrc(ebi);
+          const ti = srcE.indexOf(tailText);
+          endByte = ti >= 0 ? outline[ebi][0] + byteLen(srcE.slice(0, ti + tailText.length)) : outline[ebi][1];
+        }
+        return startByte < endByte ? [startByte, endByte] : null;
       }
-      function paintCarveChip() {
-        const r = selectedBlockRange();
-        blocksSel && blocksSel.content.querySelectorAll("[data-bi].bcover").forEach((b) => b.classList.remove("bcover"));
-        if (!r) { carveChip.hidden = true; return; }
-        // Outline every fully-included block so it's obvious carve snaps to whole blocks.
-        blocksSel.content.querySelectorAll("[data-bi]").forEach((b) => {
-          const i = +b.dataset.bi; if (i >= r[0] && i <= r[1]) b.classList.add("bcover");
-        });
-        const n = r[1] - r[0] + 1;
-        carveChip.textContent = `⑂ Carve ${n} block${n > 1 ? "s" : ""}`;
-        const rect = window.getSelection().getRangeAt(0).getBoundingClientRect();
-        carveChip.hidden = false;
-        const cr = carveChip.getBoundingClientRect();
-        carveChip.style.left = Math.min(rect.right, window.innerWidth - cr.width - 8) + "px";
-        carveChip.style.top = Math.max(6, rect.top - cr.height - 6) + "px";
+
+      // Show/hide the fixed carve button based on whether a valid highlight exists. It doesn't move
+      // with the selection — it lives in a fixed spot — so it never feels dizzying.
+      function updateCarveChip() {
+        carveChip.hidden = !highlightSourceRange();
       }
-      async function carveSelectedBlocks() {
-        const r = selectedBlockRange();
+      async function carveHighlight() {
+        const r = highlightSourceRange();
         if (!r || !blocksSel) return;
-        const { outline, id } = blocksSel;
-        if (r[1] >= outline.length) { toast("Nothing to carve", "error"); return; }
+        const { id } = blocksSel;
         try {
           window.getSelection().removeAllRanges();
           carveChip.hidden = true;
-          await invoke("carve_selection", { parentId: id, start: outline[r[0]][0], end: outline[r[1]][1] });
+          await invoke("carve_selection", { parentId: id, start: r[0], end: r[1] });
           invalidate(); await loadBlocks(id); openBlock(id, true);
         } catch (e) { toast(String(e), "error"); }
       }
-      carveChip.onclick = carveSelectedBlocks;
-      document.addEventListener("selectionchange", () => { if (blocksSel) paintCarveChip(); });
+      carveChip.onclick = carveHighlight;
+      document.addEventListener("selectionchange", () => { if (blocksSel) updateCarveChip(); });
+      // Platform hotkey: ⌘⇧X on macOS, Ctrl+Shift+X elsewhere. Only acts when a Blocks-view highlight
+      // is present, so it never shadows a system/editor shortcut in other contexts.
+      document.addEventListener("keydown", (e) => {
+        const mod = isMac ? e.metaKey : e.ctrlKey;
+        if (mod && e.shiftKey && (e.key === "x" || e.key === "X")) {
+          if (blocksSel && highlightSourceRange()) { e.preventDefault(); carveHighlight(); }
+        }
+      });
 
-      async function renderBlocksView(body, id, html, locked, outline) {
+      async function renderBlocksView(body, id, html, locked, outline, rawBody) {
         body.innerHTML =
           (locked ? `<div class="lockednote"><span class="lk">🔒</span><span>Locked (human-only) — unlock in the header to edit this block. Embedded blocks follow their own lock state.</span></div>` : "") +
           `<div class="content" id="content">${html}</div>` +
-          (locked ? "" : `<div class="bhint">Highlight text to carve it out · double-click a block to edit · right-click for more</div>`) +
-          `<div class="addrow"><button id="add">＋ Add block here</button></div>`;
+          (locked ? "" : `<div class="bhint">Highlight text to carve it (${carveHotkeyLabel}) · double-click a block to edit · hover between blocks to insert</div>`);
         resolveAssetImages(body);
         mermaidIn(body);
         highlightIn(body);
         attachChipHovers(body);
         const content = body.querySelector("#content");
-        blocksSel = locked ? null : { content, outline, id };
+        blocksSel = locked ? null : { content, outline, rawBody, id };
         carveChip.hidden = true;
 
         // The child id embedded by a card element (its `mkb:` link target), or null.
@@ -1371,13 +1428,42 @@
           const a = card.querySelector('a[href^="mkb:"]');
           return a ? a.getAttribute("href").slice("mkb:".length).split("#")[0] : null;
         };
-        // Insert a new block above (below=false) or below a specific rendered block, using its
-        // outline source offset — works for ANY block, not only embed cards.
-        const insertRelative = (blockEl, below) => {
-          const bi = +blockEl.dataset.bi;
-          if (Number.isNaN(bi) || !outline[bi]) { toast("Can't place here", "error"); return; }
-          insertChildAtOffset(id, below ? outline[bi][1] : outline[bi][0], blockEl, below);
-        };
+
+        // Hover-to-insert: a zero-height zone in every gap between top-level blocks (and at top/
+        // bottom). It adds NO layout space — its hit area is absolutely positioned, straddling the
+        // block's natural margin — so the page displays exactly as it would without it. Hovering
+        // reveals a thin line + centered "+"; clicking opens an inline editor there, and on save the
+        // new block is embedded at that gap's source offset. The primary way to add a block.
+        if (!locked) {
+          const blocks = [...content.querySelectorAll("[data-bi]")];
+          const openAt = (z, commit) => draftBlockEditor(
+            (wrap) => { z.classList.add("open"); z.replaceWith(wrap); },
+            commit,
+            () => openBlock(id, true),
+          );
+          const gap = (offset, refEl, placeAfter) => {
+            const z = document.createElement("div");
+            z.className = "insertzone";
+            z.innerHTML = `<div class="hit" title="Add block here"></div><div class="iline"></div><div class="iplus"></div>`;
+            z.querySelector(".hit").onclick = () => openAt(z,
+              (child) => invoke("link_block_at_offset", { sourceId: id, targetId: child, embed: true, offset }));
+            if (placeAfter) refEl.after(z); else refEl.before(z);
+          };
+          if (blocks.length && outline[0]) gap(outline[0][0], blocks[0], false); // top
+          blocks.forEach((b) => {
+            const bi = +b.dataset.bi;
+            if (outline[bi]) gap(outline[bi][1], b, true); // after each block
+          });
+          if (!blocks.length) {
+            // Empty parent: a single insert affordance that appends.
+            const z = document.createElement("div");
+            z.className = "insertzone empty";
+            z.innerHTML = `<div class="hit" title="Add block here"></div><div class="iline"></div><div class="iplus"></div>`;
+            z.querySelector(".hit").onclick = () => openAt(z,
+              (child) => invoke("link_blocks", { sourceId: id, targetId: child, embed: true }));
+            content.after(z);
+          }
+        }
 
         // Double click edits: a card edits its child; parent prose edits the parent block. (Single
         // click does nothing special, so native text highlighting is unobstructed.)
@@ -1388,32 +1474,20 @@
           if (card) { const cid = cardChildId(card); if (cid) inlineEdit(card, cid, () => openBlock(id, true)); }
           else inlineEdit(content, id, () => openBlock(id, true));
         };
-        body.querySelector("#add").onclick = (e) => addChild(id, e.currentTarget.closest(".addrow"));
 
-        // Right-click: context actions for the block under the cursor. Carve appears when a text
-        // highlight spans block(s). Insert above/below works on any block via its outline offset.
+        // Right-click: a convenience menu (secondary — every action here also has a visible
+        // affordance). Carve appears when text is highlighted; card actions when over an embed.
         content.oncontextmenu = (e) => {
           if (e.target.closest('a[href^="mkb:"]')) return; // let link context stand
-          e.preventDefault();
-          const blk = e.target.closest("[data-bi]");
           const card = e.target.closest("blockquote.mkb-embed");
           const items = [];
-          const sel = selectedBlockRange();
-          if (!locked && sel) {
-            const n = sel[1] - sel[0] + 1;
-            items.push({ label: `⑂ Carve ${n} block${n > 1 ? "s" : ""} to a block`, run: carveSelectedBlocks });
-          }
-          if (!locked && blk && content.contains(blk)) {
-            if (items.length) items.push({ sep: true });
-            items.push(
-              { label: "Insert block above", run: () => insertRelative(blk, false) },
-              { label: "Insert block below", run: () => insertRelative(blk, true) },
-            );
+          if (!locked && highlightSourceRange()) {
+            items.push({ label: "⑂ Carve highlight to a block", run: carveHighlight });
           }
           if (card) {
             const childId = cardChildId(card);
             if (childId) {
-              items.push({ sep: true });
+              if (items.length) items.push({ sep: true });
               if (!locked) items.push({ label: "Edit", run: () => inlineEdit(card, childId, () => openBlock(id, true)) });
               items.push({ label: "Open", run: () => openBlock(childId) });
               items.push({ label: "Copy ![[embed]]", run: () => copyText(`![[${childId}]]`, "Copied embed") });
@@ -1426,13 +1500,10 @@
               }
             }
           } else if (!locked) {
-            items.push({ sep: true });
-            items.push(
-              { label: "Edit block", run: () => inlineEdit(content, id, () => openBlock(id, true)) },
-              { label: "Add block at end", run: () => { const rr = body.querySelector(".addrow"); if (rr) addChild(id, rr); } },
-            );
+            if (items.length) items.push({ sep: true });
+            items.push({ label: "Edit block", run: () => inlineEdit(content, id, () => openBlock(id, true)) });
           }
-          if (items.length) showContextMenu(e.clientX, e.clientY, items);
+          if (items.length) { e.preventDefault(); showContextMenu(e.clientX, e.clientY, items); }
         };
         await renderRefs(body, id);
       }
@@ -2029,10 +2100,10 @@
       }
 
       // Shared inline "new block" draft editor. `place(wrapEl)` inserts the editor into the DOM;
-      // `commit(text)` persists (create + link) and re-renders; `cancel()` restores the view. The
-      // block is created only on a non-empty Save, so bailing (Esc/Cancel/empty) writes nothing —
-      // no orphan block, no dangling ![[embed]]. Used by both "＋ Add block here" and the
-      // context-menu "Insert block above/below".
+      // `commit(childId)` links the freshly-created block (append / at-offset); `cancelView()`
+      // restores the view. The block is created only on a non-empty Save, so bailing
+      // (Esc/Cancel/empty) writes nothing — no orphan block, no dangling ![[embed]]. Used by the
+      // hover-to-insert "+" gaps between blocks.
       function draftBlockEditor(place, commit, cancelView) {
         const wrap = document.createElement("div");
         wrap.className = "addblock-inline";
@@ -2068,28 +2139,6 @@
           if (e.key === "Escape") { e.preventDefault(); cancel(); }
           else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save(); }
         });
-      }
-
-      // "＋ Add block here": type a new child inline; on save it's created and embedded (appended).
-      function addChild(parentId, addrow) {
-        if (!addrow || addrow.dataset.editing) return;
-        addrow.dataset.editing = "1";
-        draftBlockEditor(
-          (wrap) => addrow.replaceWith(wrap),
-          (child) => invoke("link_blocks", { sourceId: parentId, targetId: child, embed: true }),
-          () => openBlock(parentId, true),
-        );
-      }
-
-      // Context-menu "Insert block above/below": type a new child inline right at `blockEl`; on save
-      // it's created and embedded at the given source `offset` in the parent's body (works for any
-      // block, not only embed cards).
-      function insertChildAtOffset(parentId, offset, blockEl, below) {
-        draftBlockEditor(
-          (wrap) => (below ? blockEl.after(wrap) : blockEl.before(wrap)),
-          (child) => invoke("link_block_at_offset", { sourceId: parentId, targetId: child, embed: true, offset }),
-          () => openBlock(parentId, true),
-        );
       }
 
       async function del(id, returnTo) {
