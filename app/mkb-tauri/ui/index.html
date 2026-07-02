@@ -253,6 +253,7 @@
       .titleedit { width:100%; background:var(--field); color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.45rem .6rem; margin-bottom:.5rem; font:inherit; }
       .editbar { display:flex; gap:.5rem; align-items:center; margin:.4rem 0 0; }
       .editbar .muted { margin-left:auto; }
+      .addblock-inline { margin-top:1rem; }
       .addrow { margin-top:1rem; }
       .addrow button { width:100%; border-style:dashed; color:var(--muted); }
       .addrow button:hover { color:var(--fg); border-color:var(--accent); }
@@ -1259,7 +1260,7 @@
             inlineEdit(content, id, () => openBlock(id, true));
           }
         };
-        body.querySelector("#add").onclick = () => addChild(id);
+        body.querySelector("#add").onclick = (e) => addChild(id, e.currentTarget.closest(".addrow"));
         await renderRefs(body, id);
       }
 
@@ -1855,17 +1856,56 @@
       }
 
       // Add a new child block to the current block: create it, embed it, edit it inline.
-      async function addChild(parentId) {
-        try {
-          const child = await invoke("create_block", { title: null, body: "" });
-          await invoke("link_blocks", { sourceId: parentId, targetId: child, embed: true });
-          invalidate(); await loadBlocks(parentId);
-          // Re-open and inline-edit the new child's card.
-          await openBlock(parentId, true);
-          const card = [...mainEl.querySelectorAll("blockquote.mkb-embed a[href^='mkb:']")]
-            .find((a) => a.getAttribute("href").includes(child));
-          if (card) inlineEdit(card.closest("blockquote.mkb-embed"), child, () => openBlock(parentId, true));
-        } catch (e) { toast(String(e), "error"); }
+      // Add a child block by typing it inline, right where it will live — no eager empty block.
+      // Clicking "＋ Add block here" swaps the button for an inline editor (mirroring inlineEdit);
+      // the block is created AND embedded only on Save. Cancel/empty creates nothing, so bailing
+      // never leaves an orphan block or a dangling ![[embed]] in the parent.
+      async function addChild(parentId, addrow) {
+        if (!addrow || addrow.dataset.editing) return;
+        addrow.dataset.editing = "1";
+        const wrap = document.createElement("div");
+        wrap.className = "addblock-inline";
+        const ta = document.createElement("textarea");
+        ta.className = "editarea"; ta.spellcheck = false;
+        ta.placeholder = "Write the new block’s Markdown…";
+        wrap.appendChild(ta);
+        const bar = document.createElement("div");
+        bar.className = "editbar";
+        bar.innerHTML = `<button class="primary" data-a="save">Add block</button><button data-a="cancel">Cancel</button>`+
+          `<span class="muted">⌘↵ add · Esc discard · type <code>[[</code> to link</span>`;
+        wrap.appendChild(bar);
+        addrow.replaceWith(wrap);
+        autosize(ta); ta.focus();
+        attachPicker(ta);
+        let finished = false;
+        const restore = () => {
+          const row = document.createElement("div");
+          row.className = "addrow";
+          const btn = document.createElement("button");
+          btn.id = "add"; btn.textContent = "＋ Add block here";
+          btn.onclick = () => addChild(parentId, row);
+          row.appendChild(btn);
+          wrap.replaceWith(row);
+        };
+        const cancel = () => { if (finished) return; finished = true; restore(); };
+        const save = async () => {
+          if (finished) return;
+          if (!ta.value.trim()) { cancel(); return; } // empty draft: create nothing
+          finished = true;
+          try {
+            const child = await invoke("create_block", { title: null, body: ta.value });
+            await invoke("link_blocks", { sourceId: parentId, targetId: child, embed: true });
+            invalidate(); await loadBlocks(parentId); await openBlock(parentId, true);
+          } catch (e) { toast(String(e), "error"); finished = false; }
+        };
+        bar.querySelector('[data-a="save"]').onclick = save;
+        bar.querySelector('[data-a="cancel"]').onclick = cancel;
+        ta.addEventListener("input", () => autosize(ta));
+        ta.addEventListener("keydown", (e) => {
+          if (pickerOpen()) return;
+          if (e.key === "Escape") { e.preventDefault(); cancel(); }
+          else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save(); }
+        });
       }
 
       async function del(id) {
