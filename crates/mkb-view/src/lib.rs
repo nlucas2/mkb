@@ -36,7 +36,7 @@ pub fn escape_html(s: &str) -> String {
 /// AI agent could be induced to write via the MCP write tools) renders as inert text rather
 /// than executing — this closes the stored-XSS vector.
 pub fn markdown_to_html(markdown: &str) -> String {
-    render_markdown(markdown, |_| ImageAction::Keep)
+    render_markdown(markdown, |_| ImageAction::Keep, false)
 }
 
 /// Like [`markdown_to_html`], but for the desktop UI: resolves **vault-local image sources** so
@@ -53,7 +53,22 @@ pub fn markdown_to_html(markdown: &str) -> String {
 /// `vault_root` is `None` for a remote vault (no local files to serve); external images are still
 /// blocked. Raw HTML is neutralised regardless, so this only affects Markdown `![alt](src)`.
 pub fn markdown_to_html_with_assets(markdown: &str, vault_root: Option<&Path>) -> String {
-    render_markdown(markdown, |dest| {
+    render_markdown(markdown, asset_classifier(vault_root), false)
+}
+
+/// Like [`markdown_to_html_with_assets`], but stamps each **top-level** rendered element with a
+/// sequential `data-bi="N"` (block index) attribute. Paired with [`top_level_block_spans`] over the
+/// block's **raw** body — the Nth stamped element corresponds to the Nth raw top-level block — this
+/// lets a UI map a rendered-content selection back to source byte offsets (for whole-block carve)
+/// without reversing HTML. Desktop-app only; the plain renderers stay attribute-free.
+pub fn markdown_to_html_with_assets_indexed(markdown: &str, vault_root: Option<&Path>) -> String {
+    render_markdown(markdown, asset_classifier(vault_root), true)
+}
+
+/// The image classifier shared by the plain and indexed asset renderers: resolve vault-relative
+/// images, render external ones inert.
+fn asset_classifier(vault_root: Option<&Path>) -> impl Fn(&str) -> ImageAction + '_ {
+    move |dest: &str| {
         if let Some(root) = vault_root {
             if let Some(abs) = vault_asset_path(dest, root) {
                 return ImageAction::Rewrite(format!("mkb-asset:{}", asset_url_path(&abs)));
@@ -64,7 +79,34 @@ pub fn markdown_to_html_with_assets(markdown: &str, vault_root: Option<&Path>) -
         } else {
             ImageAction::Keep
         }
-    })
+    }
+}
+
+/// The source byte spans of every **top-level** block in `md` (paragraphs, headings, lists,
+/// blockquotes, code blocks, tables — not standalone rules), in document order. Computed with
+/// pulldown's offset iterator, so each span is the exact `md[start..end]` of that block. Used with
+/// the raw block body so a UI can carve whole top-level blocks by their source offsets.
+pub fn top_level_block_spans(md: &str) -> Vec<(usize, usize)> {
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_TASKLISTS);
+    opts.insert(Options::ENABLE_FOOTNOTES);
+    let mut spans = Vec::new();
+    let mut depth = 0i32;
+    for (event, range) in Parser::new_ext(md, opts).into_offset_iter() {
+        match event {
+            Event::Start(_) => {
+                if depth == 0 {
+                    spans.push((range.start, range.end));
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+    }
+    spans
 }
 
 /// Resolve a Markdown image source to an absolute path inside `vault_root`, or `None` if the
@@ -152,7 +194,7 @@ fn external_image_placeholder(url: &str, alt: &str) -> String {
 /// image handling. Raw HTML is neutralised (escaped) to close the stored-XSS vector; an image the
 /// classifier marks [`ImageAction::Inert`] is replaced by a non-fetching placeholder (its inner
 /// alt-text events are folded into the placeholder rather than rendered as an `<img>` alt).
-fn render_markdown(markdown: &str, classify: impl Fn(&str) -> ImageAction) -> String {
+fn render_markdown(markdown: &str, classify: impl Fn(&str) -> ImageAction, stamp: bool) -> String {
     let cleaned = NativeIdCodec.strip(markdown);
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -204,9 +246,73 @@ fn render_markdown(markdown: &str, classify: impl Fn(&str) -> ImageAction) -> St
             other => events.push(other),
         }
     }
+    if stamp {
+        render_events_indexed(events)
+    } else {
+        let mut out = String::new();
+        html::push_html(&mut out, events.into_iter());
+        decorate_wiki(out)
+    }
+}
+
+/// Render an event stream, emitting each **top-level** element as its own decorated fragment with a
+/// sequential `data-bi="N"` attribute on its opening tag. Standalone top-level events (e.g. a
+/// thematic-break rule, or leftover text) render without an index — matching
+/// [`top_level_block_spans`], which likewise counts only proper block elements — so the Nth stamped
+/// element aligns with the Nth raw top-level block.
+fn render_events_indexed(events: Vec<Event>) -> String {
     let mut out = String::new();
-    html::push_html(&mut out, events.into_iter());
-    decorate_wiki(out)
+    let mut buf: Vec<Event> = Vec::new();
+    let mut depth = 0i32;
+    let mut bi = 0usize;
+    for ev in events {
+        match &ev {
+            Event::Start(_) => {
+                depth += 1;
+                buf.push(ev);
+            }
+            Event::End(_) => {
+                depth -= 1;
+                buf.push(ev);
+                if depth == 0 {
+                    let mut frag = String::new();
+                    html::push_html(&mut frag, buf.drain(..));
+                    out.push_str(&inject_block_index(&decorate_wiki(frag), bi));
+                    bi += 1;
+                }
+            }
+            _ => {
+                if depth == 0 {
+                    // A standalone top-level event (rule, stray text): render as-is, no index.
+                    let mut frag = String::new();
+                    html::push_html(&mut frag, std::iter::once(ev));
+                    out.push_str(&decorate_wiki(frag));
+                } else {
+                    buf.push(ev);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Insert ` data-bi="N"` immediately after the tag name of the first tag in `frag` (the element's
+/// opening tag). Robust across `<p>`, `<h2>`, `<ul>`, `<blockquote class="mkb-embed">`, `<pre>`,
+/// `<hr />`, etc. — the name ends at the first whitespace, `>`, or `/`.
+fn inject_block_index(frag: &str, bi: usize) -> String {
+    let Some(lt) = frag.find('<') else {
+        return frag.to_string();
+    };
+    let after = &frag[lt + 1..];
+    let name_len = after
+        .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        .unwrap_or(after.len());
+    let at = lt + 1 + name_len;
+    let mut s = String::with_capacity(frag.len() + 16);
+    s.push_str(&frag[..at]);
+    s.push_str(&format!(" data-bi=\"{bi}\""));
+    s.push_str(&frag[at..]);
+    s
 }
 
 /// Post-process rendered HTML to make mkb wiki structure visible and stylable:
@@ -428,6 +534,46 @@ mod tests {
             "got: {html}"
         );
         assert!(html.contains("the body"));
+    }
+
+    #[test]
+    fn top_level_block_spans_cover_each_block() {
+        let md = "First paragraph.\n\n## A heading\n\n- one\n- two\n\n> a quote\n";
+        let spans = top_level_block_spans(md);
+        let slices: Vec<&str> = spans.iter().map(|&(s, e)| &md[s..e]).collect();
+        assert_eq!(slices.len(), 4);
+        assert!(slices[0].starts_with("First paragraph."));
+        assert!(slices[1].starts_with("## A heading"));
+        assert!(slices[2].starts_with("- one"));
+        assert!(slices[3].starts_with("> a quote"));
+        // Spans are non-overlapping and in order.
+        for w in spans.windows(2) {
+            assert!(w[0].1 <= w[1].0, "spans overlap: {spans:?}");
+        }
+    }
+
+    #[test]
+    fn indexed_render_stamps_top_level_blocks_in_order() {
+        let md = "First para.\n\n## Heading\n\n> ⧉ [c](mkb:c.md#01ABC)\n>\n> child body\n";
+        let html = markdown_to_html_with_assets_indexed(md, None);
+        // One data-bi per top-level block, sequential from 0.
+        assert!(html.contains("<p data-bi=\"0\">"), "got: {html}");
+        assert!(html.contains("<h2 data-bi=\"1\">"), "got: {html}");
+        // The embed card keeps its class AND gains the index.
+        assert!(
+            html.contains("<blockquote data-bi=\"2\" class=\"mkb-embed\">"),
+            "got: {html}"
+        );
+        // The count of stamped elements matches the raw block spans (the zip contract).
+        let raw = "First para.\n\n## Heading\n\n![[01ABC]]\n";
+        assert_eq!(top_level_block_spans(raw).len(), 3);
+    }
+
+    #[test]
+    fn plain_render_has_no_block_index() {
+        // The non-indexed renderers stay attribute-free (other consumers unaffected).
+        let html = markdown_to_html("a para\n\n## h\n");
+        assert!(!html.contains("data-bi"), "got: {html}");
     }
 
     #[test]

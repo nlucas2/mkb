@@ -12,7 +12,10 @@ use std::time::Duration;
 
 use mkb_core::{BlockId, GraphData, GroupAxis, GroupTree, HierTree, SearchQuery};
 use mkb_protocol::{connect, Client, ConnectionConfig, DaemonPaths};
-use mkb_view::{block_title, markdown_to_html_with_assets, search_results_html, ResultRow};
+use mkb_view::{
+    block_title, markdown_to_html_with_assets_indexed, search_results_html, top_level_block_spans,
+    ResultRow,
+};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
@@ -85,6 +88,10 @@ struct BlockView {
     content: String,
     html: String,
     locked: bool,
+    /// Source byte spans (`[start, end]`) of the raw body's top-level blocks, in document order.
+    /// The Nth span aligns with the `data-bi="N"` element in `html`, so the UI can carve a run of
+    /// whole rendered blocks by mapping to these raw offsets.
+    outline: Vec<[usize; 2]>,
 }
 
 // ----- connection management -----
@@ -220,11 +227,16 @@ fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockVi
         .ok_or_else(|| format!("block not found: {id}"))?;
     let html = match &*state.cfg.lock().map_err(|_| "state poisoned")? {
         ConnectionConfig::Local { vault } => {
-            markdown_to_html_with_assets(&rb.rendered, Some(vault))
+            markdown_to_html_with_assets_indexed(&rb.rendered, Some(vault))
         }
         // Remote vault: no local files to serve, but external images are still blocked.
-        _ => markdown_to_html_with_assets(&rb.rendered, None),
+        _ => markdown_to_html_with_assets_indexed(&rb.rendered, None),
     };
+    // Outline of the RAW body's top-level blocks; the Nth span aligns with the Nth data-bi element.
+    let outline = top_level_block_spans(&rb.raw)
+        .into_iter()
+        .map(|(s, e)| [s, e])
+        .collect();
     Ok(BlockView {
         html,
         content: rb.raw,
@@ -234,6 +246,7 @@ fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockVi
         props: rb.props,
         id: rb.id.to_string(),
         locked: rb.locked,
+        outline,
     })
 }
 

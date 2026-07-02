@@ -240,6 +240,18 @@
 
       .content > :first-child { margin-top:.2rem; }
       .content { cursor:text; }
+      /* Blocks view: each top-level element is a click-selectable unit. Hover tints it (signals
+         it's interactive); selection adds a stronger tint + outline. No layout shift (outline, not
+         border) so embed-card framing isn't disturbed. */
+      .content > [data-bi] { border-radius:6px; transition:background .1s ease; }
+      .content > [data-bi]:hover { background:color-mix(in srgb, var(--accent) 8%, transparent); }
+      .content > [data-bi].bsel { background:color-mix(in srgb, var(--accent) 16%, transparent);
+        outline:2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset:1px; }
+      .bhint { margin-top:.8rem; font-size:.78rem; color:var(--muted); text-align:center; opacity:.85; }
+      .selbar { position:sticky; bottom:.7rem; margin-top:.8rem; display:flex; gap:.6rem; align-items:center;
+        background:var(--panel); border:1px solid var(--accent); border-radius:8px; padding:.5rem .8rem;
+        box-shadow:0 6px 20px rgba(0,0,0,.35); z-index:6; }
+      .selbar #selcount { color:var(--muted); font-size:.85rem; margin-right:auto; }
       /* Vault images: never overflow the reading pane; scale down, keep aspect ratio. */
       .content img { max-width:100%; height:auto; border-radius:6px; }
       /* Clean reading view: embeds dissolved inline, references as subtle links, no chrome. */
@@ -302,6 +314,17 @@
       .picker .opt.sel, .picker .opt:hover { background:var(--hover); }
       .picker .opt small { color:var(--muted); }
       .picker .mk { padding:.3rem .6rem; font-size:.75em; color:var(--muted); border-top:1px solid var(--border); }
+
+      /* Right-click context menu (blocks view). */
+      .ctxmenu { position:fixed; z-index:65; min-width:190px; background:var(--panel); border:1px solid var(--accent);
+                 border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.4); padding:.3rem; font-size:.88rem; }
+      .ctxmenu .ctxitem { display:block; width:100%; text-align:left; background:none; border:0; color:var(--fg);
+                 padding:.4rem .6rem; border-radius:5px; cursor:pointer; white-space:nowrap; }
+      .ctxmenu .ctxitem:hover { background:var(--hover); }
+      .ctxmenu .ctxitem.danger { color:var(--danger, #e5484d); }
+      .ctxmenu .ctxitem.danger:hover { background:color-mix(in srgb, var(--danger, #e5484d) 20%, transparent); }
+      .ctxmenu .ctxsep { height:1px; margin:.3rem .2rem; background:var(--border); }
+      .ctxmenu .ctxhd { padding:.25rem .6rem .35rem; font-size:.72em; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
 
       #graphview { position:absolute; inset:0; }
       .glegend { position:absolute; left:1rem; bottom:1rem; z-index:6; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:8px; padding:.5rem .7rem; font-size:.82em; max-width:min(92vw, 44rem); }
@@ -467,6 +490,41 @@
           document.body.appendChild(back);
           back.querySelector('[data-a="ok"]').focus();
         });
+      }
+
+      // A lightweight right-click context menu. `items` is a list of {label, run} (with optional
+      // {danger:true}) or {sep:true} separators or {header:"…"}. Positioned at (x,y), clamped to the
+      // viewport, and dismissed on any click, scroll, resize, or Escape.
+      let ctxMenuEl = null;
+      function closeContextMenu() { if (ctxMenuEl) { ctxMenuEl.remove(); ctxMenuEl = null; } }
+      function showContextMenu(x, y, items) {
+        closeContextMenu();
+        const menu = document.createElement("div");
+        menu.className = "ctxmenu";
+        for (const it of items) {
+          if (it.sep) { const s = document.createElement("div"); s.className = "ctxsep"; menu.appendChild(s); continue; }
+          if (it.header) { const h = document.createElement("div"); h.className = "ctxhd"; h.textContent = it.header; menu.appendChild(h); continue; }
+          const b = document.createElement("button");
+          b.className = "ctxitem" + (it.danger ? " danger" : "");
+          b.textContent = it.label;
+          b.onclick = (e) => { e.stopPropagation(); closeContextMenu(); it.run(); };
+          menu.appendChild(b);
+        }
+        document.body.appendChild(menu);
+        const r = menu.getBoundingClientRect();
+        menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 6)) + "px";
+        menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 6)) + "px";
+        ctxMenuEl = menu;
+      }
+      document.addEventListener("click", closeContextMenu);
+      document.addEventListener("scroll", closeContextMenu, true);
+      window.addEventListener("resize", closeContextMenu);
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeContextMenu(); });
+
+      // Copy text to the clipboard with a small confirmation toast.
+      async function copyText(text, label) {
+        try { await navigator.clipboard.writeText(text); toast((label || "Copied") + " ✓"); }
+        catch (e) { toast(String(e), "error"); }
       }
 
       // Conflict resolver: a guarded save was rejected because the block changed under the editor.
@@ -1160,7 +1218,7 @@
         bindMeta(id);
         const body = mainEl.querySelector("#body");
         if (mode === "edit") await renderEdit(body, id, !!view.locked);
-        else if (mode === "blocks") await renderBlocksView(body, id, view.html, !!view.locked);
+        else if (mode === "blocks") await renderBlocksView(body, id, view.html, !!view.locked, view.outline || []);
         else await renderReading(body, id, view.html);
       }
 
@@ -1236,31 +1294,134 @@
         });
       }
 
-      // ---------- BLOCKS: interactive view (click-to-edit, embed cards, +add) ----------
-      async function renderBlocksView(body, id, html, locked) {
+      // ---------- BLOCKS: interactive view (select · double-click edit · carve · embed cards) ----------
+      async function renderBlocksView(body, id, html, locked, outline) {
         body.innerHTML =
           (locked ? `<div class="lockednote"><span class="lk">🔒</span><span>Locked (human-only) — unlock in the header to edit this block. Embedded blocks follow their own lock state.</span></div>` : "") +
           `<div class="content" id="content">${html}</div>` +
-          `<div class="addrow"><button id="add">＋ Add block here</button></div>`;
+          (locked ? "" : `<div class="bhint" id="bhint">Click a block to select · Shift-click for a range · Double-click to edit · Right-click for actions</div>`) +
+          `<div class="addrow"><button id="add">＋ Add block here</button></div>` +
+          `<div class="selbar" id="selbar" hidden><span id="selcount"></span>` +
+            `<button class="primary" id="selcarve">⑂ Carve to block</button><button id="selclear">Clear</button></div>`;
         resolveAssetImages(body);
         mermaidIn(body);
         highlightIn(body);
         attachChipHovers(body);
         const content = body.querySelector("#content");
-        // Deliberate click (not hover) to edit. Clicking inside an embed card edits that child;
-        // clicking the parent's own prose edits the parent. Links navigate (handled separately).
+        const selbar = body.querySelector("#selbar");
+
+        // --- whole-block selection (a contiguous run of top-level [data-bi] elements) ---
+        // Selection is source-offset-backed via `outline` (the raw body's top-level block spans),
+        // so a carve of blocks [lo..hi] maps to raw offsets outline[lo][0]..outline[hi][1].
+        let anchor = null, focus = null; // block indices, or null
+        const blockEls = () => [...content.querySelectorAll(":scope > [data-bi]")];
+        const range = () => (anchor === null ? null : [Math.min(anchor, focus), Math.max(anchor, focus)]);
+        const paintSelection = () => {
+          const r = range();
+          blockEls().forEach((el) => {
+            const i = +el.dataset.bi;
+            el.classList.toggle("bsel", r && i >= r[0] && i <= r[1]);
+          });
+          if (!r) { selbar.hidden = true; return; }
+          const n = r[1] - r[0] + 1;
+          body.querySelector("#selcount").textContent = `${n} block${n > 1 ? "s" : ""} selected`;
+          selbar.hidden = false;
+        };
+        const clearSel = () => { anchor = focus = null; paintSelection(); };
+        const selectAt = (i, extend) => {
+          if (extend && anchor !== null) focus = i;
+          else { anchor = i; focus = i; }
+          paintSelection();
+        };
+        const carveSelection = async () => {
+          const r = range();
+          if (!r || !outline || r[1] >= outline.length) { toast("Nothing to carve", "error"); return; }
+          try {
+            await invoke("carve_selection", { parentId: id, start: outline[r[0]][0], end: outline[r[1]][1] });
+            invalidate(); await loadBlocks(id); openBlock(id, true);
+          } catch (e) { toast(String(e), "error"); }
+        };
+        body.querySelector("#selcarve").onclick = carveSelection;
+        body.querySelector("#selclear").onclick = clearSel;
+
+        // The child id embedded by a card element (its `mkb:` link target), or null.
+        const cardChildId = (card) => {
+          const a = card.querySelector('a[href^="mkb:"]');
+          return a ? a.getAttribute("href").slice("mkb:".length).split("#")[0] : null;
+        };
+
+        // Single click selects the block under the cursor (Shift extends the run); a click on empty
+        // space or a wiki link falls through (navigation wins on links). Editing is double-click.
         content.onclick = (e) => {
           if (e.target.closest('a[href^="mkb:"]')) return; // navigation wins
+          if (locked) return;
+          if (String(window.getSelection())) return; // a text selection/drag — don't block-select
+          const blk = e.target.closest("[data-bi]");
+          if (blk && content.contains(blk)) selectAt(+blk.dataset.bi, e.shiftKey);
+          else clearSel();
+        };
+        // Double click edits: a card edits its child; parent prose edits the parent block.
+        content.ondblclick = (e) => {
+          if (e.target.closest('a[href^="mkb:"]')) return;
+          if (locked) return;
+          clearSel();
           const card = e.target.closest("blockquote.mkb-embed");
-          if (card) {
-            const a = card.querySelector('a[href^="mkb:"]');
-            const childId = a ? a.getAttribute("href").slice("mkb:".length).split("#")[0] : null;
-            if (childId) inlineEdit(card, childId, () => openBlock(id, true));
-          } else {
-            inlineEdit(content, id, () => openBlock(id, true));
-          }
+          if (card) { const cid = cardChildId(card); if (cid) inlineEdit(card, cid, () => openBlock(id, true)); }
+          else inlineEdit(content, id, () => openBlock(id, true));
         };
         body.querySelector("#add").onclick = (e) => addChild(id, e.currentTarget.closest(".addrow"));
+
+        // Right-click: context actions. On an embed card, the actions target that child (insert
+        // above/below it, edit, copy its embed, remove from page, delete). A carve action appears
+        // whenever a selection exists. Locked parents get read-only actions only.
+        content.oncontextmenu = (e) => {
+          if (e.target.closest('a[href^="mkb:"]')) return; // let link context stand
+          e.preventDefault();
+          const blk = e.target.closest("[data-bi]");
+          // Right-clicking outside the current selection re-selects just that block.
+          const r = range();
+          if (blk && content.contains(blk)) {
+            const i = +blk.dataset.bi;
+            if (!r || i < r[0] || i > r[1]) selectAt(i, false);
+          }
+          const card = e.target.closest("blockquote.mkb-embed");
+          const items = [];
+          const sel = range();
+          if (!locked && sel) {
+            const n = sel[1] - sel[0] + 1;
+            items.push({ label: `⑂ Carve ${n} block${n > 1 ? "s" : ""} to a block`, run: carveSelection });
+          }
+          if (card) {
+            const childId = cardChildId(card);
+            if (childId) {
+              if (items.length) items.push({ sep: true });
+              if (!locked) {
+                items.push(
+                  { label: "Insert block above", run: () => insertChildAt(id, childId, false, card) },
+                  { label: "Insert block below", run: () => insertChildAt(id, childId, true, card) },
+                  { sep: true },
+                  { label: "Edit", run: () => inlineEdit(card, childId, () => openBlock(id, true)) },
+                );
+              }
+              items.push({ label: "Open", run: () => openBlock(childId) });
+              items.push({ label: "Copy ![[embed]]", run: () => copyText(`![[${childId}]]`, "Copied embed") });
+              if (!locked) {
+                items.push(
+                  { sep: true },
+                  { label: "Remove from page", run: () => removeFromPage(id, childId) },
+                  { label: "Delete block", danger: true, run: () => deleteChildFromPage(id, childId) },
+                );
+              }
+            }
+          } else if (!locked) {
+            if (items.length) items.push({ sep: true });
+            items.push(
+              { label: "Edit block", run: () => inlineEdit(content, id, () => openBlock(id, true)) },
+              { label: "Add block here", run: () => { const rr = body.querySelector(".addrow"); if (rr) addChild(id, rr); } },
+            );
+          }
+          if (items.length) showContextMenu(e.clientX, e.clientY, items);
+        };
         await renderRefs(body, id);
       }
 
@@ -1855,14 +2016,12 @@
         return `<div class="topbar"><div class="titlewrap"><h1>New block</h1></div></div>`;
       }
 
-      // Add a new child block to the current block: create it, embed it, edit it inline.
-      // Add a child block by typing it inline, right where it will live — no eager empty block.
-      // Clicking "＋ Add block here" swaps the button for an inline editor (mirroring inlineEdit);
-      // the block is created AND embedded only on Save. Cancel/empty creates nothing, so bailing
-      // never leaves an orphan block or a dangling ![[embed]] in the parent.
-      async function addChild(parentId, addrow) {
-        if (!addrow || addrow.dataset.editing) return;
-        addrow.dataset.editing = "1";
+      // Shared inline "new block" draft editor. `place(wrapEl)` inserts the editor into the DOM;
+      // `commit(text)` persists (create + link) and re-renders; `cancel()` restores the view. The
+      // block is created only on a non-empty Save, so bailing (Esc/Cancel/empty) writes nothing —
+      // no orphan block, no dangling ![[embed]]. Used by both "＋ Add block here" and the
+      // context-menu "Insert block above/below".
+      function draftBlockEditor(place, commit, cancelView) {
         const wrap = document.createElement("div");
         wrap.className = "addblock-inline";
         const ta = document.createElement("textarea");
@@ -1874,28 +2033,19 @@
         bar.innerHTML = `<button class="primary" data-a="save">Add block</button><button data-a="cancel">Cancel</button>`+
           `<span class="muted">⌘↵ add · Esc discard · type <code>[[</code> to link</span>`;
         wrap.appendChild(bar);
-        addrow.replaceWith(wrap);
+        place(wrap);
         autosize(ta); ta.focus();
         attachPicker(ta);
         let finished = false;
-        const restore = () => {
-          const row = document.createElement("div");
-          row.className = "addrow";
-          const btn = document.createElement("button");
-          btn.id = "add"; btn.textContent = "＋ Add block here";
-          btn.onclick = () => addChild(parentId, row);
-          row.appendChild(btn);
-          wrap.replaceWith(row);
-        };
-        const cancel = () => { if (finished) return; finished = true; restore(); };
+        const cancel = () => { if (finished) return; finished = true; cancelView(); };
         const save = async () => {
           if (finished) return;
           if (!ta.value.trim()) { cancel(); return; } // empty draft: create nothing
           finished = true;
           try {
             const child = await invoke("create_block", { title: null, body: ta.value });
-            await invoke("link_blocks", { sourceId: parentId, targetId: child, embed: true });
-            invalidate(); await loadBlocks(parentId); await openBlock(parentId, true);
+            await commit(child);
+            invalidate(); await loadBlocks(active); await openBlock(active, true);
           } catch (e) { toast(String(e), "error"); finished = false; }
         };
         bar.querySelector('[data-a="save"]').onclick = save;
@@ -1908,11 +2058,57 @@
         });
       }
 
-      async function del(id) {
+      // "＋ Add block here": type a new child inline; on save it's created and embedded (appended).
+      function addChild(parentId, addrow) {
+        if (!addrow || addrow.dataset.editing) return;
+        addrow.dataset.editing = "1";
+        draftBlockEditor(
+          (wrap) => addrow.replaceWith(wrap),
+          (child) => invoke("link_blocks", { sourceId: parentId, targetId: child, embed: true }),
+          () => openBlock(parentId, true),
+        );
+      }
+
+      // Context-menu "Insert block above/below": type a new child inline right at `cardEl`; on save
+      // it's created and embedded immediately before/after the anchored embed in the parent's body.
+      function insertChildAt(parentId, anchorId, after, cardEl) {
+        draftBlockEditor(
+          (wrap) => (after ? cardEl.after(wrap) : cardEl.before(wrap)),
+          (child) => invoke("link_block_at", { sourceId: parentId, targetId: child, embed: true, anchorId, after }),
+          () => openBlock(parentId, true),
+        );
+      }
+
+      async function del(id, returnTo) {
         const ok = await confirmModal("Delete this block? Its file will be removed.", { confirmLabel: "Delete", danger: true });
         if (!ok) return;
-        try { await invoke("delete_block", { id }); active = null; invalidate(); await loadBlocks(); }
-        catch (e) { toast(String(e), "error"); }
+        try {
+          await invoke("delete_block", { id });
+          invalidate();
+          if (returnTo && returnTo !== id) { await loadBlocks(returnTo); await openBlock(returnTo, true); }
+          else { active = null; await loadBlocks(); }
+        } catch (e) { toast(String(e), "error"); }
+      }
+
+      // Remove a child's embed/reference from a page without deleting the block itself.
+      async function removeFromPage(parentId, childId) {
+        try {
+          await invoke("unlink_blocks", { sourceId: parentId, targetId: childId });
+          invalidate(); await loadBlocks(parentId); await openBlock(parentId, true);
+          toast("Removed from page ✓");
+        } catch (e) { toast(String(e), "error"); }
+      }
+
+      // Delete a child block from within a page: unlink its embed from the parent first (so the page
+      // isn't left with a dangling ![[…]]), then delete the block itself.
+      async function deleteChildFromPage(parentId, childId) {
+        const ok = await confirmModal("Delete this block? Its file will be removed and its embed taken off this page.", { confirmLabel: "Delete", danger: true });
+        if (!ok) return;
+        try {
+          await invoke("unlink_blocks", { sourceId: parentId, targetId: childId });
+          await invoke("delete_block", { id: childId });
+          invalidate(); await loadBlocks(parentId); await openBlock(parentId, true);
+        } catch (e) { toast(String(e), "error"); }
       }
 
       // ---------- graph ----------
