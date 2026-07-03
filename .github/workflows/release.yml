@@ -92,6 +92,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             target
           key: ${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
 
