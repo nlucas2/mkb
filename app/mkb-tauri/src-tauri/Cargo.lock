@@ -1748,7 +1748,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-app-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mkb-core",
  "mkb-protocol",
@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "regex",
  "serde",
@@ -1770,7 +1770,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "interprocess",
@@ -1781,7 +1781,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-tauri"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mkb-app-core",
  "mkb-core",
@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-view"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mkb-core",
  "pulldown-cmark",
