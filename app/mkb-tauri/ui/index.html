@@ -227,6 +227,12 @@
       .mermaid-src { margin:0; border:none; border-radius:0; }
       .mermaid-err { color:var(--bad); font-size:.85em; margin-top:.5rem; white-space:pre-wrap; }
       blockquote { border-left:3px solid var(--accent); margin:0; padding-left:1rem; color:var(--muted); }
+      /* Markdown tables: bordered cells, a subtle header fill, and zebra rows for scannability. */
+      table { border-collapse:collapse; margin:.6rem 0; width:auto; max-width:100%; overflow-x:auto; display:block; }
+      th, td { border:1px solid var(--border); padding:.35rem .6rem; text-align:left; vertical-align:top; }
+      thead th { background:var(--panel); font-weight:600; border-bottom:2px solid var(--border); }
+      tbody tr:nth-child(even) td { background:color-mix(in srgb, var(--panel) 45%, transparent); }
+      tbody tr:hover td { background:var(--hover); }
       .muted { color:var(--muted); }
       .results { list-style:none; padding:0; } .results li { padding:.6rem 0; border-bottom:1px solid var(--border); }
       .results .crumb { color:var(--muted); margin-left:.5rem; font-size:.85em; }
