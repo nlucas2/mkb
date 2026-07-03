@@ -26,21 +26,11 @@ pub fn escape_html(s: &str) -> String {
     out
 }
 
-/// Convert Markdown (with mkb id markers) into an HTML fragment.
+/// Render Markdown (with mkb id markers) into an HTML fragment for a UI: resolves **vault-local
+/// image sources** so they display, and renders **external image sources inert** (never fetched).
 ///
-/// The invisible `<!-- mkb:… -->` id markers are stripped first so they never leak into
-/// the rendered output. CommonMark plus tables/strikethrough/task-lists are enabled.
-///
-/// **Security:** raw HTML in the source is **not** passed through. Any inline/block HTML
-/// event is downgraded to escaped text, so a note containing `<script>…</script>` (which an
-/// AI agent could be induced to write via the MCP write tools) renders as inert text rather
-/// than executing — this closes the stored-XSS vector.
-pub fn markdown_to_html(markdown: &str) -> String {
-    render_markdown(markdown, |_| ImageAction::Keep, false)
-}
-
-/// Like [`markdown_to_html`], but for the desktop UI: resolves **vault-local image sources** so
-/// they display, and renders **external image sources inert** (never fetched).
+/// The invisible `<!-- mkb:… -->` id markers are stripped first so they never leak into the
+/// rendered output. CommonMark plus tables/strikethrough/task-lists are enabled.
 ///
 /// - A **vault-relative** source (e.g. `![](assets/diagram.png)`) is resolved, when `vault_root`
 ///   is `Some`, to an absolute path under the vault and emitted as an `mkb-asset:<abs>` URL; the
@@ -51,7 +41,9 @@ pub fn markdown_to_html(markdown: &str) -> String {
 ///   tracking/exfiltration pixel the moment a human opens the block.
 ///
 /// `vault_root` is `None` for a remote vault (no local files to serve); external images are still
-/// blocked. Raw HTML is neutralised regardless, so this only affects Markdown `![alt](src)`.
+/// blocked. **Security:** raw HTML in the source is **not** passed through — any inline/block HTML
+/// event is downgraded to escaped text (so an AI-written `<script>…</script>` renders inert),
+/// closing the stored-XSS vector; this holds regardless of `vault_root`.
 pub fn markdown_to_html_with_assets(markdown: &str, vault_root: Option<&Path>) -> String {
     render_markdown(markdown, asset_classifier(vault_root), false)
 }
@@ -190,9 +182,9 @@ fn external_image_placeholder(url: &str, alt: &str) -> String {
 }
 
 /// Render Markdown to an HTML fragment, applying `classify` to every image source. Shared by
-/// [`markdown_to_html`] and [`markdown_to_html_with_assets`] so both render identically apart from
-/// image handling. Raw HTML is neutralised (escaped) to close the stored-XSS vector; an image the
-/// classifier marks [`ImageAction::Inert`] is replaced by a non-fetching placeholder (its inner
+/// [`markdown_to_html_with_assets`] and its indexed variant so both render identically apart from
+/// block-index stamping. Raw HTML is neutralised (escaped) to close the stored-XSS vector; an image
+/// the classifier marks [`ImageAction::Inert`] is replaced by a non-fetching placeholder (its inner
 /// alt-text events are folded into the placeholder rather than rendered as an `<img>` alt).
 fn render_markdown(markdown: &str, classify: impl Fn(&str) -> ImageAction, stamp: bool) -> String {
     let cleaned = NativeIdCodec.strip(markdown);
@@ -411,6 +403,15 @@ mod tests {
     use super::*;
     use mkb_core::BlockId;
 
+    /// Plain-render entry for the engine tests below: the live **remote-vault** render path
+    /// (`vault_root = None`), which is what production renders for a remote vault. These tests
+    /// exercise shared `render_markdown` behavior (wikilinks, embeds, code fences, XSS, headings)
+    /// that is independent of image handling, so routing them through the real renderer keeps them
+    /// honest without a phantom "plain" API.
+    fn render(md: &str) -> String {
+        markdown_to_html_with_assets(md, None)
+    }
+
     #[test]
     fn markdown_renders_and_strips_ids() {
         let id = BlockId::generate();
@@ -418,7 +419,7 @@ mod tests {
             "# Title {}\n\nSome **bold** text.\n",
             NativeIdCodec.encode(&id)
         );
-        let html = markdown_to_html(&md);
+        let html = render(&md);
         assert!(html.contains("<h1>"));
         assert!(html.contains("<strong>bold</strong>"));
         // The id marker must not appear in the output.
@@ -429,7 +430,7 @@ mod tests {
     #[test]
     fn wiki_reference_becomes_chip_link() {
         // Mirrors what mkb_core::render emits for a resolved `[[...]]` reference.
-        let html = markdown_to_html("see [ideas](mkb:ideas.md) now");
+        let html = render("see [ideas](mkb:ideas.md) now");
         assert!(
             html.contains("<a class=\"wikilink\" href=\"mkb:ideas.md\">ideas</a>"),
             "got: {html}"
@@ -438,7 +439,7 @@ mod tests {
 
     #[test]
     fn unresolved_reference_is_marked() {
-        let html = markdown_to_html("see [ghost](mkb:?unresolved) now");
+        let html = render("see [ghost](mkb:?unresolved) now");
         assert!(
             html.contains("class=\"wikilink unresolved\""),
             "got: {html}"
@@ -448,7 +449,7 @@ mod tests {
     #[test]
     fn embed_card_blockquote_is_tagged() {
         // Mirrors mkb_core::render's embed card: a blockquote whose first content is `⧉`.
-        let html = markdown_to_html("> ⧉ [src](mkb:src.md#01ABC)\n>\n> the body\n");
+        let html = render("> ⧉ [src](mkb:src.md#01ABC)\n>\n> the body\n");
         assert!(
             html.contains("<blockquote class=\"mkb-embed\">"),
             "got: {html}"
@@ -492,13 +493,13 @@ mod tests {
     #[test]
     fn plain_render_has_no_block_index() {
         // The non-indexed renderers stay attribute-free (other consumers unaffected).
-        let html = markdown_to_html("a para\n\n## h\n");
+        let html = render("a para\n\n## h\n");
         assert!(!html.contains("data-bi"), "got: {html}");
     }
 
     #[test]
     fn code_fence_language_becomes_class() {
-        let html = markdown_to_html("```kusto\nStormEvents | take 10\n```\n");
+        let html = render("```kusto\nStormEvents | take 10\n```\n");
         assert!(html.contains("language-kusto"));
         assert!(html.contains("StormEvents"));
     }
@@ -507,13 +508,13 @@ mod tests {
     fn raw_html_is_neutralised_not_executed() {
         // Stored-XSS guard: a script/img payload in note content must not survive as live
         // markup. It is escaped to inert text instead.
-        let html = markdown_to_html("hello <script>alert('xss')</script> world\n");
+        let html = render("hello <script>alert('xss')</script> world\n");
         assert!(
             !html.contains("<script>"),
             "raw <script> must not pass through"
         );
         assert!(html.contains("&lt;script&gt;"));
-        let img = markdown_to_html("<img src=x onerror=alert(1)>\n");
+        let img = render("<img src=x onerror=alert(1)>\n");
         assert!(!img.contains("<img"), "raw <img> must not pass through");
     }
 
@@ -611,16 +612,6 @@ mod tests {
         // A protocol-relative source is external too.
         let pr = markdown_to_html_with_assets("![](//cdn/a.png)\n", None);
         assert!(pr.contains("mkb-extern-img"), "got: {pr}");
-    }
-
-    #[test]
-    fn plain_markdown_to_html_leaves_image_sources_unchanged() {
-        let html = markdown_to_html("![a](assets/x.png)\n");
-        assert!(html.contains("src=\"assets/x.png\""), "got: {html}");
-        assert!(!html.contains("mkb-asset:"), "got: {html}");
-        // The plain renderer is the back-compat primitive: it does not block external images.
-        let ext = markdown_to_html("![b](https://h/y.png)\n");
-        assert!(ext.contains("src=\"https://h/y.png\""), "got: {ext}");
     }
 
     #[test]
