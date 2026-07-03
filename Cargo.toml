@@ -6,6 +6,7 @@ members = [
     "crates/mkb-embed",
     "crates/mkb-protocol",
     "crates/mkb-view",
+    "crates/mkb-app-core",
     "crates/mkbd",
     "crates/mkb-mcp",
     "crates/mkb-cli",
@@ -29,6 +30,7 @@ mkb-index = { path = "crates/mkb-index" }
 mkb-embed = { path = "crates/mkb-embed" }
 mkb-protocol = { path = "crates/mkb-protocol" }
 mkb-view = { path = "crates/mkb-view" }
+mkb-app-core = { path = "crates/mkb-app-core" }
 regex = "1"
 ulid = "1"
 time = { version = "0.3", features = ["formatting", "parsing"] }

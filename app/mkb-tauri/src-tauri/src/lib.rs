@@ -10,13 +10,8 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use mkb_core::{BlockId, GraphData, GroupAxis, GroupTree, HierTree, SearchQuery};
-use mkb_protocol::{connect, discover_running, Client, ConnectionConfig, DaemonPaths, Registry};
-use mkb_view::{
-    block_title, markdown_to_html_with_assets_indexed, search_results_html, top_level_block_spans,
-    ResultRow,
-};
-use serde::Serialize;
+use mkb_core::{GraphData, GroupTree, HierTree};
+use mkb_protocol::{connect, Client, ConnectionConfig, DaemonPaths};
 use tauri::{Emitter, Manager};
 
 /// Best-effort diagnostic line to stderr. A GUI build opts into the Windows "windows"
@@ -75,35 +70,7 @@ impl AppState {
     }
 }
 
-/// A block prepared for the front-end: stable id, display title, raw Markdown (for editing),
-/// and rendered HTML (children expanded, references as chips). HTML is produced by the shared
-/// `mkb-view` renderer so any UI renders identically.
-#[derive(Serialize)]
-struct BlockView {
-    id: String,
-    title: String,
-    tags: Vec<String>,
-    fm_tags: Vec<String>,
-    props: Vec<(String, String)>,
-    content: String,
-    html: String,
-    locked: bool,
-    /// Source byte spans (`[start, end]`) of the raw body's top-level blocks, in document order.
-    /// The Nth span aligns with the `data-bi="N"` element in `html`, so the UI can carve a run of
-    /// whole rendered blocks by mapping to these raw offsets.
-    outline: Vec<[usize; 2]>,
-}
-
 // ----- connection management -----
-
-/// The active connection config: the saved file if present, else the local default vault.
-fn current_config() -> ConnectionConfig {
-    if ConnectionConfig::config_path().exists() {
-        ConnectionConfig::load()
-    } else {
-        ConnectionConfig::default()
-    }
-}
 
 /// Path to the `mkbd` binary bundled inside the app (for local-mode auto-start), if present.
 fn bundled_mkbd(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -170,210 +137,74 @@ fn resolve_client(app: &tauri::AppHandle, cfg: &ConnectionConfig) -> Client {
 
 // ----- reads -----
 
-/// Sidebar entries: root blocks as `{id, title}`.
-#[derive(Serialize)]
-struct NavBlock {
+#[tauri::command]
+fn list_blocks(state: tauri::State<'_, AppState>) -> Result<Vec<mkb_app_core::NavBlock>, String> {
+    mkb_app_core::list_blocks(&*state.connected()?)
+}
+
+#[tauri::command]
+fn block_index(state: tauri::State<'_, AppState>) -> Result<Vec<mkb_app_core::NavBlock>, String> {
+    mkb_app_core::block_index(&*state.connected()?)
+}
+
+#[tauri::command]
+fn render_block(
+    state: tauri::State<'_, AppState>,
     id: String,
-    title: String,
-}
-
-#[tauri::command]
-fn list_blocks(state: tauri::State<'_, AppState>) -> Result<Vec<NavBlock>, String> {
+) -> Result<mkb_app_core::BlockView, String> {
     let client = state.connected()?;
-    let roots = client.list_roots().map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for id in roots {
-        let title = client
-            .get_block(id.clone())
-            .map_err(|e| e.to_string())?
-            .map(|b| block_title(b.title.as_deref(), &b.content))
-            .unwrap_or_else(|| id.to_string());
-        out.push(NavBlock {
-            id: id.to_string(),
-            title,
-        });
-    }
-    Ok(out)
-}
-
-/// Every block as `{id, title}` — powers the `[[` link/embed picker. Reuses the search path
-/// (an empty query returns all block records), so there is no second listing path.
-#[tauri::command]
-fn block_index(state: tauri::State<'_, AppState>) -> Result<Vec<NavBlock>, String> {
-    let client = state.connected()?;
-    let all = client
-        .search(SearchQuery {
-            limit: 10_000,
-            ..Default::default()
-        })
-        .map_err(|e| e.to_string())?;
-    Ok(all
-        .into_iter()
-        .map(|h| NavBlock {
-            id: h.block.id.to_string(),
-            title: block_title(h.block.title.as_deref(), &h.block.content),
-        })
-        .collect())
-}
-
-/// Render a block to HTML (children resolved by the daemon, Markdown→HTML by mkb-view).
-///
-/// For a **local** vault, relative image sources (`![](assets/x.png)`) are resolved against the
-/// vault so the WebView can load them via the asset protocol (see [`allow_vault_assets`]); a
-/// remote vault has no local files to serve, so its images render only if they are external URLs.
-#[tauri::command]
-fn render_block(state: tauri::State<'_, AppState>, id: String) -> Result<BlockView, String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    let rb = client
-        .rendered_block(bid)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("block not found: {id}"))?;
-    let html = match &*state.cfg.lock().map_err(|_| "state poisoned")? {
-        ConnectionConfig::Local { vault } => {
-            markdown_to_html_with_assets_indexed(&rb.rendered, Some(vault))
-        }
-        // Remote vault: no local files to serve, but external images are still blocked.
-        _ => markdown_to_html_with_assets_indexed(&rb.rendered, None),
+    // A local vault resolves relative image sources against its folder (WebView asset protocol);
+    // a remote vault has no local files to serve.
+    let vault_root = match &*state.cfg.lock().map_err(|_| "state poisoned")? {
+        ConnectionConfig::Local { vault } => Some(vault.clone()),
+        ConnectionConfig::Remote { .. } => None,
     };
-    // Outline of the RAW body's top-level blocks; the Nth span aligns with the Nth data-bi element.
-    let outline = top_level_block_spans(&rb.raw)
-        .into_iter()
-        .map(|(s, e)| [s, e])
-        .collect();
-    Ok(BlockView {
-        html,
-        content: rb.raw,
-        title: rb.title,
-        tags: rb.tags,
-        fm_tags: rb.fm_tags,
-        props: rb.props,
-        id: rb.id.to_string(),
-        locked: rb.locked,
-        outline,
-    })
+    mkb_app_core::render_block(&client, vault_root.as_deref(), &id)
 }
 
-/// Raw Markdown body of a block (for the editor).
 #[tauri::command]
 fn block_source(state: tauri::State<'_, AppState>, id: String) -> Result<String, String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    Ok(client
-        .get_block_source(bid)
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default())
+    mkb_app_core::block_source(&*state.connected()?, &id)
 }
 
-/// The block's title (if any).
 #[tauri::command]
 fn block_title_of(state: tauri::State<'_, AppState>, id: String) -> Result<Option<String>, String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    Ok(client
-        .get_block(bid)
-        .map_err(|e| e.to_string())?
-        .and_then(|b| b.title))
+    mkb_app_core::block_title_of(&*state.connected()?, &id)
 }
 
-/// The whole block-level knowledge graph.
 #[tauri::command]
 fn graph(state: tauri::State<'_, AppState>) -> Result<GraphData, String> {
-    let client = state.connected()?;
-    client.graph().map_err(|e| e.to_string())
+    mkb_app_core::graph(&*state.connected()?)
 }
 
-/// Group blocks by an axis into a `/`-nested tree for the sidebar group-by view. `axis` is
-/// `"tags"` or `"prop:<key>"` (e.g. `"prop:path"`); anything else is treated as a property key.
 #[tauri::command]
 fn group_blocks(state: tauri::State<'_, AppState>, axis: String) -> Result<GroupTree, String> {
-    let client = state.connected()?;
-    let axis = match axis.strip_prefix("prop:") {
-        Some(key) => GroupAxis::Property(key.to_string()),
-        None if axis == "tags" => GroupAxis::Tags,
-        None => GroupAxis::Property(axis),
-    };
-    client.group_blocks_by(axis).map_err(|e| e.to_string())
+    mkb_app_core::group_blocks(&*state.connected()?, &axis)
 }
 
-/// The composition hierarchy (roots → embeds/links) as an expandable tree.
 #[tauri::command]
 fn hierarchy(state: tauri::State<'_, AppState>) -> Result<HierTree, String> {
-    let client = state.connected()?;
-    client.hierarchy().map_err(|e| e.to_string())
+    mkb_app_core::hierarchy(&*state.connected()?)
 }
 
-/// Backlinks (blocks that reference or transclude `id`), as nav blocks.
 #[tauri::command]
-fn backlinks(state: tauri::State<'_, AppState>, id: String) -> Result<Vec<NavBlock>, String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    let rows = client.backlinks(bid).map_err(|e| e.to_string())?;
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for r in rows {
-        if !seen.insert(r.source_id.clone()) {
-            continue;
-        }
-        let title = client
-            .get_block(r.source_id.clone())
-            .map_err(|e| e.to_string())?
-            .map(|b| block_title(b.title.as_deref(), &b.content))
-            .unwrap_or_else(|| r.source_id.to_string());
-        out.push(NavBlock {
-            id: r.source_id.to_string(),
-            title,
-        });
-    }
-    Ok(out)
+fn backlinks(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Vec<mkb_app_core::NavBlock>, String> {
+    mkb_app_core::backlinks(&*state.connected()?, &id)
 }
 
-/// Search and return a ready-to-inject HTML fragment. The query string supports inline
-/// operators (`tag:`, `#tag`, `lang:`/`code:`) parsed by the shared `SearchQuery::parse` so the
-/// app, CLI and MCP all understand the same syntax.
 #[tauri::command]
 fn search(state: tauri::State<'_, AppState>, query: String) -> Result<String, String> {
-    let client = state.connected()?;
-    let q = SearchQuery::parse(&query);
-    let hits = client.search(q).map_err(|e| e.to_string())?;
-    let rows: Vec<ResultRow> = hits
-        .into_iter()
-        .map(|h| ResultRow {
-            id: h.block.id.to_string(),
-            title: block_title(h.block.title.as_deref(), &h.block.content),
-            tags: h.block.tags,
-            content: h.block.content,
-        })
-        .collect();
-    Ok(search_results_html(&query, &rows))
+    mkb_app_core::search(&*state.connected()?, &query)
 }
 
 // ----- writes -----
 
-/// Update a block's title + body in place.
-/// The result of a [`save_block`] under optimistic concurrency, serialised for the WebView.
-#[derive(Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-enum SaveOutcome {
-    /// The save was applied; `version` is the block's new content version (the editor adopts it as
-    /// its new base so the user can keep editing without re-reading).
-    Applied { version: String },
-    /// The save was rejected because the block changed since the editor opened it. Carries the
-    /// current state so the UI can offer reload/merge. Nothing was written.
-    Conflict {
-        current_title: Option<String>,
-        current_body: String,
-        version: String,
-    },
-}
-
-/// The current content version of a block (optimistic-concurrency token the editor captures on
-/// open and passes back on save).
 #[tauri::command]
 fn block_version(state: tauri::State<'_, AppState>, id: String) -> Result<Option<String>, String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    client.block_version(bid).map_err(|e| e.to_string())
+    mkb_app_core::block_version(&*state.connected()?, &id)
 }
 
 #[tauri::command]
@@ -383,88 +214,44 @@ fn save_block(
     title: Option<String>,
     body: String,
     base_version: Option<String>,
-) -> Result<SaveOutcome, String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    // The desktop app is the human surface — the editor shows the full body being saved, so the
-    // destructive-update guard (which protects against blind agent truncation) is bypassed with
-    // force=true. The optimistic-concurrency guard is separate: when the editor passes the version
-    // it opened against, a concurrent change is reported as a Conflict for the UI to reconcile,
-    // rather than silently clobbered.
-    let outcome = client
-        .update_block_checked(bid, title.as_deref(), &body, true, base_version.as_deref())
-        .map_err(|e| e.to_string())?;
-    Ok(match outcome {
-        mkb_core::UpdateOutcome::Applied { version } => SaveOutcome::Applied { version },
-        mkb_core::UpdateOutcome::Conflict {
-            current_title,
-            current_body,
-            version,
-        } => SaveOutcome::Conflict {
-            current_title,
-            current_body,
-            version,
-        },
-    })
+) -> Result<mkb_app_core::SaveOutcome, String> {
+    mkb_app_core::save_block(
+        &*state.connected()?,
+        &id,
+        title.as_deref(),
+        &body,
+        base_version.as_deref(),
+    )
 }
 
-/// Create a new top-level block. Returns the new id.
 #[tauri::command]
 fn create_block(
     state: tauri::State<'_, AppState>,
     title: Option<String>,
     body: String,
 ) -> Result<String, String> {
-    let client = state.connected()?;
-    client
-        .create_block(title.as_deref(), &body)
-        .map(|id| id.to_string())
-        .map_err(|e| e.to_string())
+    mkb_app_core::create_block(&*state.connected()?, title.as_deref(), &body)
 }
 
-/// Largest asset the app will import in one go. Kept comfortably under the daemon's 8 MiB
-/// request-line cap once base64-expanded (~33%), so an oversized drop fails fast with a clear
-/// message instead of a wire error.
-const MAX_ASSET_BYTES: usize = 5 * 1024 * 1024;
-
-/// Import a dropped/pasted image (or other file) into the vault's `assets/` directory via the
-/// daemon, returning the vault-relative path (`assets/<name>`) to insert into a block.
 #[tauri::command]
 fn add_asset(
     state: tauri::State<'_, AppState>,
     name: String,
     data: Vec<u8>,
 ) -> Result<String, String> {
-    if data.is_empty() {
-        return Err("empty file".to_string());
-    }
-    if data.len() > MAX_ASSET_BYTES {
-        return Err(format!(
-            "file is too large ({:.1} MB); the limit is {} MB",
-            data.len() as f64 / (1024.0 * 1024.0),
-            MAX_ASSET_BYTES / (1024 * 1024)
-        ));
-    }
-    let client = state.connected()?;
-    client.add_asset(&name, &data).map_err(|e| e.to_string())
+    mkb_app_core::add_asset(&*state.connected()?, &name, &data)
 }
 
-/// List orphaned assets (files under `assets/` referenced by no block) for the cleanup UI.
 #[tauri::command]
 fn orphan_assets(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
-    let client = state.connected()?;
-    client.orphan_assets().map_err(|e| e.to_string())
+    mkb_app_core::orphan_assets(&*state.connected()?)
 }
 
-/// Delete an asset by its vault-relative `assets/…` path (orphan-sweep cleanup).
 #[tauri::command]
 fn remove_asset(state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
-    let client = state.connected()?;
-    client.remove_asset(&path).map_err(|e| e.to_string())
+    mkb_app_core::remove_asset(&*state.connected()?, &path)
 }
 
-/// Carve the selected byte range of a parent's body into a new child (replace in place).
-/// Returns the new child id.
 #[tauri::command]
 fn carve_selection(
     state: tauri::State<'_, AppState>,
@@ -472,23 +259,14 @@ fn carve_selection(
     start: usize,
     end: usize,
 ) -> Result<String, String> {
-    let client = state.connected()?;
-    let pid = BlockId::parse(&parent_id).map_err(|e| e.to_string())?;
-    client
-        .carve_selection(pid, start, end)
-        .map(|id| id.to_string())
-        .map_err(|e| e.to_string())
+    mkb_app_core::carve_selection(&*state.connected()?, &parent_id, start, end)
 }
 
-/// Delete a block.
 #[tauri::command]
 fn delete_block(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    client.delete_block(bid).map_err(|e| e.to_string())
+    mkb_app_core::delete_block(&*state.connected()?, &id)
 }
 
-/// Link or embed one block into another. Returns the outcome string (may report a downgrade).
 #[tauri::command]
 fn link_blocks(
     state: tauri::State<'_, AppState>,
@@ -496,19 +274,9 @@ fn link_blocks(
     target_id: String,
     embed: bool,
 ) -> Result<String, String> {
-    let client = state.connected()?;
-    let s = BlockId::parse(&source_id).map_err(|e| e.to_string())?;
-    let t = BlockId::parse(&target_id).map_err(|e| e.to_string())?;
-    let outcome = client.link(s, t, embed).map_err(|e| e.to_string())?;
-    Ok(match outcome {
-        mkb_core::LinkOutcome::Reference => "reference".to_string(),
-        mkb_core::LinkOutcome::Transclusion => "transclusion".to_string(),
-        mkb_core::LinkOutcome::DowngradedToReference => "downgraded".to_string(),
-    })
+    mkb_app_core::link_blocks(&*state.connected()?, &source_id, &target_id, embed)
 }
 
-/// Link/embed `target` at a position: before or after the existing directive that targets
-/// `anchor_id` in `source`'s body (the "insert a block above/below this one" action).
 #[tauri::command]
 fn link_block_at(
     state: tauri::State<'_, AppState>,
@@ -518,22 +286,16 @@ fn link_block_at(
     anchor_id: String,
     after: bool,
 ) -> Result<String, String> {
-    let client = state.connected()?;
-    let s = BlockId::parse(&source_id).map_err(|e| e.to_string())?;
-    let t = BlockId::parse(&target_id).map_err(|e| e.to_string())?;
-    let a = BlockId::parse(&anchor_id).map_err(|e| e.to_string())?;
-    let outcome = client
-        .link_at(s, t, embed, a, after)
-        .map_err(|e| e.to_string())?;
-    Ok(match outcome {
-        mkb_core::LinkOutcome::Reference => "reference".to_string(),
-        mkb_core::LinkOutcome::Transclusion => "transclusion".to_string(),
-        mkb_core::LinkOutcome::DowngradedToReference => "downgraded".to_string(),
-    })
+    mkb_app_core::link_block_at(
+        &*state.connected()?,
+        &source_id,
+        &target_id,
+        embed,
+        &anchor_id,
+        after,
+    )
 }
 
-/// Link/embed `target` at a source byte `offset` in `source`'s body (snapped to paragraph
-/// boundaries) — inserting a block above/below any rendered block via its outline offset.
 #[tauri::command]
 fn link_block_at_offset(
     state: tauri::State<'_, AppState>,
@@ -542,109 +304,58 @@ fn link_block_at_offset(
     embed: bool,
     offset: usize,
 ) -> Result<String, String> {
-    let client = state.connected()?;
-    let s = BlockId::parse(&source_id).map_err(|e| e.to_string())?;
-    let t = BlockId::parse(&target_id).map_err(|e| e.to_string())?;
-    let outcome = client
-        .link_at_offset(s, t, embed, offset)
-        .map_err(|e| e.to_string())?;
-    Ok(match outcome {
-        mkb_core::LinkOutcome::Reference => "reference".to_string(),
-        mkb_core::LinkOutcome::Transclusion => "transclusion".to_string(),
-        mkb_core::LinkOutcome::DowngradedToReference => "downgraded".to_string(),
-    })
+    mkb_app_core::link_block_at_offset(&*state.connected()?, &source_id, &target_id, embed, offset)
 }
 
-/// Remove an embed/reference from a page: drop every directive targeting `target_id` from
-/// `source_id`'s body (the block itself is untouched). The "remove from page" action.
 #[tauri::command]
 fn unlink_blocks(
     state: tauri::State<'_, AppState>,
     source_id: String,
     target_id: String,
 ) -> Result<(), String> {
-    let client = state.connected()?;
-    let s = BlockId::parse(&source_id).map_err(|e| e.to_string())?;
-    let t = BlockId::parse(&target_id).map_err(|e| e.to_string())?;
-    client.unlink(s, t).map_err(|e| e.to_string())
+    mkb_app_core::unlink_blocks(&*state.connected()?, &source_id, &target_id)
 }
 
-/// Set a block's managed (frontmatter) tags to exactly `tags` (replaces them; empty clears).
 #[tauri::command]
 fn set_tags(
     state: tauri::State<'_, AppState>,
     id: String,
     tags: Vec<String>,
 ) -> Result<(), String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    client.set_tags(bid, tags).map_err(|e| e.to_string())
+    mkb_app_core::set_tags(&*state.connected()?, &id, tags)
 }
 
-/// Add/update a block's properties (other properties are preserved).
 #[tauri::command]
 fn set_props(
     state: tauri::State<'_, AppState>,
     id: String,
     props: Vec<(String, String)>,
 ) -> Result<(), String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    client.set_props(bid, props).map_err(|e| e.to_string())
+    mkb_app_core::set_props(&*state.connected()?, &id, props)
 }
 
-/// Remove named properties from a block (others preserved).
 #[tauri::command]
 fn unset_props(
     state: tauri::State<'_, AppState>,
     id: String,
     keys: Vec<String>,
 ) -> Result<(), String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    client.unset_props(bid, keys).map_err(|e| e.to_string())
+    mkb_app_core::unset_props(&*state.connected()?, &id, keys)
 }
 
-/// Whether a block is locked (human-only). Cheap lookup used by the Blocks view to show a clear
-/// "locked" cue instead of silently failing an edit.
 #[tauri::command]
 fn block_locked(state: tauri::State<'_, AppState>, id: String) -> Result<bool, String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    Ok(client
-        .get_block(bid)
-        .map_err(|e| e.to_string())?
-        .map(|b| b.locked)
-        .unwrap_or(false))
+    mkb_app_core::block_locked(&*state.connected()?, &id)
 }
 
-/// Lock or unlock a block (the human-only flag). The desktop app is the only client granted this
-/// (the app scope); a locked block is read-only to AI clients until a human unlocks it here.
 #[tauri::command]
 fn set_lock(state: tauri::State<'_, AppState>, id: String, locked: bool) -> Result<(), String> {
-    let client = state.connected()?;
-    let bid = BlockId::parse(&id).map_err(|e| e.to_string())?;
-    client.set_lock(bid, locked).map_err(|e| e.to_string())
+    mkb_app_core::set_lock(&*state.connected()?, &id, locked)
 }
 
-/// All tags in the vault with per-tag block counts, for the tag browser.
 #[tauri::command]
-fn list_tags(state: tauri::State<'_, AppState>) -> Result<Vec<TagCountView>, String> {
-    let client = state.connected()?;
-    let tags = client.list_tags().map_err(|e| e.to_string())?;
-    Ok(tags
-        .into_iter()
-        .map(|t| TagCountView {
-            tag: t.tag,
-            count: t.count,
-        })
-        .collect())
-}
-
-#[derive(Serialize)]
-struct TagCountView {
-    tag: String,
-    count: usize,
+fn list_tags(state: tauri::State<'_, AppState>) -> Result<Vec<mkb_app_core::TagCountView>, String> {
+    mkb_app_core::list_tags(&*state.connected()?)
 }
 
 // ----- settings / connection -----
@@ -652,7 +363,7 @@ struct TagCountView {
 /// The current connection config (for the Settings page).
 #[tauri::command]
 fn get_settings() -> ConnectionConfig {
-    current_config()
+    mkb_app_core::current_config()
 }
 
 /// Persist a new connection config and reconnect the client without restarting the app.
@@ -691,69 +402,26 @@ fn apply_connection(
     }
 }
 
-/// One row of the Settings vault manager: a registry entry plus whether it's the vault the app is
-/// currently connected to and whether it's the launch default.
-#[derive(Serialize)]
-struct VaultRow {
-    /// The entry's stable name (used to switch/rename/remove it).
-    name: String,
-    /// `"local"` or `"remote"` — drives the icon/label in the UI.
-    kind: String,
-    /// Human target: the local vault path, or the remote `host:port`.
-    target: String,
-    /// True for the vault the app is currently connected to.
-    active: bool,
-    /// True for the registry's launch default (the vault opened on next start).
-    default: bool,
-}
-
-/// The known vaults from the registry (`vaults.json`), marking the active + default ones. This is
-/// the switcher/manager's data source. Block counts are intentionally omitted: computing them would
-/// auto-start every vault's daemon just to render the list.
+/// The known vaults from the registry, marking the active + default ones.
 #[tauri::command]
-fn list_vaults(state: tauri::State<'_, AppState>) -> Result<Vec<VaultRow>, String> {
+fn list_vaults(state: tauri::State<'_, AppState>) -> Result<Vec<mkb_app_core::VaultRow>, String> {
     let active = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
-    let reg = Registry::load();
-    let default = reg.default.clone();
-    Ok(reg
-        .vaults
-        .into_iter()
-        .map(|e| {
-            let (kind, target) = match &e.connection {
-                ConnectionConfig::Local { vault } => ("local", vault.display().to_string()),
-                ConnectionConfig::Remote { host, .. } => ("remote", host.clone()),
-            };
-            VaultRow {
-                default: default.as_deref() == Some(e.name.as_str()),
-                name: e.name,
-                kind: kind.to_string(),
-                target,
-                active: e.connection == active,
-            }
-        })
-        .collect())
+    Ok(mkb_app_core::list_vaults(&active))
 }
 
-/// Rename a vault in the registry (manager-only). Names are how the registry references a vault, so
-/// this just relabels; the live connection (tracked by target, not name) is unaffected.
+/// Rename a vault in the registry (manager-only).
 #[tauri::command]
 fn rename_vault(name: String, new_name: String) -> Result<(), String> {
-    let mut reg = Registry::load();
-    reg.rename_vault(&name, &new_name)?;
-    reg.save()
+    mkb_app_core::rename_vault(&name, &new_name)
 }
 
-/// Mark a vault as the **launch default** without switching to it (manager-only). Distinct from
-/// `switch_vault`, which also reconnects — this only changes which vault opens on next start.
+/// Mark a vault as the launch default without switching to it (manager-only).
 #[tauri::command]
 fn set_default_vault(name: String) -> Result<(), String> {
-    let mut reg = Registry::load();
-    reg.set_default(&name)?;
-    reg.save()
+    mkb_app_core::set_default_vault(&name)
 }
 
-/// Edit a **local** vault's folder (manager-only), e.g. after moving it on disk. If it's the active
-/// vault, the app reconnects to the new location.
+/// Edit a local vault's folder (manager-only). Reconnects if it's the active vault.
 #[tauri::command]
 fn edit_local_vault(
     app: tauri::AppHandle,
@@ -761,20 +429,14 @@ fn edit_local_vault(
     name: String,
     path: String,
 ) -> Result<(), String> {
-    let path = path.trim();
-    if path.is_empty() {
-        return Err("choose a folder for the vault".to_string());
+    let active = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
+    if let Some(conn) = mkb_app_core::edit_local_vault(&name, &path, &active)? {
+        apply_connection(&app, &state, conn)?;
     }
-    let real = mkb_protocol::paths::expand_user(path);
-    std::fs::create_dir_all(&real).map_err(|e| format!("creating {}: {e}", real.display()))?;
-    let conn = ConnectionConfig::Local {
-        vault: PathBuf::from(path),
-    };
-    edit_connection(&app, &state, &name, conn)
+    Ok(())
 }
 
-/// Edit a **remote** vault's host/token (manager-only). A blank token keeps the stored one, so a
-/// user can fix the host without re-entering the secret. Reconnects if it's the active vault.
+/// Edit a remote vault's host/token (manager-only). Reconnects if it's the active vault.
 #[tauri::command]
 fn edit_remote_vault(
     app: tauri::AppHandle,
@@ -783,77 +445,27 @@ fn edit_remote_vault(
     host: String,
     token: String,
 ) -> Result<(), String> {
-    let host = host.trim();
-    if host.is_empty() {
-        return Err("enter the remote host (host:port)".to_string());
-    }
-    // A blank token means "keep the existing one" — look it up rather than clobbering the secret.
-    let token = if token.is_empty() {
-        Registry::load()
-            .vaults
-            .into_iter()
-            .find(|e| e.name == name)
-            .and_then(|e| match e.connection {
-                ConnectionConfig::Remote { token, .. } => Some(token),
-                _ => None,
-            })
-            .unwrap_or_default()
-    } else {
-        token
-    };
-    let conn = ConnectionConfig::Remote {
-        host: host.to_string(),
-        token,
-    };
-    edit_connection(&app, &state, &name, conn)
-}
-
-/// Shared helper for the two edit commands: persist the new connection for `name`, and if that
-/// entry is the one the app is currently connected to, reconnect live so the change takes effect.
-fn edit_connection(
-    app: &tauri::AppHandle,
-    state: &tauri::State<'_, AppState>,
-    name: &str,
-    conn: ConnectionConfig,
-) -> Result<(), String> {
     let active = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
-    let mut reg = Registry::load();
-    let was_active = reg
-        .vaults
-        .iter()
-        .find(|e| e.name == name)
-        .map(|e| e.connection == active)
-        .unwrap_or(false);
-    reg.update_connection(name, conn.clone())?;
-    reg.save()?;
-    if was_active {
-        apply_connection(app, state, conn)?;
+    if let Some(conn) = mkb_app_core::edit_remote_vault(&name, &host, &token, &active)? {
+        apply_connection(&app, &state, conn)?;
     }
     Ok(())
 }
 
-/// Reveal a **local** vault's folder in the OS file manager (manager-only). No-op-with-error for a
-/// remote vault (nothing local to reveal).
+/// Reveal a local vault's folder in the OS file manager (manager-only). Native affordance: resolve
+/// the path in core, then spawn the platform opener here. No-op-with-error for a remote vault.
 #[tauri::command]
 fn reveal_vault(name: String) -> Result<(), String> {
-    let entry = Registry::load()
-        .vaults
-        .into_iter()
-        .find(|e| e.name == name)
-        .ok_or_else(|| format!("no vault named {name:?}"))?;
-    let ConnectionConfig::Local { vault } = entry.connection else {
-        return Err("this is a remote vault — nothing local to reveal".to_string());
-    };
-    let path = mkb_protocol::paths::expand_user(&vault);
-    let (cmd, args): (&str, Vec<&std::ffi::OsStr>) = if cfg!(target_os = "macos") {
-        ("open", vec![path.as_os_str()])
+    let path = mkb_app_core::local_vault_path(&name)?;
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
     } else if cfg!(target_os = "windows") {
-        ("explorer", vec![path.as_os_str()])
+        "explorer"
     } else {
-        ("xdg-open", vec![path.as_os_str()])
+        "xdg-open"
     };
     std::process::Command::new(cmd)
-        .args(args)
+        .arg(path.as_os_str())
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("could not open the folder: {e}"))
@@ -866,22 +478,11 @@ fn switch_vault(
     state: tauri::State<'_, AppState>,
     name: String,
 ) -> Result<(), String> {
-    let mut reg = Registry::load();
-    reg.set_default(&name)?;
-    reg.save()?;
-    let conn = reg
-        .vaults
-        .into_iter()
-        .find(|e| e.name == name)
-        .map(|e| e.connection)
-        .ok_or_else(|| format!("no vault named {name:?}"))?;
+    let conn = mkb_app_core::switch_vault(&name)?;
     apply_connection(&app, &state, conn)
 }
 
-/// Add (or create) a local vault: register it under `name` pointing at `path`, ensuring the folder
-/// exists (so this both *adds an existing* vault and *creates a new empty* one — the daemon
-/// initializes an empty folder on first connect). When `activate` is set, it also becomes the
-/// active vault and the app reconnects to it.
+/// Add (or create) a local vault; when `activate`, switch to it live.
 #[tauri::command]
 fn add_vault(
     app: tauri::AppHandle,
@@ -890,39 +491,14 @@ fn add_vault(
     path: String,
     activate: bool,
 ) -> Result<(), String> {
-    let path = path.trim();
-    if path.is_empty() {
-        return Err("choose a folder for the vault".to_string());
-    }
-    // Ensure the folder exists (a no-op for an existing vault; creates a brand-new one). Expand a
-    // leading `~` for the filesystem call, but store the path as typed so a `~`-relative entry stays
-    // portable across machines in `vaults.json`.
-    let real = mkb_protocol::paths::expand_user(path);
-    std::fs::create_dir_all(&real).map_err(|e| format!("creating {}: {e}", real.display()))?;
-    let conn = ConnectionConfig::Local {
-        vault: PathBuf::from(path),
-    };
-    // Fall back to the folder basename when no name was given, so "Add" always yields a sensible
-    // label even if the user typed a path without naming it.
-    let name = if name.trim().is_empty() {
-        conn.suggested_name()
-    } else {
-        name
-    };
-    let mut reg = Registry::load();
-    reg.add_vault(&name, conn.clone())?;
-    if activate {
-        reg.set_default(&name)?;
-    }
-    reg.save()?;
-    if activate {
+    if let Some(conn) = mkb_app_core::add_local_vault(&name, &path, activate)? {
         apply_connection(&app, &state, conn)?;
     }
     Ok(())
 }
 
-/// Remove a vault from the registry (does **not** delete any files on disk). If it was the active
-/// vault, the app reconnects to the registry's new default.
+/// Remove a vault from the registry (files on disk are kept). Reconnects to the new default if the
+/// removed vault was the active one.
 #[tauri::command]
 fn remove_vault(
     app: tauri::AppHandle,
@@ -930,24 +506,13 @@ fn remove_vault(
     name: String,
 ) -> Result<(), String> {
     let active = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
-    let mut reg = Registry::load();
-    let was_active = reg
-        .vaults
-        .iter()
-        .find(|e| e.name == name)
-        .map(|e| e.connection == active)
-        .unwrap_or(false);
-    reg.remove_vault(&name)?;
-    reg.save()?;
-    if was_active {
-        // The removed vault was the one we were connected to — fall back to the new default.
-        apply_connection(&app, &state, reg.default_connection())?;
+    if let Some(conn) = mkb_app_core::remove_vault(&name, &active)? {
+        apply_connection(&app, &state, conn)?;
     }
     Ok(())
 }
 
-/// Add a **remote** daemon as a named registry entry (the remote counterpart of [`add_vault`]).
-/// When `activate` is set it becomes the active connection and the app connects to it.
+/// Add a remote daemon as a named registry entry; when `activate`, connect to it live.
 #[tauri::command]
 fn add_remote_vault(
     app: tauri::AppHandle,
@@ -957,119 +522,30 @@ fn add_remote_vault(
     token: String,
     activate: bool,
 ) -> Result<(), String> {
-    let host = host.trim();
-    if host.is_empty() {
-        return Err("enter the remote host (host:port)".to_string());
-    }
-    let conn = ConnectionConfig::Remote {
-        host: host.to_string(),
-        token,
-    };
-    let mut reg = Registry::load();
-    reg.add_vault(&name, conn.clone())?;
-    if activate {
-        reg.set_default(&name)?;
-    }
-    reg.save()?;
-    if activate {
+    if let Some(conn) = mkb_app_core::add_remote_vault(&name, &host, &token, activate)? {
         apply_connection(&app, &state, conn)?;
     }
     Ok(())
 }
 
-/// A local vault with a **currently running** daemon that isn't in the registry yet — surfaced so
-/// the user can add it with one click (e.g. a repo vault an agent spun up).
-#[derive(Serialize)]
-struct DiscoveredRow {
-    /// Suggested name (the vault folder's basename).
-    name: String,
-    /// Absolute vault path the running daemon reports.
-    path: String,
-    /// Block count (a cheap "is this the vault I mean?" hint).
-    blocks: usize,
-}
-
-/// Discover vaults with a running daemon that are **not already** in the registry, so the Settings
-/// page can offer to add them. Registry entries are canonicalized for the comparison so a `~`- or
-/// relatively-stored path still matches the daemon's canonical path.
+/// Discover vaults with a running daemon that aren't in the registry yet.
 #[tauri::command]
-fn discover_vaults(state: tauri::State<'_, AppState>) -> Result<Vec<DiscoveredRow>, String> {
+fn discover_vaults(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<mkb_app_core::DiscoveredRow>, String> {
     let active = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
-    // Canonicalize a Local connection's vault path (expanding a leading `~`) so a `~`- or
-    // relatively-stored registry entry still matches the daemon's canonical path.
-    let canon = |conn: &ConnectionConfig| match conn {
-        ConnectionConfig::Local { vault } => {
-            let real = mkb_protocol::paths::expand_user(vault);
-            Some(std::fs::canonicalize(&real).unwrap_or(real))
-        }
-        ConnectionConfig::Remote { .. } => None,
-    };
-    // Canonical paths already known (every registry entry, plus the active vault), to filter out.
-    let mut known: Vec<PathBuf> = Registry::load()
-        .vaults
-        .iter()
-        .filter_map(|e| canon(&e.connection))
-        .collect();
-    known.extend(canon(&active));
-    known.sort();
-    known.dedup();
-    Ok(discover_running()
-        .into_iter()
-        .filter(|d| !known.contains(&d.vault))
-        .map(|d| DiscoveredRow {
-            name: d.name_hint,
-            path: d.vault.display().to_string(),
-            blocks: d.blocks,
-        })
-        .collect())
+    Ok(mkb_app_core::discover_vaults(&active))
 }
 
-/// Whether the current client can reach a daemon (for a connection indicator). Returns a
-/// friendly `label` — the active vault's **registry name** (falling back to a target-derived name),
-/// suffixed with its location kind, e.g. `personal (local)` or `team (remote)` — plus the full
-/// `endpoint` for a tooltip.
+/// Whether the current client can reach a daemon (for the connection indicator), with a friendly
+/// label + endpoint.
 #[tauri::command]
-fn connection_status(state: tauri::State<'_, AppState>) -> Result<ConnStatus, String> {
-    let connected = state.client.lock().map_err(|_| "state poisoned")?.ping();
-    let endpoint = state
-        .client
-        .lock()
-        .map_err(|_| "state poisoned")?
-        .endpoint();
+fn connection_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<mkb_app_core::ConnStatus, String> {
     let cfg = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
-    // The location kind — shown after the name so the chip tells you both which vault and where.
-    let kind = match &cfg {
-        ConnectionConfig::Local { .. } => "local",
-        ConnectionConfig::Remote { .. } => "remote",
-    };
-    // Prefer the registry name of the entry whose connection is the active one; otherwise fall back
-    // to a target-derived name (folder basename / host).
-    let name = Registry::load()
-        .vaults
-        .into_iter()
-        .find(|e| e.connection == cfg)
-        .map(|e| e.name)
-        .unwrap_or_else(|| match &cfg {
-            ConnectionConfig::Local { vault } => vault
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| vault.display().to_string()),
-            ConnectionConfig::Remote { host, .. } => host.clone(),
-        });
-    let label = format!("{name} ({kind})");
-    Ok(ConnStatus {
-        label,
-        endpoint,
-        connected,
-    })
-}
-
-#[derive(Serialize)]
-struct ConnStatus {
-    label: String,
-    endpoint: String,
-    connected: bool,
+    let client = state.client.lock().map_err(|_| "state poisoned")?;
+    Ok(mkb_app_core::connection_status(&client, &cfg))
 }
 
 /// Restart the local daemon: ask it to shut down (remove its socket and exit), then reconnect —
@@ -1116,7 +592,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let cfg = current_config();
+            let cfg = mkb_app_core::current_config();
             let mkbd = bundled_mkbd(app.handle());
             // Build a client *descriptor* only — do NOT connect or spawn the daemon here, or a cold
             // daemon's initial reconcile would freeze the window before it appears. The daemon is

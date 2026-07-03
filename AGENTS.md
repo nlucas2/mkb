@@ -136,7 +136,8 @@ Only commit when **all** boxes are satisfied.
 | `crates/mkb-mcp` | bin (`mkb-mcp`) | MCP server (stdio); thin client that forwards tool calls to the daemon. |
 | `crates/mkb-cli` | bin (`mkb`) | CLI for scripting/manual ops, thin client. |
 | `crates/mkb-view` | lib | Shared presentation: Markdown→HTML rendering + page templating for any UI. |
-| `app/mkb-tauri` | app | Desktop shell (Tauri); thin client over `mkb-view` + daemon. *(separate workspace)* |
+| `crates/mkb-app-core` | lib | Transport-neutral logic behind each UI command (over the daemon client), so every front-end shares one implementation. No presentation-shell/platform deps. |
+| `app/mkb-tauri` | app | Desktop shell (Tauri); thin client over `mkb-app-core` + `mkb-view` + daemon. *(separate workspace)* |
 
 If a piece of behavior doesn't clearly belong to transport or presentation, it belongs in
 `mkb-core`.

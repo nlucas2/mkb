@@ -27,6 +27,7 @@ serde_json = "1"
 mkb-core = { path = "../../../crates/mkb-core", features = ["serde"] }
 mkb-protocol = { path = "../../../crates/mkb-protocol" }
 mkb-view = { path = "../../../crates/mkb-view" }
+mkb-app-core = { path = "../../../crates/mkb-app-core" }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

@@ -881,6 +881,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mkb-app-core"
+version = "0.2.0"
+dependencies = [
+ "mkb-core",
+ "mkb-protocol",
+ "mkb-view",
+ "serde",
+]
+
+[[package]]
 name = "mkb-cli"
 version = "0.2.0"
 dependencies = [

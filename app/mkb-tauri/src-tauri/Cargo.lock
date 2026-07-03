@@ -1747,6 +1747,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mkb-app-core"
+version = "0.2.0"
+dependencies = [
+ "mkb-core",
+ "mkb-protocol",
+ "mkb-view",
+ "serde",
+]
+
+[[package]]
 name = "mkb-core"
 version = "0.2.0"
 dependencies = [
@@ -1773,6 +1783,7 @@ dependencies = [
 name = "mkb-tauri"
 version = "0.2.0"
 dependencies = [
+ "mkb-app-core",
  "mkb-core",
  "mkb-protocol",
  "mkb-view",
