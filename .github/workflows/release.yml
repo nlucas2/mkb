@@ -12,6 +12,10 @@ on:
 
 permissions:
   contents: write
+  # Required so the Windows leg can mint a GitHub OIDC token for `azure/login` (federated
+  # credentials, no stored client secret). Harmless on the other legs — a token is only
+  # requested where `azure/login` runs.
+  id-token: write
 
 jobs:
   release:
@@ -21,6 +25,11 @@ jobs:
     if: ${{ github.server_url == 'https://github.com' }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # The `release` environment is what the Azure federated credential is scoped to
+    # (subject `repo:<owner>/<repo>:environment:release`), so the Windows OIDC login can
+    # exchange the token. Applied to the whole release job for consistency; any protection
+    # rules on this environment (e.g. required reviewers) therefore gate the entire release.
+    environment: release
     strategy:
       fail-fast: false
       matrix:
@@ -142,8 +151,127 @@ jobs:
           echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
           rm -f "$CERT"
 
+      # ── Windows code signing (Azure Artifact Signing via OIDC) ─────────────────────
+      # Sign every Windows executable so neither the installer nor any bundled/loose binary
+      # trips SmartScreen's "unknown publisher". Uses the verified azure/artifact-signing-action
+      # with OIDC federated credentials (no stored client secret): `azure/login` establishes the
+      # `az` session and the action funnels DefaultAzureCredential to AzureCliCredential (hence the
+      # exclude-* toggles, all true except azure-cli). Ordering matters — a signed exe must be
+      # signed BEFORE it is packaged, so we build without bundling, sign the app + sidecars, then
+      # bundle, then sign the installer. The three signing-resource coordinates are non-secret but
+      # live in repo secrets here (ARTIFACT_SIGNING_ENDPOINT/ACCOUNT/PROFILE).
+      - name: Azure login (OIDC) — Windows signing
+        if: runner.os == 'Windows'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Sign the standalone daemon + CLIs at their build location. These same signed binaries are
+      # both staged into the app bundle (below) and shipped loose in the .zip, so one signing pass
+      # here covers both.
+      - name: Sign standalone binaries (Windows)
+        if: runner.os == 'Windows'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\target\${{ matrix.target }}\release\mkbd.exe
+            ${{ github.workspace }}\target\${{ matrix.target }}\release\mkb.exe
+            ${{ github.workspace }}\target\${{ matrix.target }}\release\mkb-mcp.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      # Build the desktop app WITHOUT bundling, so the main exe exists to be signed before NSIS
+      # packages it. Stage the (now signed) sidecars as app resources first — `tauri bundle` copies
+      # bundle.resources at bundle time, so the installer will embed the signed copies.
+      - name: Build desktop app — no bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -eux
+          ( cd app/mkb-tauri && cargo tauri icon app-icon.png )
+          D="target/${{ matrix.target }}/release"
+          mkdir -p app/mkb-tauri/src-tauri/bin
+          cp "$D/mkbd.exe"    app/mkb-tauri/src-tauri/bin/mkbd.exe
+          cp "$D/mkb-mcp.exe" app/mkb-tauri/src-tauri/bin/mkb-mcp.exe
+          cp "$D/mkb.exe"     app/mkb-tauri/src-tauri/bin/mkb-cli.exe
+          ( cd app/mkb-tauri/src-tauri && \
+            cargo tauri build --no-bundle --target ${{ matrix.target }} )
+
+      - name: Sign app binary (Windows)
+        if: runner.os == 'Windows'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\app\mkb-tauri\src-tauri\target\${{ matrix.target }}\release\mkb-tauri.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      # Now package the signed app + signed sidecars into the NSIS installer (reuses the already
+      # built binary — `tauri bundle` does not recompile).
+      - name: Bundle installer (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -eux
+          ( cd app/mkb-tauri/src-tauri && \
+            cargo tauri bundle --bundles nsis --target ${{ matrix.target }} )
+
+      - name: Sign installer (Windows)
+        if: runner.os == 'Windows'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\app\mkb-tauri\src-tauri\target\${{ matrix.target }}\release\bundle\nsis
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
       - name: Build desktop app (Tauri)
-        if: matrix.headless != true
+        # Windows is handled by the dedicated build/sign/bundle/sign steps above.
+        if: runner.os != 'Windows' && matrix.headless != true
         shell: bash
         env:
           # Build the AppImage without requiring FUSE on the CI runner.
@@ -158,11 +286,6 @@ jobs:
           # resources, so the in-app "Install command-line tools" action can expose them on PATH.
           # The CLI is staged as `mkb-cli` to keep the bundle glob unambiguous; it installs as `mkb`.
           case "${{ runner.os }}" in
-            Windows)
-              cp "$D/mkbd.exe"   app/mkb-tauri/src-tauri/bin/mkbd.exe
-              cp "$D/mkb-mcp.exe" app/mkb-tauri/src-tauri/bin/mkb-mcp.exe
-              cp "$D/mkb.exe"     app/mkb-tauri/src-tauri/bin/mkb-cli.exe
-              BUNDLES=nsis ;;
             macOS)
               cp "$D/mkbd"   app/mkb-tauri/src-tauri/bin/mkbd
               cp "$D/mkb-mcp" app/mkb-tauri/src-tauri/bin/mkb-mcp
