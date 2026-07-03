@@ -1,6 +1,6 @@
 ---
 title: USAGE page
-updated: 2026-07-01T03:43:42Z
+updated: 2026-07-03T04:08:12Z
 ---
 
 # Using mkb
@@ -12,6 +12,8 @@ Everything here lives in `mkb-core`, so it behaves identically from the CLI (`mk
 app, and an AI client through the MCP tools — pick whichever interface fits the task. CLI examples
 below drop the `--vault <dir>` flag; add it (or set `$MKB_VAULT`, or a registry default) to target
 a specific vault.
+
+![[01KWK2J9912X51Q97XMYETE4FH]]
 
 ![[01KWDWCW4PFHF3YP6CPZ8G5EBH]]
 
