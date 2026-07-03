@@ -337,18 +337,6 @@ fn decorate_wiki(html: String) -> String {
     )
 }
 
-/// Rewrite the shared `mkb:` link scheme onto a concrete navigation base for a client that
-/// uses plain hyperlinks (e.g. `/page/<path>` routes). `mkb:<path>#<id>` becomes
-/// `<base><path>#<id>`; the unresolved sentinel is left inert (`#`). Clients that intercept
-/// clicks in JS (the desktop shell) can ignore this and parse `mkb:` directly.
-pub fn rewrite_mkb_links(html: &str, base: &str) -> String {
-    html.replace(
-        "href=\"mkb:?unresolved\"",
-        "href=\"#\" aria-disabled=\"true\"",
-    )
-    .replace("href=\"mkb:", &format!("href=\"{base}"))
-}
-
 /// Derive a human display title for a block from an optional title and a content snippet.
 pub fn block_title(title: Option<&str>, content: &str) -> String {
     if let Some(t) = title {
@@ -417,74 +405,6 @@ pub fn search_results_html(query: &str, rows: &[ResultRow]) -> String {
     out.push_str("</ul>");
     out
 }
-
-/// A sidebar entry: a block id + its display title.
-pub struct NavEntry {
-    /// Block id.
-    pub id: String,
-    /// Display title.
-    pub title: String,
-}
-
-/// Wrap a body fragment in the full mkb HTML document: a sidebar of blocks plus a search box
-/// and the main content. `active` highlights the current block id (empty for none).
-pub fn page_document(title: &str, body_html: &str, entries: &[NavEntry], active: &str) -> String {
-    let mut nav = String::from(
-        "<nav><form action=\"/search\" method=\"get\">\
-        <input type=\"search\" name=\"q\" placeholder=\"Search…\" autofocus></form><ul>",
-    );
-    for e in entries {
-        let cls = if e.id == active {
-            " class=\"active\""
-        } else {
-            ""
-        };
-        nav.push_str(&format!(
-            "<li{}><a href=\"/block/{}\">{}</a></li>",
-            cls,
-            escape_html(&e.id),
-            escape_html(&e.title)
-        ));
-    }
-    nav.push_str("</ul></nav>");
-
-    format!(
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-<title>{title}</title><style>{css}</style></head>\
-<body><div class=\"layout\">{nav}<main>{body}</main></div></body></html>",
-        title = escape_html(title),
-        css = STYLE,
-        nav = nav,
-        body = body_html,
-    )
-}
-
-/// The single stylesheet shared by every mkb HTML view.
-pub const STYLE: &str = r#"
-:root { --bg:#1e1e2e; --fg:#cdd6f4; --muted:#9399b2; --accent:#89b4fa; --panel:#181825; --border:#313244; }
-* { box-sizing: border-box; }
-body { margin:0; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
-.layout { display:flex; min-height:100vh; }
-nav { width:260px; flex:0 0 260px; background:var(--panel); border-right:1px solid var(--border); padding:1rem; overflow-y:auto; }
-nav input[type=search] { width:100%; padding:.5rem .6rem; margin-bottom:1rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
-nav ul { list-style:none; margin:0; padding:0; }
-nav li a { display:block; padding:.3rem .5rem; border-radius:6px; color:var(--fg); text-decoration:none; }
-nav li a:hover { background:var(--border); }
-nav li.active a { background:var(--accent); color:var(--panel); font-weight:600; }
-main { flex:1; padding:2rem 3rem; max-width:60rem; }
-main h1,h2,h3 { line-height:1.25; }
-a { color:var(--accent); }
-code { background:var(--panel); padding:.1rem .35rem; border-radius:4px; }
-pre { background:var(--panel); border:1px solid var(--border); padding:1rem; border-radius:8px; overflow-x:auto; }
-pre code { background:none; padding:0; }
-blockquote { border-left:3px solid var(--accent); margin:0; padding-left:1rem; color:var(--muted); }
-table { border-collapse:collapse; } th,td { border:1px solid var(--border); padding:.4rem .6rem; }
-.muted { color:var(--muted); } .crumb { color:var(--muted); margin-left:.5rem; font-size:.85em; }
-.tag { font-size:.85em; color:var(--accent); background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:.02rem .45rem; margin-left:.3rem; text-decoration:none; }
-.results { list-style:none; padding:0; } .results li { padding:.6rem 0; border-bottom:1px solid var(--border); }
-.preview { color:var(--muted); font-size:.9em; margin-top:.2rem; }
-"#;
 
 #[cfg(test)]
 mod tests {
@@ -574,13 +494,6 @@ mod tests {
         // The non-indexed renderers stay attribute-free (other consumers unaffected).
         let html = markdown_to_html("a para\n\n## h\n");
         assert!(!html.contains("data-bi"), "got: {html}");
-    }
-
-    #[test]
-    fn rewrite_mkb_links_targets_web_routes() {
-        let html = "<a class=\"wikilink\" href=\"mkb:ideas.md#01ABC\">ideas</a>";
-        let web = rewrite_mkb_links(html, "/page/");
-        assert!(web.contains("href=\"/page/ideas.md#01ABC\""), "got: {web}");
     }
 
     #[test]
@@ -715,26 +628,6 @@ mod tests {
         assert_eq!(block_title(Some("Explicit"), "body"), "Explicit");
         assert_eq!(block_title(None, "# Heading\n\nbody"), "Heading");
         assert_eq!(block_title(Some("  "), "first line"), "first line");
-    }
-
-    #[test]
-    fn document_includes_nav_and_active_highlight() {
-        let entries = vec![
-            NavEntry {
-                id: "a".into(),
-                title: "Alpha".into(),
-            },
-            NavEntry {
-                id: "b".into(),
-                title: "Beta".into(),
-            },
-        ];
-        let doc = page_document("T", "<p>hi</p>", &entries, "b");
-        assert!(doc.contains("<!DOCTYPE html>"));
-        assert!(doc.contains("href=\"/block/a\""));
-        assert!(doc.contains("class=\"active\""));
-        assert!(doc.contains("<p>hi</p>"));
-        assert!(doc.contains("action=\"/search\""));
     }
 
     #[test]
