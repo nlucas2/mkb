@@ -87,6 +87,20 @@ impl ConnectionConfig {
             ConnectionConfig::Remote { host, .. } => format!("remote:{host}"),
         }
     }
+
+    /// A sensible **default registry name** for this connection: the vault folder's basename for a
+    /// local vault (so a fresh registry reads e.g. `notes`, not a meaningless `default`), or the
+    /// host for a remote. Falls back to `"vault"` if a local path has no usable basename (e.g. `/`).
+    pub fn suggested_name(&self) -> String {
+        match self {
+            ConnectionConfig::Local { vault } => crate::paths::expand_user(vault)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "vault".to_string()),
+            ConnectionConfig::Remote { host, .. } => host.clone(),
+        }
+    }
 }
 
 /// One named vault in the [`Registry`]. The connection is **nested** (not `#[serde(flatten)]`):
@@ -123,16 +137,19 @@ impl Registry {
         client_config_dir().join("vaults.json")
     }
 
-    /// A built-in registry with a single `default` local vault (the `$MKB_VAULT`/`~/mkb-vault`
-    /// fallback). Used when no `vaults.json` exists yet, so there is always at least one vault and
+    /// A built-in registry with a single local vault (the `$MKB_VAULT`/`~/mkb-vault` fallback),
+    /// named after its folder (see [`ConnectionConfig::suggested_name`]) rather than a generic
+    /// `default`. Used when no `vaults.json` exists yet, so there is always at least one vault and
     /// the default always resolves.
     pub fn builtin() -> Registry {
+        let connection = ConnectionConfig::default();
+        let name = connection.suggested_name();
         Registry {
             vaults: vec![VaultEntry {
-                name: "default".to_string(),
-                connection: ConnectionConfig::default(),
+                name: name.clone(),
+                connection,
             }],
-            default: Some("default".to_string()),
+            default: Some(name),
         }
     }
 
@@ -190,13 +207,14 @@ impl Registry {
     }
 
     /// Set (or replace) the **default** entry's connection, keeping its name; if there is no
-    /// default entry yet, append one named `default`. Used by a client that saves "the vault I'm
-    /// using" so it becomes the shared fallback.
+    /// default entry yet, append one named after the connection's folder/host (see
+    /// [`ConnectionConfig::suggested_name`]). Used by a client that saves "the vault I'm using" so
+    /// it becomes the shared fallback.
     pub fn set_default_connection(&mut self, connection: ConnectionConfig) {
         let name = self
             .default
             .clone()
-            .unwrap_or_else(|| "default".to_string());
+            .unwrap_or_else(|| connection.suggested_name());
         match self.vaults.iter_mut().find(|e| e.name == name) {
             Some(entry) => entry.connection = connection,
             None => self.vaults.push(VaultEntry {
@@ -206,6 +224,151 @@ impl Registry {
         }
         self.default = Some(name);
     }
+
+    /// Whether an entry with this name exists.
+    pub fn contains(&self, name: &str) -> bool {
+        self.vaults.iter().any(|e| e.name == name)
+    }
+
+    /// Add a new named vault. Errors on a blank name or a duplicate name (the caller should pick a
+    /// different one) — this never silently overwrites an existing entry. Does not change which
+    /// entry is the default; the caller decides whether to switch.
+    pub fn add_vault(&mut self, name: &str, connection: ConnectionConfig) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("vault name cannot be empty".to_string());
+        }
+        if self.contains(name) {
+            return Err(format!("a vault named {name:?} already exists"));
+        }
+        self.vaults.push(VaultEntry {
+            name: name.to_string(),
+            connection,
+        });
+        Ok(())
+    }
+
+    /// Remove a named vault. Errors if it isn't present. If the removed entry was the default, the
+    /// default is reassigned to the first remaining entry (or cleared when none remain), so the
+    /// registry never points `default` at a missing entry.
+    pub fn remove_vault(&mut self, name: &str) -> Result<(), String> {
+        let before = self.vaults.len();
+        self.vaults.retain(|e| e.name != name);
+        if self.vaults.len() == before {
+            return Err(format!("no vault named {name:?}"));
+        }
+        if self.default.as_deref() == Some(name) {
+            self.default = self.vaults.first().map(|e| e.name.clone());
+        }
+        Ok(())
+    }
+
+    /// Make an existing named entry the default. Errors if the name isn't present (we never point
+    /// `default` at a vault that isn't in the list).
+    pub fn set_default(&mut self, name: &str) -> Result<(), String> {
+        if !self.contains(name) {
+            return Err(format!("no vault named {name:?}"));
+        }
+        self.default = Some(name.to_string());
+        Ok(())
+    }
+
+    /// Rename an entry, keeping its connection and its position. Errors if `old` is absent, `new` is
+    /// blank, or `new` collides with a different existing entry (renaming to its own name is a
+    /// no-op). Moves the `default` pointer along if it named the renamed entry.
+    pub fn rename_vault(&mut self, old: &str, new: &str) -> Result<(), String> {
+        let new = new.trim();
+        if new.is_empty() {
+            return Err("vault name cannot be empty".to_string());
+        }
+        if new == old {
+            return Ok(());
+        }
+        if self.contains(new) {
+            return Err(format!("a vault named {new:?} already exists"));
+        }
+        let entry = self
+            .vaults
+            .iter_mut()
+            .find(|e| e.name == old)
+            .ok_or_else(|| format!("no vault named {old:?}"))?;
+        entry.name = new.to_string();
+        if self.default.as_deref() == Some(old) {
+            self.default = Some(new.to_string());
+        }
+        Ok(())
+    }
+
+    /// Replace an existing entry's connection (e.g. a local vault whose folder moved, or edited
+    /// remote host/token), keeping its name and default status. Errors if the name isn't present.
+    pub fn update_connection(
+        &mut self,
+        name: &str,
+        connection: ConnectionConfig,
+    ) -> Result<(), String> {
+        let entry = self
+            .vaults
+            .iter_mut()
+            .find(|e| e.name == name)
+            .ok_or_else(|| format!("no vault named {name:?}"))?;
+        entry.connection = connection;
+        Ok(())
+    }
+}
+
+/// A running daemon found by [`discover_running`]: the vault it serves and how many blocks it has.
+/// Lets a UI surface "there's already a vault running here — add it to your list?" without the user
+/// hunting for the folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredVault {
+    /// Absolute (canonicalized) vault directory the daemon serves.
+    pub vault: PathBuf,
+    /// A suggested display name: the vault folder's basename.
+    pub name_hint: String,
+    /// Number of indexed blocks (a cheap "is this the vault I mean?" signal).
+    pub blocks: usize,
+}
+
+/// Discover local vaults with a **currently running** daemon by scanning the machine-local index
+/// base ([`crate::paths::index_base`]) for live sockets and asking each daemon which vault it serves
+/// ([`Client::status`]). Per-vault index dirs are keyed by an opaque hash, so the socket alone can't
+/// reveal the vault — only the daemon knows its own (canonical) path. Dead/stale sockets (a daemon
+/// that exited but left its socket file) are skipped: connecting fails fast. Results are sorted by
+/// name and de-duplicated by vault path. Returns empty when no base dir is resolvable.
+pub fn discover_running() -> Vec<DiscoveredVault> {
+    let Some(base) = crate::paths::index_base() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return Vec::new();
+    };
+    let mut found: Vec<DiscoveredVault> = Vec::new();
+    for entry in entries.flatten() {
+        let socket = entry.path().join("mkbd.sock");
+        if !socket.exists() {
+            continue;
+        }
+        // A live daemon answers Status with its canonical vault path; a stale socket errors here.
+        let Ok(status) = Client::new(socket).status() else {
+            continue;
+        };
+        if found.iter().any(|d| d.vault == status.vault) {
+            continue;
+        }
+        let name_hint = status
+            .vault
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| status.vault.display().to_string());
+        found.push(DiscoveredVault {
+            vault: status.vault,
+            name_hint,
+            blocks: status.blocks,
+        });
+    }
+    found.sort_by(|a, b| a.name_hint.cmp(&b.name_hint).then(a.vault.cmp(&b.vault)));
+    found
 }
 
 /// The OS-appropriate per-user config directory for mkb's client config (the `vaults.json`
@@ -793,14 +956,148 @@ mod tests {
     fn set_default_connection_creates_then_updates_default_entry() {
         let mut reg = Registry::default();
         reg.set_default_connection(ConnectionConfig::Local { vault: "/x".into() });
-        assert_eq!(reg.default.as_deref(), Some("default"));
+        // A fresh entry is named after its folder basename, not a generic "default".
+        assert_eq!(reg.default.as_deref(), Some("x"));
         assert_eq!(reg.vaults.len(), 1);
-        // Saving again replaces the default entry in place (no duplicate).
+        // Saving again replaces the default entry in place (no duplicate), keeping its name.
         reg.set_default_connection(ConnectionConfig::Local { vault: "/y".into() });
         assert_eq!(reg.vaults.len(), 1);
+        assert_eq!(reg.default.as_deref(), Some("x"));
         assert_eq!(
             reg.default_connection(),
             ConnectionConfig::Local { vault: "/y".into() }
+        );
+    }
+
+    #[test]
+    fn suggested_name_uses_folder_basename_or_host() {
+        assert_eq!(
+            ConnectionConfig::Local {
+                vault: "/home/me/notes".into()
+            }
+            .suggested_name(),
+            "notes"
+        );
+        assert_eq!(
+            ConnectionConfig::Remote {
+                host: "box:7820".into(),
+                token: "t".into()
+            }
+            .suggested_name(),
+            "box:7820"
+        );
+    }
+
+    #[test]
+    fn add_vault_appends_and_rejects_blank_and_duplicate() {
+        let mut reg = Registry::default();
+        reg.add_vault("work", ConnectionConfig::Local { vault: "/w".into() })
+            .unwrap();
+        assert_eq!(reg.vaults.len(), 1);
+        assert!(reg.contains("work"));
+        // Adding does NOT change the default (caller decides whether to switch).
+        assert_eq!(reg.default, None);
+        // A blank name and a duplicate name are both refused (never silently overwrite).
+        assert!(reg
+            .add_vault("  ", ConnectionConfig::Local { vault: "/x".into() })
+            .is_err());
+        assert!(reg
+            .add_vault(
+                "work",
+                ConnectionConfig::Local {
+                    vault: "/other".into()
+                }
+            )
+            .is_err());
+        assert_eq!(reg.vaults.len(), 1);
+    }
+
+    #[test]
+    fn set_default_requires_existing_entry() {
+        let mut reg = Registry::default();
+        reg.add_vault("a", ConnectionConfig::Local { vault: "/a".into() })
+            .unwrap();
+        assert!(reg.set_default("ghost").is_err());
+        reg.set_default("a").unwrap();
+        assert_eq!(reg.default.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn remove_vault_reassigns_default_and_errors_when_absent() {
+        let mut reg = Registry {
+            vaults: vec![
+                VaultEntry {
+                    name: "a".into(),
+                    connection: ConnectionConfig::Local { vault: "/a".into() },
+                },
+                VaultEntry {
+                    name: "b".into(),
+                    connection: ConnectionConfig::Local { vault: "/b".into() },
+                },
+            ],
+            default: Some("a".into()),
+        };
+        assert!(reg.remove_vault("ghost").is_err());
+        // Removing the current default reassigns it to the first remaining entry.
+        reg.remove_vault("a").unwrap();
+        assert_eq!(reg.vaults.len(), 1);
+        assert_eq!(reg.default.as_deref(), Some("b"));
+        // Removing the last entry clears the default (never dangles).
+        reg.remove_vault("b").unwrap();
+        assert!(reg.vaults.is_empty());
+        assert_eq!(reg.default, None);
+    }
+
+    #[test]
+    fn rename_vault_moves_default_and_rejects_collision() {
+        let mut reg = Registry {
+            vaults: vec![
+                VaultEntry {
+                    name: "a".into(),
+                    connection: ConnectionConfig::Local { vault: "/a".into() },
+                },
+                VaultEntry {
+                    name: "b".into(),
+                    connection: ConnectionConfig::Local { vault: "/b".into() },
+                },
+            ],
+            default: Some("a".into()),
+        };
+        assert!(reg.rename_vault("ghost", "x").is_err()); // absent
+        assert!(reg.rename_vault("a", "  ").is_err()); // blank
+        assert!(reg.rename_vault("a", "b").is_err()); // collides with a different entry
+        reg.rename_vault("a", "a").unwrap(); // renaming to itself is a no-op
+        reg.rename_vault("a", "alpha").unwrap();
+        assert_eq!(reg.vaults[0].name, "alpha");
+        assert_eq!(reg.default.as_deref(), Some("alpha")); // default followed the rename
+    }
+
+    #[test]
+    fn update_connection_replaces_target_only() {
+        let mut reg = Registry {
+            vaults: vec![VaultEntry {
+                name: "a".into(),
+                connection: ConnectionConfig::Local { vault: "/a".into() },
+            }],
+            default: Some("a".into()),
+        };
+        assert!(reg
+            .update_connection("ghost", ConnectionConfig::Local { vault: "/x".into() })
+            .is_err());
+        reg.update_connection(
+            "a",
+            ConnectionConfig::Local {
+                vault: "/moved".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(reg.vaults[0].name, "a"); // name + default untouched
+        assert_eq!(reg.default.as_deref(), Some("a"));
+        assert_eq!(
+            reg.vaults[0].connection,
+            ConnectionConfig::Local {
+                vault: "/moved".into()
+            }
         );
     }
 

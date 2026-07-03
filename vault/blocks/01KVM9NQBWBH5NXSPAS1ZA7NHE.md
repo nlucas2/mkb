@@ -1,5 +1,6 @@
 ---
 title: "README: Install — container"
+updated: 2026-07-02T21:39:27Z
 ---
 
 ## Container / Kubernetes
@@ -14,7 +15,7 @@ docker run -d --name mkb -p 127.0.0.1:7820:7820 \
   -v ~/mkb-vault:/vault \
   <registry>/mkb:latest --vault /vault --listen 0.0.0.0:7820 --token "$MKB_TOKEN"
 
-# from a client — point the desktop app (Settings → Remote daemon) or the CLI/MCP at it
+# from a client — point the desktop app (Settings → Vaults → Connect to a remote daemon) or the CLI/MCP at it
 mkb search --remote 127.0.0.1:7820 --token "$MKB_TOKEN" "…"
 ```
 

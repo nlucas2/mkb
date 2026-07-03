@@ -81,7 +81,7 @@ block once updates every guide (live transclusion). The human-facing docs in thi
 **generated** from these blocks (see *Docs are generated* below).
 
 ```sh
-# point the daemon at it (or set the desktop app's Settings → Local vault to this folder)
+# point the daemon at it (or add it in the desktop app's Settings → Vaults)
 cargo run -p mkbd -- --vault vault
 ```
 

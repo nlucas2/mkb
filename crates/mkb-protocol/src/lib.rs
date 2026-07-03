@@ -14,8 +14,9 @@ pub mod env;
 pub mod paths;
 pub mod transport;
 pub use connect::{
-    connect, connect_resolved, ensure_daemon, resolve_client, resolve_target, ClientInputs,
-    ConnectionConfig, EnvSnapshot, Registry, ResolvedTarget, VaultEntry,
+    connect, connect_resolved, discover_running, ensure_daemon, resolve_client, resolve_target,
+    ClientInputs, ConnectionConfig, DiscoveredVault, EnvSnapshot, Registry, ResolvedTarget,
+    VaultEntry,
 };
 pub use paths::DaemonPaths;
 
@@ -38,6 +39,10 @@ fn one() -> usize {
 pub enum Request {
     /// Liveness check.
     Ping,
+    /// Daemon identity: the canonical vault path it serves plus a block count. Used to *discover*
+    /// which vault a running daemon is for (the on-disk index dir is keyed by an opaque hash, so
+    /// the socket alone doesn't reveal the vault).
+    Status,
     /// Index statistics.
     Stats,
     /// List all block ids.
@@ -394,6 +399,7 @@ impl Request {
             | Request::UnlinkBlocks { .. }
             | Request::SetLock { .. } => true,
             Request::Ping
+            | Request::Status
             | Request::Stats
             | Request::ListBlocks
             | Request::ListRoots
@@ -432,6 +438,8 @@ impl Request {
 pub enum Response {
     /// Reply to [`Request::Ping`].
     Pong,
+    /// Reply to [`Request::Status`]: which vault this daemon serves.
+    Status(DaemonStatus),
     /// Index statistics.
     Stats(IndexStats),
     /// A list of block ids.
@@ -509,6 +517,17 @@ pub enum Response {
     },
 }
 
+/// Reply to [`Request::Status`]: the vault a running daemon serves, so a client can map a live
+/// socket back to its vault (see [`Request::Status`]). The `vault` path is canonicalized by the
+/// daemon, so it is absolute and comparable across clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonStatus {
+    /// Absolute (canonicalized) vault directory this daemon serves.
+    pub vault: PathBuf,
+    /// Number of indexed blocks (a cheap "is this the vault I mean?" signal).
+    pub blocks: usize,
+}
+
 impl Response {
     /// Convenience: extract an error message if this is an [`Response::Error`].
     pub fn error_message(&self) -> Option<&str> {
@@ -539,6 +558,15 @@ fn handle<I: Index>(
     let to_str = |e: mkb_core::IndexError| e.to_string();
     Ok(match request {
         Request::Ping => Response::Pong,
+        Request::Status => {
+            // Canonicalize the vault so discovery gets an absolute, comparable path (the engine may
+            // hold a relative root, e.g. a daemon started with `--vault vault`); fall back to the
+            // raw root if canonicalization fails (e.g. the dir was removed underneath the daemon).
+            let root = service.engine().root();
+            let vault = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            let blocks = service.stats(ctx).map_err(to_str)?.blocks;
+            Response::Status(DaemonStatus { vault, blocks })
+        }
         Request::Stats => Response::Stats(service.stats(ctx).map_err(to_str)?),
         Request::ListBlocks => Response::Ids(service.list_blocks(ctx).map_err(to_str)?),
         Request::ListRoots => Response::Ids(service.list_roots(ctx).map_err(to_str)?),
@@ -965,6 +993,15 @@ impl Client {
     pub fn stats(&self) -> io::Result<IndexStats> {
         match self.call(&Request::Stats)? {
             Response::Stats(s) => Ok(s),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: which vault this daemon serves (canonical path + block count). Used by vault
+    /// discovery to map a running daemon's socket back to its vault.
+    pub fn status(&self) -> io::Result<DaemonStatus> {
+        match self.call(&Request::Status)? {
+            Response::Status(s) => Ok(s),
             other => Err(unexpected(other)),
         }
     }
@@ -1655,6 +1692,28 @@ mod tests {
         match dispatch(&mut svc, &ctx, Request::Stats) {
             Response::Stats(s) => assert_eq!(s.blocks, 1),
             other => panic!("expected stats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_status_reports_canonical_vault_and_count() {
+        let (dir, mut svc) = service();
+        let ctx = RequestContext::local();
+        dispatch(
+            &mut svc,
+            &ctx,
+            Request::CreateBlock {
+                title: None,
+                body: "hello".into(),
+            },
+        );
+        match dispatch(&mut svc, &ctx, Request::Status) {
+            Response::Status(s) => {
+                // The daemon canonicalizes its vault root, so discovery gets an absolute path.
+                assert_eq!(s.vault, std::fs::canonicalize(dir.path()).unwrap());
+                assert_eq!(s.blocks, 1);
+            }
+            other => panic!("expected status, got {other:?}"),
         }
     }
 

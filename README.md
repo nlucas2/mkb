@@ -197,9 +197,10 @@ connects either way: a **local** vault (auto-starting its daemon) or a **remote*
   **hover previews** on rendered wikilink chips, **New / Add / Carve / Delete** block actions, a
   force-directed **knowledge graph** (nodes sized by link degree, computed in `mkb-core`
   `link_graph`), **linked references** per block, a **lock toggle** that pins a block as
-  **human-only** (🔒 — AI clients can read it but not modify it), and **Settings** (choose a Local
-  vault or a Remote daemon `host:port` + token, no env vars; restart the daemon). Point Settings → Local vault at your vault and
-  go; see [`app/mkb-tauri/README.md`](./app/mkb-tauri/README.md).
+  **human-only** (🔒 — AI clients can read it but not modify it), and **Settings** — a **vault
+  switcher** (your named vaults, switch live, add or create one, or add a vault it detects already
+  running), a **Remote daemon** option (`host:port` + token), and a daemon restart, no env vars. Add
+  a vault there and go; see [`app/mkb-tauri/README.md`](./app/mkb-tauri/README.md).
 
 Optional, advanced setup — choosing a different embedder and managing multiple vaults — lives in the **[configuration guide](docs/CONFIGURATION.md)**.
 

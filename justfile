@@ -182,6 +182,7 @@ docs:
 # it isn't on PATH (works from a fresh source checkout with no install). `just` runs this from the
 # justfile's directory, so `--vault vault` resolves to this repo's vault from any subdir/worktree.
 [unix]
+[doc('Run the mkb MCP server for THIS repo vault (installed mkb-mcp, else cargo run)')]
 mcp:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -192,6 +193,7 @@ mcp:
     fi
 
 [windows]
+[doc('Run the mkb MCP server for THIS repo vault (installed mkb-mcp, else cargo run)')]
 mcp:
     #!powershell
     $ErrorActionPreference = 'Stop'
@@ -204,6 +206,7 @@ mcp:
 # One-time per clone: point git at the tracked hooks in `.githooks/`, installing the docs-as-data
 # pre-commit hook (regenerates & re-stages generated docs when you change vault blocks, so they
 # never drift in a commit). `git config` is cross-platform, so one recipe covers every OS.
+[doc('Install the docs-as-data pre-commit hook (once per clone; sets core.hooksPath)')]
 hooks:
     git config core.hooksPath .githooks
     @echo "Installed .githooks (pre-commit keeps docs-as-data in sync). Undo: git config --unset core.hooksPath"

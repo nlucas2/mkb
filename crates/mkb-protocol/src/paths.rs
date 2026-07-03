@@ -104,6 +104,14 @@ fn resolved_index_base() -> Option<PathBuf> {
     mkb_core::dirs::local_data_dir().map(|d| d.join("mkb"))
 }
 
+/// The base directory under which per-vault index/socket dirs live (see [`resolved_index_base`]).
+/// Public so vault discovery can enumerate running daemons' sockets. `None` when no OS local-data
+/// dir is resolvable and `$MKB_INDEX_DIR` is unset (the legacy in-vault fallback, which has no
+/// single base to scan).
+pub fn index_base() -> Option<PathBuf> {
+    resolved_index_base()
+}
+
 /// A short, stable id for a vault: a 64-bit FNV-1a hash of its absolute (best-effort canonical)
 /// path, hex-encoded. Stable across runs on one machine; deliberately *different* per machine for a
 /// synced vault, since each machine keeps its own local index.

@@ -103,6 +103,8 @@
       nav.iconly .navbtns button { justify-content:center; padding:.4rem .25rem; }
       nav.iconly .navbtns button .label { display:none; }
       nav.iconly .navhd span, nav.iconly .status #statustext { display:none; }
+      nav.iconly .vaultchip #statustext, nav.iconly .vaultchip .vcchev { display:none; }
+      nav.iconly .footerbar { flex-direction:column; gap:.1rem; }
       .navhd { display:flex; align-items:center; justify-content:space-between; margin:.2rem 0 .4rem; font-size:.75em; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); gap:.3rem; }
       /* Full-width create action anchored directly under the block list (always visible). */
       .addrow { width:100%; margin-top:.4rem; display:flex; align-items:center; justify-content:center; gap:.4rem; color:var(--accent); border-color:var(--border); border-style:dashed; }
@@ -170,6 +172,44 @@
       .status:hover { background:var(--hover); color:var(--fg); }
       .status .gear { margin-left:auto; flex:0 0 auto; opacity:.8; font-size:1.05em; }
       .status:hover .gear { opacity:1; }
+      /* Sidebar footer: the vault chip (name + switcher) and a gear for the rest of Settings. */
+      /* Sidebar footer: a gear (corner, muscle-memory) + the vault chip (name + switcher). */
+      .footerbar { margin-top:.6rem; border-top:1px solid var(--border); display:flex; align-items:center; gap:.15rem; padding:.35rem .1rem 0; }
+      .gearbtn { flex:0 0 auto; background:none; border:0; color:var(--muted); cursor:pointer; font-size:.95em; padding:.35rem .4rem; border-radius:6px; line-height:1; }
+      .gearbtn:hover { background:var(--hover); color:var(--fg); }
+      .vaultchip { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:.4rem; background:none; border:0; color:var(--muted); cursor:pointer; padding:.35rem .4rem; border-radius:6px; font-size:.8em; font-family:inherit; }
+      .vaultchip:hover { background:var(--hover); color:var(--fg); }
+      .vaultchip #statustext { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; }
+      .vaultchip .vcchev { flex:0 0 auto; opacity:.6; font-size:.9em; }
+      /* Vault manager — one compact widget shared by the sidebar popover and the Settings page. */
+      .vaultpop { position:fixed; z-index:66; background:var(--panel); border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 32px rgba(0,0,0,.45); padding:.2rem; max-width:min(92vw,340px); max-height:70vh; overflow:auto; }
+      .vaultmgr { border:1px solid var(--border); border-radius:8px; padding:.2rem; max-width:32rem; }
+      .vrow { display:flex; align-items:center; gap:.4rem; padding:.25rem .35rem; border-radius:6px; }
+      .vrow[data-switch] { cursor:pointer; } .vrow[data-switch]:hover { background:var(--hover); }
+      .vrow.active { background:var(--field); }
+      .vicon { flex:0 0 auto; font-size:.9em; opacity:.85; }
+      .vmeta { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; line-height:1.2; }
+      .vname { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .vpath { font-size:.75em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .vactive { flex:0 0 auto; color:var(--accent); font-size:.85em; }
+      .vx { flex:0 0 auto; background:none; border:0; color:var(--muted); cursor:pointer; font-size:.8em; padding:.1rem .3rem; border-radius:4px; visibility:hidden; }
+      .vrow:hover .vx { visibility:visible; } .vx:hover { color:var(--bad); background:var(--hover); }
+      .vmini { flex:0 0 auto; font-size:.75em; padding:.1rem .45rem; }
+      .vact { display:block; width:100%; text-align:left; background:none; border:0; color:var(--fg); padding:.3rem .35rem; border-radius:6px; cursor:pointer; font-size:.82em; font-family:inherit; }
+      .vact:hover { background:var(--hover); }
+      .vsep { height:1px; margin:.25rem .1rem; background:var(--border); }
+      .vhd { padding:.25rem .35rem; font-size:.68em; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+      .vppad { padding:.3rem .35rem; font-size:.8em; }
+      /* Settings manager extras (on top of the shared .vrow styles). */
+      .vaultmgr .vrow { padding:.35rem .4rem; }
+      .vbadge { font-size:.62em; text-transform:uppercase; letter-spacing:.03em; padding:.05rem .3rem; border-radius:4px; border:1px solid var(--border); color:var(--muted); vertical-align:.1em; margin-left:.3rem; }
+      .vbadge.on { border-color:var(--accent); color:var(--accent); }
+      .vx.dots { visibility:visible; font-size:1em; }
+      .vmgr-actions { display:flex; gap:.5rem; margin-top:.5rem; flex-wrap:wrap; }
+      .vmgr-actions button { font-size:.82em; }
+      .fmtitle { margin:0 0 .6rem; font-size:1rem; }
+      .fmlabel { display:block; margin:.5rem 0 .15rem; font-weight:600; font-size:.82em; }
+      .modal input[type=text] { width:100%; padding:.4rem .5rem; background:var(--field); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
       .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); flex:0 0 auto; }
       .dot.ok { background:var(--ok); }
       main { flex:1; overflow:auto; position:relative; }
@@ -448,8 +488,11 @@
         </div>
         <ul id="blocks"></ul>
         <button id="newblock" class="addrow" title="New block (⌘↵ to save · Esc to discard)"><span class="ico">+</span> New block</button>
-        <div class="status" id="status" title="Connection &amp; settings">
-          <span class="dot" id="dot"></span><span id="statustext">…</span><span class="gear">⚙️</span>
+        <div class="footerbar">
+          <button class="gearbtn" id="gearbtn" title="Settings">⚙️</button>
+          <button class="vaultchip" id="vaultchip" title="Switch or manage vaults">
+            <span class="dot" id="dot"></span><span id="statustext">…</span><span class="vcchev">▾</span>
+          </button>
         </div>
       </nav>
       <div class="seam" id="seam" title="Drag to resize · click to collapse"><span class="tab" id="seamtab">‹</span></div>
@@ -542,6 +585,297 @@
       document.addEventListener("scroll", closeContextMenu, true);
       window.addEventListener("resize", closeContextMenu);
       document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeContextMenu(); });
+
+      // ---------- vault switcher (chip → popover) ----------
+      // The bottom-of-sidebar vault chip opens this lightweight popover: the primary path for
+      // switching vaults (1 click), adding/creating one, connecting a remote daemon, and adopting a
+      // vault that's already running. All of it talks to the same registry-backed Tauri commands the
+      // Settings "Manage vaults" button reuses (one implementation, no divergence).
+      let vaultPopEl = null;
+      function vaultPopKey(e) {
+        // Let an open modal own Escape (so dismissing a form doesn't also collapse the popover).
+        if (e.key === "Escape" && !document.querySelector(".modal-back")) closeVaultPopover();
+      }
+      function vaultPopOutside(e) {
+        if (document.querySelector(".modal-back")) return; // a modal is capturing interaction
+        if (vaultPopEl && !vaultPopEl.contains(e.target) && !e.target.closest("#vaultchip")) closeVaultPopover();
+      }
+      function closeVaultPopover() {
+        if (!vaultPopEl) return;
+        vaultPopEl.remove(); vaultPopEl = null;
+        document.removeEventListener("keydown", vaultPopKey, true);
+        document.removeEventListener("click", vaultPopOutside, true);
+      }
+      async function toggleVaultPopover() {
+        if (vaultPopEl) { closeVaultPopover(); return; }
+        const chip = document.getElementById("vaultchip");
+        const pop = document.createElement("div");
+        pop.className = "vaultpop"; pop.id = "vaultpop";
+        pop.innerHTML = `<div class="vpbody"><span class="muted vppad">Loading…</span></div>`;
+        document.body.appendChild(pop);
+        vaultPopEl = pop;
+        // Anchor to the sidebar, not the chip: left-align to the nav's left edge and match its width,
+        // so the popover stays within the left column instead of spilling into the reading pane.
+        const nav = document.getElementById("nav");
+        const nr = (nav || chip).getBoundingClientRect();
+        const cr = chip.getBoundingClientRect();
+        const pad = 8;
+        pop.style.left = Math.round(nr.left + pad) + "px";
+        pop.style.width = Math.max(nr.width - pad * 2, 200) + "px";
+        pop.style.maxWidth = "none";
+        pop.style.bottom = Math.round(window.innerHeight - cr.top + 6) + "px";
+        document.addEventListener("keydown", vaultPopKey, true);
+        setTimeout(() => document.addEventListener("click", vaultPopOutside, true), 0);
+        await renderVaultPopover();
+      }
+      async function renderVaultPopover() {
+        if (!vaultPopEl) return;
+        const body = vaultPopEl.querySelector(".vpbody");
+        let vaults = [], found = [];
+        try { vaults = await invoke("list_vaults"); }
+        catch (e) { body.innerHTML = `<span class="muted vppad">${esc(String(e))}</span>`; return; }
+        try { found = await invoke("discover_vaults"); } catch { found = []; }
+        let html = vaults.map((v) => `
+          <div class="vrow${v.active?" active":""}"${v.active?"":` data-switch="${esc(v.name)}"`}>
+            <span class="vicon">${v.kind === "remote" ? "🌐" : "📁"}</span>
+            <div class="vmeta">
+              <span class="vname">${esc(v.name)}</span>
+              <span class="vpath muted" title="${esc(v.target)}">${esc(v.target)}</span>
+            </div>
+            ${v.active
+              ? `<span class="vactive" title="Active">✓</span>`
+              : `<button class="vx" data-remove="${esc(v.name)}" title="Forget this vault (files kept)">✕</button>`}
+          </div>`).join("");
+        if (!vaults.length) html += `<div class="muted vppad">No vaults yet — add one below.</div>`;
+        if (found.length) {
+          html += `<div class="vsep"></div><div class="vhd">Running now, not in your list</div>`;
+          html += found.map((d) => `
+            <div class="vrow">
+              <span class="vicon">⚡</span>
+              <div class="vmeta">
+                <span class="vname">${esc(d.name)}</span>
+                <span class="vpath muted" title="${esc(d.path)}">${esc(d.path)} · ${d.blocks} block${d.blocks === 1 ? "" : "s"}</span>
+              </div>
+              <button class="vmini" data-add="${esc(JSON.stringify({ name: d.name, path: d.path }))}">Add</button>
+            </div>`).join("");
+        }
+        html += `<div class="vsep"></div>
+          <button class="vact" id="vpaddlocal">+ Add or create a local vault…</button>
+          <button class="vact" id="vpaddremote">↗ Connect to a remote daemon…</button>`;
+        body.innerHTML = html;
+        body.querySelectorAll("[data-switch]").forEach((row) => (row.onclick = (e) => {
+          if (e.target.closest("[data-remove]")) return;
+          switchToVault(row.dataset.switch);
+        }));
+        body.querySelectorAll("[data-remove]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); forgetVault(b.dataset.remove); }));
+        body.querySelectorAll("[data-add]").forEach((b) => (b.onclick = async () => {
+          const { name, path } = JSON.parse(b.dataset.add);
+          try { await invoke("add_vault", { name, path, activate: false }); toast(`Added ${name}.`); await renderVaultPopover(); }
+          catch (e) { toast(String(e), "error"); }
+        }));
+        body.querySelector("#vpaddlocal").onclick = () => addLocalVaultFlow();
+        body.querySelector("#vpaddremote").onclick = () => connectRemoteFlow();
+      }
+      async function switchToVault(name) {
+        try {
+          await invoke("switch_vault", { name });
+          closeVaultPopover(); toast(`Switched to ${name}.`);
+          invalidate(); active = null; await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
+        } catch (e) { toast(String(e), "error"); await refreshStatus(); }
+      }
+      async function forgetVault(name) {
+        const ok = await confirmModal(`Forget vault “${name}”? This only removes it from the list — the Markdown files on disk are kept.`, { confirmLabel: "Forget", danger: true });
+        if (!ok) return;
+        try {
+          await invoke("remove_vault", { name }); toast(`Removed ${name}.`);
+          invalidate(); active = null; await refreshStatus(); await loadBlocks(); await renderVaultPopover(); refreshVaultManagerIfOpen();
+        } catch (e) { toast(String(e), "error"); }
+      }
+      async function addLocalVaultFlow() {
+        closeVaultPopover();
+        const res = await formModal("Add or create a vault", [
+          { id: "path", label: "Folder", placeholder: "~/mkb-vault (or a new path to create)", browse: true },
+          { id: "name", label: "Name (optional)", placeholder: "defaults to the folder name" },
+        ], { okLabel: "Add & switch" });
+        if (!res) return;
+        const name = (res.name || "").trim(), path = (res.path || "").trim();
+        if (!path) { toast("A folder is required.", "error"); return; }
+        try {
+          await invoke("add_vault", { name, path, activate: true });
+          toast(`Switched to ${name || path.split("/").filter(Boolean).pop()}.`); invalidate(); active = null;
+          await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
+        } catch (e) { toast(String(e), "error"); await refreshStatus(); }
+      }
+      async function connectRemoteFlow() {
+        closeVaultPopover();
+        const res = await formModal("Connect to a remote daemon", [
+          { id: "name", label: "Name", placeholder: "team" },
+          { id: "host", label: "Host", placeholder: "host:7820" },
+          { id: "token", label: "Token", placeholder: "shared token" },
+        ], { okLabel: "Connect" });
+        if (!res) return;
+        const name = (res.name || "").trim(), host = (res.host || "").trim(), token = res.token || "";
+        if (!name || !host) { toast("Name and host are required.", "error"); return; }
+        try {
+          await invoke("add_remote_vault", { name, host, token, activate: true });
+          toast(`Connected to ${name}.`); invalidate(); active = null;
+          await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
+        } catch (e) { toast(String(e), "error"); await refreshStatus(); }
+      }
+
+      // ----- Settings vault manager (the fuller surface) -----
+      // Re-render the Settings manager list if it's on screen (after any mutation from either
+      // surface), so the popover and the manager never show stale data.
+      function refreshVaultManagerIfOpen() {
+        const el = document.getElementById("vaultmgr");
+        if (el) renderVaultManager(el);
+      }
+      // Render the full manager into `container`: a compact row per vault (active/default badges,
+      // full target) with a ⋯ menu exposing the manager-only actions, plus discovered-running rows.
+      async function renderVaultManager(container) {
+        if (!container) return;
+        let vaults = [], found = [];
+        try { vaults = await invoke("list_vaults"); }
+        catch (e) { container.innerHTML = `<span class="muted vppad">${esc(String(e))}</span>`; return; }
+        try { found = await invoke("discover_vaults"); } catch { found = []; }
+        let html = vaults.map((v) => `
+          <div class="vrow${v.active ? " active" : ""}"${v.active ? "" : ` data-switch="${esc(v.name)}"`}>
+            <span class="vicon">${v.kind === "remote" ? "🌐" : "📁"}</span>
+            <div class="vmeta">
+              <span class="vname">${esc(v.name)}${v.active ? ` <span class="vbadge on">active</span>` : ""}${v.default ? ` <span class="vbadge">default</span>` : ""}</span>
+              <span class="vpath muted" title="${esc(v.target)}">${esc(v.target)}</span>
+            </div>
+            <button class="vx dots" data-menu="${esc(JSON.stringify(v))}" title="More…">⋯</button>
+          </div>`).join("");
+        if (!vaults.length) html += `<div class="muted vppad">No vaults yet — add one below.</div>`;
+        if (found.length) {
+          html += `<div class="vsep"></div><div class="vhd">Running now, not in your list</div>`;
+          html += found.map((d) => `
+            <div class="vrow">
+              <span class="vicon">⚡</span>
+              <div class="vmeta">
+                <span class="vname">${esc(d.name)}</span>
+                <span class="vpath muted" title="${esc(d.path)}">${esc(d.path)} · ${d.blocks} block${d.blocks === 1 ? "" : "s"}</span>
+              </div>
+              <button class="vmini" data-add="${esc(JSON.stringify({ name: d.name, path: d.path }))}">Add</button>
+            </div>`).join("");
+        }
+        container.innerHTML = html;
+        container.querySelectorAll("[data-switch]").forEach((row) => (row.onclick = (e) => {
+          if (e.target.closest("[data-menu]")) return;
+          switchToVault(row.dataset.switch);
+        }));
+        container.querySelectorAll("[data-menu]").forEach((b) => (b.onclick = (e) => {
+          e.stopPropagation();
+          const v = JSON.parse(b.dataset.menu);
+          const r = b.getBoundingClientRect();
+          openVaultRowMenu(v, r.right, r.bottom);
+        }));
+        container.querySelectorAll("[data-add]").forEach((b) => (b.onclick = async () => {
+          const { name, path } = JSON.parse(b.dataset.add);
+          try { await invoke("add_vault", { name, path, activate: false }); toast(`Added ${name}.`); refreshVaultManagerIfOpen(); }
+          catch (e) { toast(String(e), "error"); }
+        }));
+      }
+      // The per-row ⋯ menu: the manager-only actions the quick popover doesn't offer.
+      function openVaultRowMenu(v, x, y) {
+        const items = [];
+        if (!v.active) items.push({ label: `Switch to “${v.name}”`, run: () => switchToVault(v.name) });
+        items.push({ label: "Rename…", run: () => renameVaultFlow(v.name) });
+        if (!v.default) items.push({ label: "Set as launch default", run: () => setDefaultVaultAction(v.name) });
+        items.push({ label: v.kind === "remote" ? "Edit connection…" : "Edit location…", run: () => editVaultFlow(v) });
+        if (v.kind !== "remote") items.push({ label: "Reveal in Finder", run: () => revealVaultAction(v.name) });
+        items.push({ sep: true });
+        items.push({ label: "Forget vault", danger: true, run: () => forgetVault(v.name) });
+        showContextMenu(x, y, items);
+      }
+      async function renameVaultFlow(name) {
+        const res = await formModal("Rename vault", [
+          { id: "name", label: "Name", placeholder: "my-notes", value: name },
+        ], { okLabel: "Rename" });
+        if (!res) return;
+        const nn = (res.name || "").trim();
+        if (!nn) { toast("Name is required.", "error"); return; }
+        try { await invoke("rename_vault", { name, newName: nn }); toast("Renamed."); await refreshStatus(); refreshVaultManagerIfOpen(); }
+        catch (e) { toast(String(e), "error"); }
+      }
+      async function setDefaultVaultAction(name) {
+        try { await invoke("set_default_vault", { name }); toast(`“${name}” opens on launch.`); refreshVaultManagerIfOpen(); }
+        catch (e) { toast(String(e), "error"); }
+      }
+      async function editVaultFlow(v) {
+        if (v.kind === "remote") {
+          const res = await formModal(`Edit “${v.name}”`, [
+            { id: "host", label: "Host", placeholder: "host:7820", value: v.target },
+            { id: "token", label: "Token", placeholder: "leave blank to keep the current token" },
+          ], { okLabel: "Save" });
+          if (!res) return;
+          const host = (res.host || "").trim();
+          if (!host) { toast("Host is required.", "error"); return; }
+          try {
+            await invoke("edit_remote_vault", { name: v.name, host, token: res.token || "" });
+            toast("Saved."); await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
+          } catch (e) { toast(String(e), "error"); await refreshStatus(); }
+        } else {
+          const res = await formModal(`Edit “${v.name}”`, [
+            { id: "path", label: "Folder", placeholder: "~/mkb-vault", value: v.target, browse: true },
+          ], { okLabel: "Save" });
+          if (!res) return;
+          const path = (res.path || "").trim();
+          if (!path) { toast("Folder is required.", "error"); return; }
+          try {
+            await invoke("edit_local_vault", { name: v.name, path });
+            toast("Saved."); await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
+          } catch (e) { toast(String(e), "error"); await refreshStatus(); }
+        }
+      }
+      async function revealVaultAction(name) {
+        try { await invoke("reveal_vault", { name }); }
+        catch (e) { toast(String(e), "error"); }
+      }
+      // A promise-based form modal. `fields` = [{id,label,placeholder,value?,browse?}]. Resolves an
+      // object of field values on OK, or null on cancel/backdrop/Esc. A `browse` field gets a folder
+      // picker that also seeds an empty `name` field from the chosen folder's basename.
+      function formModal(title, fields, { okLabel = "OK" } = {}) {
+        return new Promise((resolve) => {
+          const back = document.createElement("div");
+          back.className = "modal-back";
+          const rows = fields.map((f) => `
+            <label class="fmlabel">${esc(f.label)}</label>
+            <div class="row">
+              <input type="text" data-f="${esc(f.id)}" placeholder="${esc(f.placeholder || "")}" value="${esc(f.value || "")}"/>
+              ${f.browse ? `<button data-browse="${esc(f.id)}">Browse…</button>` : ""}
+            </div>`).join("");
+          back.innerHTML = `<div class="modal"><h3 class="fmtitle">${esc(title)}</h3>${rows}
+            <div class="row" style="justify-content:flex-end;margin-top:1rem">
+              <button data-a="cancel">Cancel</button>
+              <button class="primary" data-a="ok">${esc(okLabel)}</button></div></div>`;
+          const values = () => { const o = {}; fields.forEach((f) => (o[f.id] = back.querySelector(`[data-f="${f.id}"]`).value)); return o; };
+          const done = (v) => { back.remove(); document.removeEventListener("keydown", onKey, true); resolve(v); };
+          const onKey = (e) => {
+            if (e.key === "Escape") { e.stopPropagation(); done(null); }
+            else if (e.key === "Enter") { e.stopPropagation(); done(values()); }
+          };
+          back.addEventListener("click", async (e) => {
+            if (e.target === back) return done(null);
+            const a = e.target.dataset.a;
+            if (a === "ok") return done(values());
+            if (a === "cancel") return done(null);
+            const bf = e.target.dataset.browse;
+            if (bf) {
+              const dir = await invoke("pick_vault");
+              if (dir) {
+                back.querySelector(`[data-f="${bf}"]`).value = dir;
+                const nameEl = back.querySelector('[data-f="name"]');
+                if (nameEl && !nameEl.value.trim()) nameEl.value = dir.split("/").filter(Boolean).pop() || "";
+              }
+            }
+          });
+          document.addEventListener("keydown", onKey, true);
+          document.body.appendChild(back);
+          back.querySelector("input")?.focus();
+        });
+      }
 
       // Copy text to the clipboard with a small confirmation toast.
       async function copyText(text, label) {
@@ -2459,25 +2793,15 @@
       // ---------- settings ----------
       async function showSettings() {
         active = null; currentView = "settings"; renderNav();
-        const cfg = await invoke("get_settings");
-        const isLocal = cfg.mode === "local";
         mainEl.innerHTML = `<div class="topbar"><h1>Settings</h1></div>
           <div class="pad form">
-            <div class="modes">
-              <label class="row"><input type="radio" name="mode" value="local" ${isLocal?"checked":""}/> Local vault</label>
-              <label class="row"><input type="radio" name="mode" value="remote" ${!isLocal?"checked":""}/> Remote daemon</label>
+            <label>Vaults</label>
+            <p class="hint">Manage the vaults this app knows about. Switch with one click; use the <strong>⋯</strong> menu on a row to rename, set the launch default, edit its location, reveal it in Finder, or forget it (forgetting only removes it here — the Markdown files on disk are kept).</p>
+            <div class="vaultmgr" id="vaultmgr"><span class="muted vppad">Loading…</span></div>
+            <div class="vmgr-actions">
+              <button id="vmAddLocal">+ Add or create a local vault</button>
+              <button id="vmAddRemote">↗ Connect to a remote daemon</button>
             </div>
-            <div id="local" style="${isLocal?"":"display:none"}">
-              <label>Vault folder</label>
-              <div class="row"><input type="text" id="vault" value="${esc(isLocal?(cfg.vault||""):"")}" placeholder="~/mkb-vault"/>
-              <button id="browse">Browse…</button></div>
-              <p class="hint">The app starts a background <code>mkbd</code> for this folder and reuses it — the daemon keeps running after you quit. Blocks are stored as <code>blocks/&lt;id&gt;.md</code>.</p>
-            </div>
-            <div id="remote" style="${isLocal?"display:none":""}">
-              <label>Host</label><input type="text" id="host" value="${esc(!isLocal?(cfg.host||""):"")}" placeholder="host:7820"/>
-              <label>Token</label><input type="text" id="token" value="${esc(!isLocal?(cfg.token||""):"")}" placeholder="shared token"/>
-            </div>
-            <div class="savebar"><button class="primary" id="savecfg">Save & connect</button><span class="muted" id="cfgmsg"></span></div>
             <hr style="border:none;border-top:1px solid var(--border);margin:1.4rem 0"/>
             <label>Appearance</label>
             <p class="hint">Choose the colour theme. <strong>Auto</strong> follows your operating system's light/dark setting.</p>
@@ -2493,26 +2817,11 @@
             <p class="hint">Images under <code>assets/</code> that no block references. Deleting one removes the file from the vault; this is never automatic, since an image can be shared by several blocks.</p>
             <div id="orphans"><span class="muted">Scanning…</span></div>
           </div>`;
-        mainEl.querySelectorAll("input[name=mode]").forEach((r) => (r.onchange = () => {
-          const local = mainEl.querySelector("input[name=mode]:checked").value === "local";
-          mainEl.querySelector("#local").style.display = local ? "" : "none";
-          mainEl.querySelector("#remote").style.display = local ? "none" : "";
-        }));
-        mainEl.querySelector("#browse").onclick = async () => {
-          const dir = await invoke("pick_vault"); if (dir) mainEl.querySelector("#vault").value = dir;
-        };
-        mainEl.querySelector("#savecfg").onclick = async () => {
-          const local = mainEl.querySelector("input[name=mode]:checked").value === "local";
-          const config = local
-            ? { mode: "local", vault: mainEl.querySelector("#vault").value.trim() }
-            : { mode: "remote", host: mainEl.querySelector("#host").value.trim(), token: mainEl.querySelector("#token").value };
-          const msg = mainEl.querySelector("#cfgmsg"); msg.textContent = "Connecting…";
-          try {
-            await invoke("save_settings", { config });
-            msg.textContent = "Connected."; invalidate(); active = null;
-            await refreshStatus(); await loadBlocks();
-          } catch (e) { msg.textContent = String(e); await refreshStatus(); }
-        };
+        // The Settings vault manager — the fuller surface (rename / set-default / edit / reveal /
+        // forget + inline add) that the quick sidebar popover deliberately omits.
+        renderVaultManager(mainEl.querySelector("#vaultmgr"));
+        mainEl.querySelector("#vmAddLocal").onclick = () => addLocalVaultFlow();
+        mainEl.querySelector("#vmAddRemote").onclick = () => connectRemoteFlow();
         mainEl.querySelector("#restartd").onclick = async () => {
           const ok = await confirmModal("Restart the daemon? In-flight work is unaffected; the index reloads from disk.", { confirmLabel: "Restart" });
           if (!ok) return;
@@ -2592,7 +2901,8 @@
       document.getElementById("newblock").onclick = newBlock;
       document.getElementById("graphbtn").onclick = showGraph;
       applyTheme(false);
-      document.getElementById("status").onclick = showSettings;
+      document.getElementById("vaultchip").onclick = (e) => { e.stopPropagation(); toggleVaultPopover(); };
+      document.getElementById("gearbtn").onclick = (e) => { e.stopPropagation(); showSettings(); };
       // Sidebar organization: the "Group by" select reorganizes the block list — Hierarchy (roots →
       // embeds/links, the default), Flat (every block), Tags (many-home /-tree), or a property like
       // Path (single-home /-tree). Persisted. Replaces the old Roots/All toggle (Hierarchy collapsed

@@ -11,7 +11,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use mkb_core::{BlockId, GraphData, GroupAxis, GroupTree, HierTree, SearchQuery};
-use mkb_protocol::{connect, Client, ConnectionConfig, DaemonPaths};
+use mkb_protocol::{connect, discover_running, Client, ConnectionConfig, DaemonPaths, Registry};
 use mkb_view::{
     block_title, markdown_to_html_with_assets_indexed, search_results_html, top_level_block_spans,
     ResultRow,
@@ -142,8 +142,12 @@ fn allow_vault_assets(app: &tauri::AppHandle, cfg: &ConnectionConfig) {
 /// placeholder until the first data load returns.
 fn client_descriptor(cfg: &ConnectionConfig) -> Client {
     match cfg {
-        ConnectionConfig::Remote { host, token } => Client::tcp(host.clone(), token.clone()).as_app(),
-        ConnectionConfig::Local { vault } => Client::new(DaemonPaths::from_vault(vault).socket).as_app(),
+        ConnectionConfig::Remote { host, token } => {
+            Client::tcp(host.clone(), token.clone()).as_app()
+        }
+        ConnectionConfig::Local { vault } => {
+            Client::new(DaemonPaths::from_vault(vault).socket).as_app()
+        }
     }
 }
 
@@ -518,7 +522,9 @@ fn link_block_at(
     let s = BlockId::parse(&source_id).map_err(|e| e.to_string())?;
     let t = BlockId::parse(&target_id).map_err(|e| e.to_string())?;
     let a = BlockId::parse(&anchor_id).map_err(|e| e.to_string())?;
-    let outcome = client.link_at(s, t, embed, a, after).map_err(|e| e.to_string())?;
+    let outcome = client
+        .link_at(s, t, embed, a, after)
+        .map_err(|e| e.to_string())?;
     Ok(match outcome {
         mkb_core::LinkOutcome::Reference => "reference".to_string(),
         mkb_core::LinkOutcome::Transclusion => "transclusion".to_string(),
@@ -657,11 +663,25 @@ fn save_settings(
     config: ConnectionConfig,
 ) -> Result<(), String> {
     config.save()?;
-    let client = resolve_client(&app, &config);
+    apply_connection(&app, &state, config)
+}
+
+/// Point the live client at `config` and reconnect, without restarting the app: resolve a client
+/// (auto-starting a local daemon as needed), swap it into shared state, whitelist the vault's assets
+/// for the WebView, and remember the config for later auto-reconnects. Shared by every command that
+/// changes the active vault (save/switch/create/remove) so the reconnect path exists in exactly one
+/// place. Returns `Ok` when the daemon is already reachable, else an `Err` the UI can surface (the
+/// config is still applied — a local daemon just cold-starts on the next action).
+fn apply_connection(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    config: ConnectionConfig,
+) -> Result<(), String> {
+    let client = resolve_client(app, &config);
     let ok = client.ping();
     *state.client.lock().map_err(|_| "state poisoned")? = client;
     // Allow image loading from the newly selected local vault before it becomes active.
-    allow_vault_assets(&app, &config);
+    allow_vault_assets(app, &config);
     // Keep the stored config in sync so later auto-reconnects target the new vault/host.
     *state.cfg.lock().map_err(|_| "state poisoned")? = config;
     if ok {
@@ -671,8 +691,342 @@ fn save_settings(
     }
 }
 
+/// One row of the Settings vault manager: a registry entry plus whether it's the vault the app is
+/// currently connected to and whether it's the launch default.
+#[derive(Serialize)]
+struct VaultRow {
+    /// The entry's stable name (used to switch/rename/remove it).
+    name: String,
+    /// `"local"` or `"remote"` — drives the icon/label in the UI.
+    kind: String,
+    /// Human target: the local vault path, or the remote `host:port`.
+    target: String,
+    /// True for the vault the app is currently connected to.
+    active: bool,
+    /// True for the registry's launch default (the vault opened on next start).
+    default: bool,
+}
+
+/// The known vaults from the registry (`vaults.json`), marking the active + default ones. This is
+/// the switcher/manager's data source. Block counts are intentionally omitted: computing them would
+/// auto-start every vault's daemon just to render the list.
+#[tauri::command]
+fn list_vaults(state: tauri::State<'_, AppState>) -> Result<Vec<VaultRow>, String> {
+    let active = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
+    let reg = Registry::load();
+    let default = reg.default.clone();
+    Ok(reg
+        .vaults
+        .into_iter()
+        .map(|e| {
+            let (kind, target) = match &e.connection {
+                ConnectionConfig::Local { vault } => ("local", vault.display().to_string()),
+                ConnectionConfig::Remote { host, .. } => ("remote", host.clone()),
+            };
+            VaultRow {
+                default: default.as_deref() == Some(e.name.as_str()),
+                name: e.name,
+                kind: kind.to_string(),
+                target,
+                active: e.connection == active,
+            }
+        })
+        .collect())
+}
+
+/// Rename a vault in the registry (manager-only). Names are how the registry references a vault, so
+/// this just relabels; the live connection (tracked by target, not name) is unaffected.
+#[tauri::command]
+fn rename_vault(name: String, new_name: String) -> Result<(), String> {
+    let mut reg = Registry::load();
+    reg.rename_vault(&name, &new_name)?;
+    reg.save()
+}
+
+/// Mark a vault as the **launch default** without switching to it (manager-only). Distinct from
+/// `switch_vault`, which also reconnects — this only changes which vault opens on next start.
+#[tauri::command]
+fn set_default_vault(name: String) -> Result<(), String> {
+    let mut reg = Registry::load();
+    reg.set_default(&name)?;
+    reg.save()
+}
+
+/// Edit a **local** vault's folder (manager-only), e.g. after moving it on disk. If it's the active
+/// vault, the app reconnects to the new location.
+#[tauri::command]
+fn edit_local_vault(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    name: String,
+    path: String,
+) -> Result<(), String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("choose a folder for the vault".to_string());
+    }
+    let real = mkb_protocol::paths::expand_user(path);
+    std::fs::create_dir_all(&real).map_err(|e| format!("creating {}: {e}", real.display()))?;
+    let conn = ConnectionConfig::Local {
+        vault: PathBuf::from(path),
+    };
+    edit_connection(&app, &state, &name, conn)
+}
+
+/// Edit a **remote** vault's host/token (manager-only). A blank token keeps the stored one, so a
+/// user can fix the host without re-entering the secret. Reconnects if it's the active vault.
+#[tauri::command]
+fn edit_remote_vault(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    name: String,
+    host: String,
+    token: String,
+) -> Result<(), String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("enter the remote host (host:port)".to_string());
+    }
+    // A blank token means "keep the existing one" — look it up rather than clobbering the secret.
+    let token = if token.is_empty() {
+        Registry::load()
+            .vaults
+            .into_iter()
+            .find(|e| e.name == name)
+            .and_then(|e| match e.connection {
+                ConnectionConfig::Remote { token, .. } => Some(token),
+                _ => None,
+            })
+            .unwrap_or_default()
+    } else {
+        token
+    };
+    let conn = ConnectionConfig::Remote {
+        host: host.to_string(),
+        token,
+    };
+    edit_connection(&app, &state, &name, conn)
+}
+
+/// Shared helper for the two edit commands: persist the new connection for `name`, and if that
+/// entry is the one the app is currently connected to, reconnect live so the change takes effect.
+fn edit_connection(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    name: &str,
+    conn: ConnectionConfig,
+) -> Result<(), String> {
+    let active = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
+    let mut reg = Registry::load();
+    let was_active = reg
+        .vaults
+        .iter()
+        .find(|e| e.name == name)
+        .map(|e| e.connection == active)
+        .unwrap_or(false);
+    reg.update_connection(name, conn.clone())?;
+    reg.save()?;
+    if was_active {
+        apply_connection(app, state, conn)?;
+    }
+    Ok(())
+}
+
+/// Reveal a **local** vault's folder in the OS file manager (manager-only). No-op-with-error for a
+/// remote vault (nothing local to reveal).
+#[tauri::command]
+fn reveal_vault(name: String) -> Result<(), String> {
+    let entry = Registry::load()
+        .vaults
+        .into_iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| format!("no vault named {name:?}"))?;
+    let ConnectionConfig::Local { vault } = entry.connection else {
+        return Err("this is a remote vault — nothing local to reveal".to_string());
+    };
+    let path = mkb_protocol::paths::expand_user(&vault);
+    let (cmd, args): (&str, Vec<&std::ffi::OsStr>) = if cfg!(target_os = "macos") {
+        ("open", vec![path.as_os_str()])
+    } else if cfg!(target_os = "windows") {
+        ("explorer", vec![path.as_os_str()])
+    } else {
+        ("xdg-open", vec![path.as_os_str()])
+    };
+    std::process::Command::new(cmd)
+        .args(args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open the folder: {e}"))
+}
+
+/// Switch the active vault to an existing registry entry: make it the default and reconnect live.
+#[tauri::command]
+fn switch_vault(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    name: String,
+) -> Result<(), String> {
+    let mut reg = Registry::load();
+    reg.set_default(&name)?;
+    reg.save()?;
+    let conn = reg
+        .vaults
+        .into_iter()
+        .find(|e| e.name == name)
+        .map(|e| e.connection)
+        .ok_or_else(|| format!("no vault named {name:?}"))?;
+    apply_connection(&app, &state, conn)
+}
+
+/// Add (or create) a local vault: register it under `name` pointing at `path`, ensuring the folder
+/// exists (so this both *adds an existing* vault and *creates a new empty* one — the daemon
+/// initializes an empty folder on first connect). When `activate` is set, it also becomes the
+/// active vault and the app reconnects to it.
+#[tauri::command]
+fn add_vault(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    name: String,
+    path: String,
+    activate: bool,
+) -> Result<(), String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("choose a folder for the vault".to_string());
+    }
+    // Ensure the folder exists (a no-op for an existing vault; creates a brand-new one). Expand a
+    // leading `~` for the filesystem call, but store the path as typed so a `~`-relative entry stays
+    // portable across machines in `vaults.json`.
+    let real = mkb_protocol::paths::expand_user(path);
+    std::fs::create_dir_all(&real).map_err(|e| format!("creating {}: {e}", real.display()))?;
+    let conn = ConnectionConfig::Local {
+        vault: PathBuf::from(path),
+    };
+    // Fall back to the folder basename when no name was given, so "Add" always yields a sensible
+    // label even if the user typed a path without naming it.
+    let name = if name.trim().is_empty() {
+        conn.suggested_name()
+    } else {
+        name
+    };
+    let mut reg = Registry::load();
+    reg.add_vault(&name, conn.clone())?;
+    if activate {
+        reg.set_default(&name)?;
+    }
+    reg.save()?;
+    if activate {
+        apply_connection(&app, &state, conn)?;
+    }
+    Ok(())
+}
+
+/// Remove a vault from the registry (does **not** delete any files on disk). If it was the active
+/// vault, the app reconnects to the registry's new default.
+#[tauri::command]
+fn remove_vault(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    name: String,
+) -> Result<(), String> {
+    let active = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
+    let mut reg = Registry::load();
+    let was_active = reg
+        .vaults
+        .iter()
+        .find(|e| e.name == name)
+        .map(|e| e.connection == active)
+        .unwrap_or(false);
+    reg.remove_vault(&name)?;
+    reg.save()?;
+    if was_active {
+        // The removed vault was the one we were connected to — fall back to the new default.
+        apply_connection(&app, &state, reg.default_connection())?;
+    }
+    Ok(())
+}
+
+/// Add a **remote** daemon as a named registry entry (the remote counterpart of [`add_vault`]).
+/// When `activate` is set it becomes the active connection and the app connects to it.
+#[tauri::command]
+fn add_remote_vault(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    name: String,
+    host: String,
+    token: String,
+    activate: bool,
+) -> Result<(), String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("enter the remote host (host:port)".to_string());
+    }
+    let conn = ConnectionConfig::Remote {
+        host: host.to_string(),
+        token,
+    };
+    let mut reg = Registry::load();
+    reg.add_vault(&name, conn.clone())?;
+    if activate {
+        reg.set_default(&name)?;
+    }
+    reg.save()?;
+    if activate {
+        apply_connection(&app, &state, conn)?;
+    }
+    Ok(())
+}
+
+/// A local vault with a **currently running** daemon that isn't in the registry yet — surfaced so
+/// the user can add it with one click (e.g. a repo vault an agent spun up).
+#[derive(Serialize)]
+struct DiscoveredRow {
+    /// Suggested name (the vault folder's basename).
+    name: String,
+    /// Absolute vault path the running daemon reports.
+    path: String,
+    /// Block count (a cheap "is this the vault I mean?" hint).
+    blocks: usize,
+}
+
+/// Discover vaults with a running daemon that are **not already** in the registry, so the Settings
+/// page can offer to add them. Registry entries are canonicalized for the comparison so a `~`- or
+/// relatively-stored path still matches the daemon's canonical path.
+#[tauri::command]
+fn discover_vaults(state: tauri::State<'_, AppState>) -> Result<Vec<DiscoveredRow>, String> {
+    let active = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
+    // Canonicalize a Local connection's vault path (expanding a leading `~`) so a `~`- or
+    // relatively-stored registry entry still matches the daemon's canonical path.
+    let canon = |conn: &ConnectionConfig| match conn {
+        ConnectionConfig::Local { vault } => {
+            let real = mkb_protocol::paths::expand_user(vault);
+            Some(std::fs::canonicalize(&real).unwrap_or(real))
+        }
+        ConnectionConfig::Remote { .. } => None,
+    };
+    // Canonical paths already known (every registry entry, plus the active vault), to filter out.
+    let mut known: Vec<PathBuf> = Registry::load()
+        .vaults
+        .iter()
+        .filter_map(|e| canon(&e.connection))
+        .collect();
+    known.extend(canon(&active));
+    known.sort();
+    known.dedup();
+    Ok(discover_running()
+        .into_iter()
+        .filter(|d| !known.contains(&d.vault))
+        .map(|d| DiscoveredRow {
+            name: d.name_hint,
+            path: d.vault.display().to_string(),
+            blocks: d.blocks,
+        })
+        .collect())
+}
+
 /// Whether the current client can reach a daemon (for a connection indicator). Returns a
-/// friendly `label` (the vault name for a local vault, or the host for a remote) plus the full
+/// friendly `label` — the active vault's **registry name** (falling back to a target-derived name),
+/// suffixed with its location kind, e.g. `personal (local)` or `team (remote)` — plus the full
 /// `endpoint` for a tooltip.
 #[tauri::command]
 fn connection_status(state: tauri::State<'_, AppState>) -> Result<ConnStatus, String> {
@@ -683,17 +1037,27 @@ fn connection_status(state: tauri::State<'_, AppState>) -> Result<ConnStatus, St
         .map_err(|_| "state poisoned")?
         .endpoint();
     let cfg = state.cfg.lock().map_err(|_| "state poisoned")?.clone();
-    let label = match &cfg {
-        ConnectionConfig::Local { vault } => {
-            let name = vault
+    // The location kind — shown after the name so the chip tells you both which vault and where.
+    let kind = match &cfg {
+        ConnectionConfig::Local { .. } => "local",
+        ConnectionConfig::Remote { .. } => "remote",
+    };
+    // Prefer the registry name of the entry whose connection is the active one; otherwise fall back
+    // to a target-derived name (folder basename / host).
+    let name = Registry::load()
+        .vaults
+        .into_iter()
+        .find(|e| e.connection == cfg)
+        .map(|e| e.name)
+        .unwrap_or_else(|| match &cfg {
+            ConnectionConfig::Local { vault } => vault
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| vault.display().to_string());
-            format!("{name} (local)")
-        }
-        ConnectionConfig::Remote { host, .. } => host.clone(),
-    };
+                .unwrap_or_else(|| vault.display().to_string()),
+            ConnectionConfig::Remote { host, .. } => host.clone(),
+        });
+    let label = format!("{name} ({kind})");
     Ok(ConnStatus {
         label,
         endpoint,
@@ -864,6 +1228,17 @@ pub fn run() {
             list_tags,
             get_settings,
             save_settings,
+            list_vaults,
+            switch_vault,
+            rename_vault,
+            set_default_vault,
+            edit_local_vault,
+            edit_remote_vault,
+            reveal_vault,
+            add_vault,
+            add_remote_vault,
+            remove_vault,
+            discover_vaults,
             connection_status,
             restart_daemon,
             pick_vault,
