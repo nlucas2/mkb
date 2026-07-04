@@ -321,6 +321,24 @@ transparently respawns it — at most a brief cold start.
   `bin/mkb-mcp*`, `bin/mkb-cli*`), and that the plain recipes run under `powershell.exe`; fix path
   separators / quoting as needed.
 
+- **Approximate-nearest-neighbour (ANN) vector search** *(planned)*: semantic matching is currently
+  an exact brute-force cosine scan over every stored embedding (`mkb-index`) — exact, dependency-free,
+  and comfortably fast for everything mkb has been used for so far. At large scale the linear scan (and
+  reading every embedding per query) will eventually dominate. The `Index` trait already isolates the
+  vector engine, so an ANN path can be added behind it without touching callers. The open design choice
+  is *how*: (a) an **adaptive** switch that keeps the exact scan below a block-count threshold and
+  engages an ANN index above it — brute force staying the correctness oracle — versus (b) a
+  config-selectable ANN backend; and *which* engine — an in-memory Rust index (e.g. a quantized/SIMD
+  crate such as `turbovec`, rebuilt from the stored vectors and owned by the long-lived daemon) versus a
+  persisted `sqlite-vec` (`vec0`) table in the same file. Decide when a real vault actually approaches the
+  crossover, not before.
+- **Web frontend over the shared app-core** *(possible future)*: the desktop app's UI operation logic
+  (reads, writes, vault-registry ops) now lives in the transport-neutral **`mkb-app-core`** crate, with
+  the Tauri commands as thin shims over it. That seam means a browser frontend — a small server exposing
+  the same `mkb-app-core` operations over the daemon and rendering through the shared `mkb-view` — could
+  be added without duplicating any core behaviour. Not built; noted because the boundary is already in
+  place if a web UI is ever wanted.
+
 ## Working rules
 
 These are mandatory; the canonical copy is [`AGENTS.md`](../AGENTS.md), generated from the same

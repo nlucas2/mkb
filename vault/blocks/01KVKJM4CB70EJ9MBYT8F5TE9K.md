@@ -1,7 +1,7 @@
 ---
 title: "Architecture: the index is a rebuildable cache"
 tags: [doc/architecture]
-updated: 2026-07-02T06:45:44Z
+updated: 2026-07-04T02:15:00Z
 ---
 
 ## The index is a rebuildable cache
@@ -16,3 +16,9 @@ A SQLite index (`mkb-index`, behind the `Index` trait) caches everything for fas
 
 Search fuses keyword + semantic via **Reciprocal Rank Fusion (RRF)**. The index is never the
 source of truth; on any doubt, rebuild from files.
+
+Semantic matching is currently an **exact brute-force cosine scan** over the stored embeddings —
+simple, dependency-free, and exact, which has been more than fast enough for everything mkb has
+been used for so far. The `Index` trait is the seam to swap in an approximate-nearest-neighbour
+(ANN) engine should a vault ever grow large enough for the linear scan to matter — see the roadmap
+in [`CONTRIBUTING.md`](./CONTRIBUTING.md).

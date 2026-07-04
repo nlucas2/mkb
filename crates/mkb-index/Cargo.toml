@@ -1,6 +1,6 @@
 [package]
 name = "mkb-index"
-description = "SQLite (FTS5 + sqlite-vec) implementation of the mkb-core Index trait."
+description = "SQLite (FTS5 keyword + brute-force cosine vector) implementation of the mkb-core Index trait."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
