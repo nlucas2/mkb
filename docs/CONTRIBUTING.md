@@ -338,6 +338,36 @@ transparently respawns it — at most a brief cold start.
   the same `mkb-app-core` operations over the daemon and rendering through the shared `mkb-view` — could
   be added without duplicating any core behaviour. Not built; noted because the boundary is already in
   place if a web UI is ever wanted.
+- **Change tracking / audit + restore — git-aware, not git-owning** *(planned)*: mkb's founding promise
+  is *auditable, refactorable* memory, but a **standalone** vault (a bare `blocks/` dir — e.g. a
+  cluster/NFS vault or `~/mkb-vault`) keeps **no history**: a whole-body write overwrites the file and
+  the prior content is gone. (A vault that lives *inside* a git repo — like this repo's own `vault/` —
+  already gets history for free from that repo; the gap is standalone vaults.) Guiding principle:
+  **mkb never *owns* git.** It must not auto-`git init` or auto-commit — that would nest into / pollute
+  an already-in-a-repo vault and fight the user's own commit workflow, and committing on the write path
+  would tax the snappy single-writer hot path. Instead:
+  - **Commits are owned by whoever owns the repo.** An embedded vault is committed by the user's existing
+    workflow; a standalone vault opts into a lightweight external committer (timer/hook) — or, an open
+    sub-decision, an mkb-provided **async, best-effort, off-by-default** auto-commit that never blocks a
+    write.
+  - **mkb is git-*aware* for reads.** Where the vault is a git repo, expose `history` / `diff` as
+    **CLI + app diagnostics** — the same tier as `graph`/`stats`/`conflicts`/`rebuild`, deliberately
+    **not** in the lean default MCP surface, so an agent's per-turn tool budget stays small. Where the
+    vault isn't git-backed, these report "no history."
+  - **`restore <block-id> [--from <ref>]` is a per-block forward-write.** Read that one block's file at a
+    chosen commit (`git show <ref>:blocks/<id>.md`, a pure read) and write it **forward** as the new
+    current state via the normal single-writer path — same ULID, history preserved (**not** a git
+    reset/revert), and only that block re-embeds. It also **undeletes** a block whose file was removed.
+    File-per-block makes single-block restore the natural granularity; whole-vault rollback stays
+    raw-git territory for the human. Restore is a **human surface (CLI + app), kept out of the default
+    MCP tools** — the thing writing your memory shouldn't be able to silently rewind it (same spirit as
+    human-only locked blocks).
+  - **UI: initialize history from the app.** A one-click "enable history for this vault" (git init + an
+    initial commit) offered **only when the vault isn't already a git repo**, so a non-git user gets
+    audit/restore without a terminal; an already-embedded vault is left untouched.
+  - Open sub-decisions: whole-file restore (frontmatter + body as of that version) vs body-only; and
+    whether standalone vaults get the opt-in async auto-commit, or mkb stays strictly read-only toward
+    git.
 
 ## Working rules
 
