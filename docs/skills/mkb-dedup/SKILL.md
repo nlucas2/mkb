@@ -30,7 +30,9 @@ slightly different words. Edit the one block and every place that embeds it upda
 Follow this in order:
 
 1. **Search (the DRY check)** in 2-3 phrasings before concluding something is absent -
-   search is hybrid (keyword + semantic), so paraphrases rank too.
+   search is hybrid (keyword + semantic), so paraphrases rank too. Watch each hit's
+   **`similarity`** (raw cosine): a hit up near **~0.9+** almost certainly *is* the fact you were
+   about to write — open it and reuse/edit rather than forking a near-duplicate.
 2. **If it exists, reuse - don't fork:** embed it (`![[id]]`) to inline it live, reference
    it (`[[id]]`) to point at it, or edit that block if it's stale.
 3. **If a reusable chunk is buried in a bigger block, carve it** into its own block and
@@ -90,8 +92,13 @@ Use search and the link graph as your instruments:
    hints at orphans.
 2. **Search each non-trivial fact in 2-3 phrasings.** Search is hybrid (keyword + semantic), so
    paraphrases of the same fact rank together — two near-identical hits with different ids is a
-   duplicate signal. Note whether each pair is **exact** (verbatim-identical) or **near** (same
-   fact, different words) — that determines how it can be handled.
+   duplicate signal, and each hit's **`similarity`** (raw cosine) quantifies it: a pair up near
+   **~0.9+** is a strong whole-block near-dup. Note whether each pair is **exact** (verbatim-
+   identical) or **near** (same fact, different words) — that determines how it can be handled.
+   Caveat: `similarity` scores a **whole block**, so it will *miss* a short passage copy-pasted
+   into two otherwise-different blocks (each vector is dominated by the surrounding bulk) — catch
+   those by recognizing the repeated wording, then carve the shared span into one block and embed
+   it back.
 3. **Check backlinks to spot orphans.** A block whose backlinks are empty *and* that links to
    nothing is an orphan.
 

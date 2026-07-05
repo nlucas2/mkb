@@ -24,7 +24,9 @@ slightly different words. Edit the one block and every place that embeds it upda
 Follow this in order:
 
 1. **Search (the DRY check)** in 2-3 phrasings before concluding something is absent -
-   search is hybrid (keyword + semantic), so paraphrases rank too.
+   search is hybrid (keyword + semantic), so paraphrases rank too. Watch each hit's
+   **`similarity`** (raw cosine): a hit up near **~0.9+** almost certainly *is* the fact you were
+   about to write — open it and reuse/edit rather than forking a near-duplicate.
 2. **If it exists, reuse - don't fork:** embed it (`![[id]]`) to inline it live, reference
    it (`[[id]]`) to point at it, or edit that block if it's stale.
 3. **If a reusable chunk is buried in a bigger block, carve it** into its own block and
@@ -61,8 +63,13 @@ Search fuses keyword (bm25) and vector ranking, so prefer a **natural phrase**
   Markdown markers in the source don't interfere.
 - everything else is free text.
 
-Each result shows where it lives (`[root]`, or `↑ embedded in: <page>`), so a hit on a
-reused note tells you its page(s) without a separate backlinks lookup.
+Each result carries a **`score`** (this query's fused keyword+semantic relevance rank) and, when a
+semantic match contributed, a **`similarity`** — the raw cosine (~0..1) between your query and the
+block. Read them differently: `score` only orders *this* result set, while `similarity` is an
+absolute "how close in meaning" gauge — **~0.9+ means essentially the same fact**, the mid-range
+means merely related. `similarity` is absent on a keyword/filter-only hit (nothing semantic to
+measure). A hit also shows **where it lives** (its root page(s)), so a hit on a reused note tells
+you its page(s) without a separate backlinks lookup.
 
 Try 2-3 phrasings (the DRY safeguard), then **follow the graph** (backlinks / links)
 instead of re-searching.

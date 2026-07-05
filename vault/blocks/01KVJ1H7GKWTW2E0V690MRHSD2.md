@@ -1,7 +1,7 @@
 ---
 title: "Skill: DRY search-first"
 tags: [skill/shared]
-updated: 2026-07-02T06:45:39Z
+updated: 2026-07-05T08:00:00Z
 ---
 
 ## DRY — search before you write
@@ -13,7 +13,9 @@ slightly different words. Edit the one block and every place that embeds it upda
 Follow this in order:
 
 1. **Search (the DRY check)** in 2-3 phrasings before concluding something is absent -
-   search is hybrid (keyword + semantic), so paraphrases rank too.
+   search is hybrid (keyword + semantic), so paraphrases rank too. Watch each hit's
+   **`similarity`** (raw cosine): a hit up near **~0.9+** almost certainly *is* the fact you were
+   about to write — open it and reuse/edit rather than forking a near-duplicate.
 2. **If it exists, reuse - don't fork:** embed it (`![[id]]`) to inline it live, reference
    it (`[[id]]`) to point at it, or edit that block if it's stale.
 3. **If a reusable chunk is buried in a bigger block, carve it** into its own block and

@@ -1,7 +1,7 @@
 ---
 title: "Skill: finding duplicates and orphans"
 tags: [skill/dedup]
-updated: 2026-07-02T06:45:45Z
+updated: 2026-07-05T08:00:00Z
 ---
 
 ## Collect — sweep the whole vault first
@@ -16,8 +16,13 @@ Use search and the link graph as your instruments:
    hints at orphans.
 2. **Search each non-trivial fact in 2-3 phrasings.** Search is hybrid (keyword + semantic), so
    paraphrases of the same fact rank together — two near-identical hits with different ids is a
-   duplicate signal. Note whether each pair is **exact** (verbatim-identical) or **near** (same
-   fact, different words) — that determines how it can be handled.
+   duplicate signal, and each hit's **`similarity`** (raw cosine) quantifies it: a pair up near
+   **~0.9+** is a strong whole-block near-dup. Note whether each pair is **exact** (verbatim-
+   identical) or **near** (same fact, different words) — that determines how it can be handled.
+   Caveat: `similarity` scores a **whole block**, so it will *miss* a short passage copy-pasted
+   into two otherwise-different blocks (each vector is dominated by the surrounding bulk) — catch
+   those by recognizing the repeated wording, then carve the shared span into one block and embed
+   it back.
 3. **Check backlinks to spot orphans.** A block whose backlinks are empty *and* that links to
    nothing is an orphan.
 
