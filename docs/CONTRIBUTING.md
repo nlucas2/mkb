@@ -311,15 +311,13 @@ transparently respawns it — at most a brief cold start.
     `!=` and reconnect on the dropped wait, so it reads as a change and refreshes. Old daemons
     reject the op, so the app falls back to the heartbeat poll. Concurrent-edit safety is complete.
 
-- **Validate the Windows-native `justfile`** *(planned)*: `just` runs recipe lines with `sh`, which
-  Windows lacks, and several recipes used bash-only constructs (`uname`/`case`/`osascript`) and Unix
-  coreutils (`mkdir -p`/`cp`). The justfile now sets `windows-shell` to PowerShell for the plain
-  `cargo` recipes and ships `[windows]` variants of `install` / `app` / `icons` / `app-dev` (the
-  macOS/Linux recipes are unchanged), but that path was **written from macOS and has not run on a
-  Windows host**. Verify on Windows that `just install` builds the bundles and launches the NSIS
-  `*-setup.exe`, that the staged `bin\*.exe` names match the Tauri `resources` globs (`bin/mkbd*`,
-  `bin/mkb-mcp*`, `bin/mkb-cli*`), and that the plain recipes run under `powershell.exe`; fix path
-  separators / quoting as needed.
+- **Windows-native `justfile`** *(done)*: `just` runs recipe lines with `sh`, which Windows lacks,
+  and several recipes used bash-only constructs (`uname`/`case`/`osascript`) and Unix coreutils
+  (`mkdir -p`/`cp`). The justfile now sets `windows-shell` to PowerShell for the plain `cargo` recipes
+  and ships `[windows]` variants of `install` / `app` / `icons` / `app-dev` (the macOS/Linux recipes
+  are unchanged). Exercised on a Windows host: `just install` builds the bundles, the staged `bin\*.exe`
+  names match the Tauri `resources` globs (`bin/mkbd*`, `bin/mkb-mcp*`, `bin/mkb-cli*`), and the plain
+  recipes run under `powershell.exe`.
 
 - **Approximate-nearest-neighbour (ANN) vector search** *(planned)*: semantic matching is currently
   an exact brute-force cosine scan over every stored embedding (`mkb-index`) — exact, dependency-free,
