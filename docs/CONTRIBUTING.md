@@ -368,6 +368,39 @@ transparently respawns it — at most a brief cold start.
   - Open sub-decisions: whole-file restore (frontmatter + body as of that version) vs body-only; and
     whether standalone vaults get the opt-in async auto-commit, or mkb stays strictly read-only toward
     git.
+- **Duplicate discovery & reconcile-on-write** *(partly shipped; the rest planned)*: mkb's promise is
+  "each fact in exactly one block," but nothing helps an agent *find* that a fact is already stated —
+  or scattered across several blocks — so duplication accumulates at scale (the existing `mkb-dedup`
+  skill names the case but hands the agent no instrument beyond re-querying). The clarifying insight
+  (validated against three independent model reviews) is that there are **three distinct operations**,
+  not one, split by whether the input is a *query* or the *corpus*:
+  - **Lookup** (query → block, read-time): "find X." Lean snippet search is correct here. *(shipped:
+    match-snippet search.)*
+  - **Write-time absence check** (query → block): "does this fact already exist before I create it?"
+    Still search, but the cost of a miss is a *new duplicate*, so it wants a calibrated sameness
+    signal, not a truncated preview. *(shipped: `search` now surfaces the raw cosine `similarity` per
+    hit — previously discarded by RRF fusion — so an agent can tell a near-duplicate (~0.95) from a
+    merely-related hit, then `get_block` the top candidates to compare before writing.)* Remaining: a
+    documented write-preflight workflow/skill ("search 2–3 phrasings of the proposed fact; if
+    similarity is high, `get_block` the close hits and reconcile instead of forking").
+  - **Background audit** (corpus → corpus): "where does the vault duplicate *itself*?" There is no
+    query, so no search change reaches it — this is the genuinely separate capability. *(planned.)*
+    It bifurcates by granularity, which matters because whole-block embeddings can't see a small
+    shared passage:
+    - **Whole-block near-dupes** — two blocks that are mostly the same fact written twice. Cheap:
+      top-k cosine over the vectors that already exist. A `similar_blocks`/dedup surface.
+    - **Scattered-passage duplication** — the same paragraph (e.g. a "be DRY" principle) restated
+      inside otherwise-different blocks (a C#, a Rust, a C++ guide…). Whole-block cosine **fails** here
+      (each vector is dominated by its language-specific bulk; the shared passage washes out). Detect
+      it at **passage granularity** — shingling / MinHash over spans (best cost/value; catches
+      near-verbatim copy-paste), or passage/chunk embeddings (heavier; catches paraphrase). The precise
+      target is **text spans that recur across blocks that are NOT already a shared `![[embed]]`** —
+      recurrence that isn't reuse — which maps directly onto mkb's native remedy: carve the span into
+      one block and embed it back everywhere.
+  - Reconciliation stays **human-approved** (candidates surfaced, not auto-merged): some repetition is
+    legitimately contextual, and over-eager merging into tiny generic blocks harms human browsing.
+    Note: full-body search hits remain available behind `MKB_MCP_SEARCH_FULL` for a deliberate, bounded
+    audit sweep.
 
 ## Working rules
 

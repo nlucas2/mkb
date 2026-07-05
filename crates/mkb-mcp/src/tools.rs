@@ -89,17 +89,6 @@ pub fn all_tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "get_blocks",
-            description: "Batch-read several blocks' FULL bodies by id in ONE call (unknown ids skipped). Use to inspect a handful of candidates at once — e.g. a write-time dedup check: search, then get_blocks the top few plausible ids and compare their full text before creating a new block (or to reconcile a fact scattered across several). Returns id, title, tags, properties, timestamps, and the complete Markdown body per block; for a single block's lineage/relationships use get_block instead.",
-            schema: json!({
-                "type": "object",
-                "properties": {
-                    "ids": {"type": "array", "items": {"type": "string"}, "description": "Block ids to fetch (order preserved; unknown ids omitted)"}
-                },
-                "required": ["ids"]
-            }),
-        },
-        ToolDef {
             name: "list_blocks",
             description: "List block ids in the vault. Set roots_only=true for just root blocks (top-level pages that nothing transcludes).",
             schema: json!({
@@ -370,20 +359,6 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
                 .map(|n| n as usize),
             end: args.get("end").and_then(|v| v.as_u64()).map(|n| n as usize),
         },
-        "get_blocks" => {
-            let raw = args
-                .get("ids")
-                .and_then(|v| v.as_array())
-                .ok_or_else(|| "missing required argument: ids".to_string())?;
-            let mut ids = Vec::with_capacity(raw.len());
-            for v in raw {
-                let s = v
-                    .as_str()
-                    .ok_or_else(|| "ids must be an array of block-id strings".to_string())?;
-                ids.push(BlockId::parse(s).map_err(|_| format!("invalid block id: {s}"))?);
-            }
-            Request::GetBlocks { ids }
-        }
         "list_blocks" => {
             if args
                 .get("roots_only")
@@ -519,7 +494,6 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
         Response::Names(n) => to_json(n),
         Response::Hits(h) => hits_to_json(h),
         Response::Block(b) => to_json(b),
-        Response::Blocks(b) => blocks_to_json(b),
         Response::Page(p) => to_json(p),
         // The MCP server never heartbeats or long-polls, but the match must stay exhaustive.
         Response::Heartbeat { generation } => Ok(generation.to_string()),
@@ -609,45 +583,6 @@ fn hits_to_json_impl(hits: &[mkb_core::SearchHit], full: bool) -> Result<String,
     to_json(&lean)
 }
 
-/// A batch-fetched block for `get_blocks`: the FULL body (the point — for comparison/dedup) plus
-/// identifying metadata, but deliberately WITHOUT the `contextual_text` embedding blob (an
-/// internal that would double the payload, ×N here).
-#[derive(serde::Serialize)]
-struct BlockCard<'a> {
-    id: &'a BlockId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    title: Option<&'a str>,
-    #[serde(skip_serializing_if = "<[_]>::is_empty")]
-    tags: &'a [String],
-    #[serde(skip_serializing_if = "<[_]>::is_empty")]
-    props: &'a [(String, String)],
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    locked: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    created: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    updated: Option<&'a str>,
-    content: &'a str,
-}
-
-/// Serialize batch-fetched blocks as lean full-content cards (no `contextual_text`).
-fn blocks_to_json(blocks: &[mkb_core::BlockRecord]) -> Result<String, String> {
-    let cards: Vec<BlockCard> = blocks
-        .iter()
-        .map(|b| BlockCard {
-            id: &b.id,
-            title: b.title.as_deref(),
-            tags: &b.tags,
-            props: &b.props,
-            locked: b.locked,
-            created: b.created.as_deref(),
-            updated: b.updated.as_deref(),
-            content: &b.content,
-        })
-        .collect();
-    to_json(&cards)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,7 +643,7 @@ mod tests {
     fn every_tool_name_builds_a_request() {
         let id = BlockId::generate().to_string();
         let args = json!({
-            "query": "q", "id": id, "ids": [id], "source_id": id, "target_id": id, "parent_id": id,
+            "query": "q", "id": id, "source_id": id, "target_id": id, "parent_id": id,
             "child_id": id, "title": "T", "body": "b", "embed": true, "tags": ["x"],
             "props": [{"key": "source", "value": "git"}], "keys": ["source"],
             "old": "b", "new": "c", "text": "more", "start": 1, "end": 2,
@@ -943,39 +878,6 @@ mod tests {
         assert!(
             !out.contains("similarity"),
             "similarity should be omitted when None"
-        );
-    }
-
-    #[test]
-    fn get_blocks_maps_id_array() {
-        let req = build_request(
-            "get_blocks",
-            &json!({"ids": ["01KVKJ1RH7H3T01HXTN3HTQRAT", "01KWQY11QZQ081XBTX2BDPSJJQ"]}),
-        )
-        .unwrap();
-        match req {
-            Request::GetBlocks { ids } => assert_eq!(ids.len(), 2),
-            other => panic!("expected GetBlocks, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn get_blocks_requires_ids_and_rejects_bad_id() {
-        assert!(build_request("get_blocks", &json!({})).is_err());
-        assert!(build_request("get_blocks", &json!({"ids": ["not-a-ulid"]})).is_err());
-    }
-
-    #[test]
-    fn get_blocks_response_is_full_body_without_contextual_text() {
-        let hit = hit_with_body("the full body to compare");
-        let out = format_response(&Response::Blocks(vec![hit.block])).unwrap();
-        assert!(
-            out.contains("the full body to compare"),
-            "full content must be present"
-        );
-        assert!(
-            !out.contains("contextual_text"),
-            "must not ship the embedding blob"
         );
     }
 
