@@ -415,18 +415,32 @@ fn is_tag_char(c: char) -> bool {
 pub struct SearchHit {
     /// The matching block.
     pub block: BlockRecord,
-    /// Combined relevance score (higher is better).
+    /// Combined relevance score (higher is better). This is the fused **Reciprocal Rank Fusion**
+    /// rank (keyword + semantic ordering), so it is *query-relative* — it orders **this** result
+    /// set, and is not an absolute confidence. For an absolute "how close in meaning" read use
+    /// `semantic_similarity`.
     pub score: f64,
-    /// Calibrated semantic similarity — the raw cosine (roughly `0..1`) when a vector match
-    /// contributed to this hit. This is the signal the fused RRF `score` otherwise hides, so a
-    /// caller can distinguish a near-duplicate (~0.95) from a merely-related hit (~0.6) — the
-    /// basis for a principled "is this the same fact?" check on write. `None` for keyword-only or
-    /// filter-only hits (no vector component to measure).
+    /// Absolute semantic closeness — the raw cosine (roughly `0..1`) between the query and this
+    /// block, recovered before RRF (which fuses by rank) discards it. Present **only when a vector
+    /// match contributed** to this hit; absent (the key is omitted) for keyword-only or filter-only
+    /// hits, where its absence is itself the signal "no semantic component here." Unlike `score`
+    /// this is comparable across queries, so it — not the number alone — is what a caller reads to
+    /// judge "is this the same fact?" (still confirm by reading the block; there is no match floor).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub similarity: Option<f64>,
+    pub semantic_similarity: Option<f64>,
+    /// Whether this hit matched the **keyword** engine (FTS5/bm25) — i.e. the query terms are
+    /// present in its text (after the engine's stemming/tokenization, so not a literal substring).
+    /// The one honest bit from the keyword axis: presence is a real yes, so it is emitted **only
+    /// when true** and omitted otherwise. Trivially true in a keyword-only search; only informative
+    /// when both rankers ran (a hybrid query).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "std::ops::Not::not")
+    )]
+    pub keyword_match: bool,
     /// Upward context (which page(s) this block lives on). `None` from the index read path; the
     /// service overlays it from the vault DAG so a hit on a nested block isn't a context-free
     /// fragment. See [`crate::Lineage`].
@@ -1067,7 +1081,8 @@ pub mod testing {
                 .map(|b| SearchHit {
                     block: b.clone(),
                     score: 1.0,
-                    similarity: None,
+                    semantic_similarity: None,
+                    keyword_match: !needle.is_empty(),
                     lineage: None,
                 })
                 .collect();

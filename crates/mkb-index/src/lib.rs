@@ -159,7 +159,8 @@ impl SqliteIndex {
                 Ok(SearchHit {
                     block: row_to_record(r)?,
                     score: -rank,
-                    similarity: None,
+                    semantic_similarity: None,
+                    keyword_match: true,
                     lineage: None,
                 })
             })
@@ -203,7 +204,8 @@ impl SqliteIndex {
                 SearchHit {
                     block,
                     score,
-                    similarity: Some(score),
+                    semantic_similarity: Some(score),
+                    keyword_match: false,
                     lineage: None,
                 }
             })
@@ -237,7 +239,8 @@ impl SqliteIndex {
                 Ok(SearchHit {
                     block: row_to_record(r)?,
                     score: 0.0,
-                    similarity: None,
+                    semantic_similarity: None,
+                    keyword_match: false,
                     lineage: None,
                 })
             })
@@ -346,12 +349,14 @@ impl Index for SqliteIndex {
                 let vec = self.vector_hits(query, vector, limit * 4)?;
                 let kw_ids: Vec<BlockId> = kw.iter().map(|h| h.block.id.clone()).collect();
                 let vec_ids: Vec<BlockId> = vec.iter().map(|h| h.block.id.clone()).collect();
-                // Preserve the calibrated cosine per block; RRF fuses by rank and would otherwise
-                // discard it, leaving a caller unable to tell a near-duplicate from a loose match.
-                let similarity: std::collections::HashMap<BlockId, f64> = vec
+                // Recover each block's raw cosine and its keyword-set membership before RRF — which
+                // fuses by rank — discards both, leaving a caller unable to tell a near-duplicate
+                // from a loose match, or why the hit surfaced (semantic vs keyword).
+                let sim_by_id: std::collections::HashMap<BlockId, f64> = vec
                     .iter()
-                    .filter_map(|h| h.similarity.map(|s| (h.block.id.clone(), s)))
+                    .filter_map(|h| h.semantic_similarity.map(|s| (h.block.id.clone(), s)))
                     .collect();
+                let kw_set: std::collections::HashSet<BlockId> = kw_ids.iter().cloned().collect();
                 let mut records: std::collections::HashMap<BlockId, BlockRecord> =
                     std::collections::HashMap::new();
                 for h in kw.into_iter().chain(vec) {
@@ -361,11 +366,13 @@ impl Index for SqliteIndex {
                 Ok(fused
                     .into_iter()
                     .filter_map(|(id, score)| {
-                        let sim = similarity.get(&id).copied();
+                        let sim = sim_by_id.get(&id).copied();
+                        let kw = kw_set.contains(&id);
                         records.remove(&id).map(|block| SearchHit {
                             block,
                             score,
-                            similarity: sim,
+                            semantic_similarity: sim,
+                            keyword_match: kw,
                             lineage: None,
                         })
                     })

@@ -375,12 +375,13 @@ transparently respawns it — at most a brief cold start.
   - **Lookup** (query → block, read-time): "find X." Lean snippet search is correct here. *(shipped:
     match-snippet search.)*
   - **Write-time absence check** (query → block): "does this fact already exist before I create it?"
-    Still search, but the cost of a miss is a *new duplicate*, so it wants a calibrated sameness
-    signal, not a truncated preview. *(shipped: `search` now surfaces the raw cosine `similarity` per
-    hit — previously discarded by RRF fusion — so an agent can tell a near-duplicate (~0.95) from a
-    merely-related hit, then `get_block` the top candidates to compare before writing.)* Remaining: a
-    documented write-preflight workflow/skill ("search 2–3 phrasings of the proposed fact; if
-    similarity is high, `get_block` the close hits and reconcile instead of forking").
+    Still search, but the cost of a miss is a *new duplicate*, so it wants an absolute sameness
+    signal, not a query-relative rank. *(shipped: `search` surfaces `semantic_similarity` (the raw
+    cosine, recovered before RRF fusion discards it) and `keyword_match` per hit, so an agent has
+    both provenance and an absolute closeness read, then `get_block`s the top candidates to compare
+    before writing.)* Remaining: a documented write-preflight workflow/skill ("search 2–3 phrasings
+    of the proposed fact; if the close hits look like the same fact, `get_block` and reconcile
+    instead of forking").
   - **Background audit** (corpus → corpus): "where does the vault duplicate *itself*?" There is no
     query, so no search change reaches it — this is the genuinely separate capability. *(planned.)*
     It bifurcates by granularity, which matters because whole-block embeddings can't see a small

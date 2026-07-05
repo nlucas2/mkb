@@ -58,7 +58,7 @@ pub fn all_tool_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "search",
-            description: "Search the knowledge base (keyword + semantic). Each hit is a flat card: the full block (id, title, tags, body, properties, timestamps) plus this query's relevance score and semantic similarity (raw cosine — near-1.0 means near-duplicate), and the root page(s) it lives on. Optional filters: lang, tags, limit, and created/updated date ranges (the staleness/freshness audit — e.g. updated_before to find blocks not touched since a date). Dates are YYYY-MM-DD or RFC 3339. created comes free from each block's id; updated is the last-write time.",
+            description: "Search the knowledge base (keyword + semantic). Each hit is a flat card: the full block (id, title, tags, body, properties, timestamps) plus how it ranked — `score` (the fused keyword+semantic rank, relative to THIS query, not an absolute confidence), `semantic_similarity` (raw cosine ~0..1, present only when a semantic match contributed; comparable across queries, so read this — not score — to judge how close in meaning, then confirm by reading the block), and `keyword_match: true` (present only when the block's text matched the query terms) — plus the root page(s) it lives on. Optional filters: lang, tags, limit, and created/updated date ranges (the staleness/freshness audit — e.g. updated_before to find blocks not touched since a date). Dates are YYYY-MM-DD or RFC 3339. created comes free from each block's id; updated is the last-write time.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -531,22 +531,31 @@ fn search_snippet_enabled() -> bool {
 
 /// The flat per-hit shape MCP `search` returns. The whole block record is flattened up (via
 /// `#[serde(flatten)]`, so **every** block field is present and none is silently dropped) alongside
-/// the per-query ranking fields — `score` and the calibrated `similarity` (raw cosine) — plus
-/// `roots`, the block's root page title(s) distilled from lineage (the semantic "where it lives",
-/// without the verbose DAG object). The index-internal `contextual_text` never serializes (it is
-/// field-skipped on `BlockRecord`). `content` is the full body unless `MKB_MCP_SEARCH_SNIPPET`
-/// truncates it. Flattening the real record is the DRY choice: a new `BlockRecord` field appears
-/// here automatically, so this projection cannot drift from the source type.
+/// the per-query ranking fields — `score` (the RRF fusion rank, query-relative), the absolute
+/// `semantic_similarity` (raw cosine, present only when a semantic match contributed), and
+/// `keyword_match` (present only when the block matched the keyword engine) — plus `roots`, the
+/// block's root page title(s) distilled from lineage (the semantic "where it lives", without the
+/// verbose DAG object). The index-internal `contextual_text` never serializes (it is field-skipped
+/// on `BlockRecord`). `content` is the full body unless `MKB_MCP_SEARCH_SNIPPET` truncates it.
+/// Flattening the real record is the DRY choice: a new `BlockRecord` field appears here
+/// automatically, so this projection cannot drift from the source type.
 #[derive(serde::Serialize)]
 struct McpSearchHit<'a> {
     #[serde(flatten)]
     block: Cow<'a, mkb_core::BlockRecord>,
+    /// Fused Reciprocal Rank Fusion rank (keyword + semantic ordering). Query-relative — it orders
+    /// *this* result set, not an absolute confidence; use `semantic_similarity` for that.
     score: f64,
-    /// Calibrated semantic similarity (raw cosine, ~0..1) when a vector match contributed — lets
-    /// the agent judge "is this the same fact?" (near-1.0) vs "merely related" on a write-time
-    /// dedup check. Absent for keyword/filter-only hits (no vector component to measure).
+    /// Absolute semantic closeness (raw cosine, ~0..1) — present only when a vector match
+    /// contributed; its absence means "no semantic component for this hit." Comparable across
+    /// queries (unlike `score`), so it's the signal to read on a write-time "same fact?" check —
+    /// confirm by reading the block (there is no match floor).
     #[serde(skip_serializing_if = "Option::is_none")]
-    similarity: Option<f64>,
+    semantic_similarity: Option<f64>,
+    /// True when the block matched the keyword engine (FTS5 — after stemming, not a literal
+    /// substring). Emitted only when true; absence means the query terms weren't matched.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    keyword_match: bool,
     /// Root page(s) this block lives on (from lineage); empty for a root or when unresolved.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     roots: Vec<&'a str>,
@@ -574,7 +583,8 @@ fn hits_to_json_impl(hits: &[mkb_core::SearchHit], snippet: bool) -> Result<Stri
                 Cow::Borrowed(&h.block)
             },
             score: h.score,
-            similarity: h.similarity,
+            semantic_similarity: h.semantic_similarity,
+            keyword_match: h.keyword_match,
             roots: h
                 .lineage
                 .as_ref()
@@ -841,7 +851,8 @@ mod tests {
         mkb_core::SearchHit {
             block: rec,
             score: 1.5,
-            similarity: Some(0.87),
+            semantic_similarity: Some(0.87),
+            keyword_match: true,
             lineage: None,
         }
     }
@@ -870,22 +881,42 @@ mod tests {
         }
         // Per-query ranking fields sit alongside the block.
         assert!(out.contains("score"));
-        assert!(out.contains("similarity"), "missing similarity field");
-        assert!(out.contains("0.87"), "similarity value not serialized");
+        assert!(
+            out.contains("semantic_similarity"),
+            "missing semantic_similarity field"
+        );
+        assert!(
+            out.contains("0.87"),
+            "semantic_similarity value not serialized"
+        );
+        // The keyword-axis provenance flag is present (this hit matched keywords).
+        assert!(out.contains("keyword_match"), "missing keyword_match field");
         // Still carries what a caller needs to identify the block.
         assert!(out.contains("01KVKJ1RH7H3T01HXTN3HTQRAT"));
         assert!(out.contains("A Title"));
     }
 
     #[test]
-    fn keyword_only_hit_omits_similarity() {
-        // A hit with no vector component (similarity None) must not emit the field.
+    fn keyword_only_hit_omits_semantic_similarity() {
+        // A hit with no vector component (semantic_similarity None) must not emit the field.
         let mut hit = hit_with_body("kw only");
-        hit.similarity = None;
+        hit.semantic_similarity = None;
         let out = hits_to_json_impl(&[hit], false).unwrap();
         assert!(
-            !out.contains("similarity"),
-            "similarity should be omitted when None"
+            !out.contains("semantic_similarity"),
+            "semantic_similarity should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn non_keyword_hit_omits_keyword_match() {
+        // A purely-semantic hit (keyword_match false) must not emit the flag.
+        let mut hit = hit_with_body("semantic only");
+        hit.keyword_match = false;
+        let out = hits_to_json_impl(&[hit], false).unwrap();
+        assert!(
+            !out.contains("keyword_match"),
+            "keyword_match should be omitted when false"
         );
     }
 
@@ -906,7 +937,7 @@ mod tests {
         // It is still a flat card carrying metadata + ranking, never the embedding blob.
         assert!(!out.contains("\"block\""), "still flat");
         assert!(out.contains("child_count"), "snippet mode keeps metadata");
-        assert!(out.contains("similarity"));
+        assert!(out.contains("semantic_similarity"));
         assert!(!out.contains("contextual_text"));
     }
 }
