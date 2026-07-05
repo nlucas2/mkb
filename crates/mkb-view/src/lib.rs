@@ -370,7 +370,7 @@ pub fn search_results_html(query: &str, rows: &[ResultRow]) -> String {
     }
     out.push_str("<ul class=\"results\">");
     for r in rows {
-        let preview: String = r.content.replace('\n', " ").chars().take(160).collect();
+        let preview = mkb_core::snippet(&r.content, mkb_core::SNIPPET_MAX);
         let crumb = if r.tags.is_empty() {
             String::new()
         } else {

@@ -22,7 +22,7 @@ pub mod service;
 pub mod sync;
 pub mod vault;
 
-pub use block::Block;
+pub use block::{snippet, Block, SNIPPET_MAX};
 pub use blockfile::{parse_block, write_block};
 pub use conflict::{is_conflict_path, CONFLICT_MARKERS};
 pub use embed::{

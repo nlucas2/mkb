@@ -56,7 +56,7 @@ pub fn all_tool_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "search",
-            description: "Search the knowledge base (keyword + semantic). Optional filters: lang, tags, limit, and created/updated date ranges (the staleness/freshness audit — e.g. updated_before to find blocks not touched since a date). Dates are YYYY-MM-DD or RFC 3339. created comes free from each block's id; updated is the last-write time.",
+            description: "Search the knowledge base (keyword + semantic). Returns lean hits — id, title, tags, score, a short body snippet, and the root page(s) it lives on — NOT the full body; call get_block with a hit's id for the complete text. Optional filters: lang, tags, limit, and created/updated date ranges (the staleness/freshness audit — e.g. updated_before to find blocks not touched since a date). Dates are YYYY-MM-DD or RFC 3339. created comes free from each block's id; updated is the last-write time.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -86,6 +86,17 @@ pub fn all_tool_definitions() -> Vec<ToolDef> {
                     "end": {"type": "integer", "description": "Last body line to return, 1-based inclusive (default: to the end)"}
                 },
                 "required": ["id"]
+            }),
+        },
+        ToolDef {
+            name: "get_blocks",
+            description: "Batch-read several blocks' FULL bodies by id in ONE call (unknown ids skipped). Use to inspect a handful of candidates at once — e.g. a write-time dedup check: search, then get_blocks the top few plausible ids and compare their full text before creating a new block (or to reconcile a fact scattered across several). Returns id, title, tags, properties, timestamps, and the complete Markdown body per block; for a single block's lineage/relationships use get_block instead.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ids": {"type": "array", "items": {"type": "string"}, "description": "Block ids to fetch (order preserved; unknown ids omitted)"}
+                },
+                "required": ["ids"]
             }),
         },
         ToolDef {
@@ -359,6 +370,20 @@ pub fn build_request(name: &str, args: &Value) -> Result<Request, String> {
                 .map(|n| n as usize),
             end: args.get("end").and_then(|v| v.as_u64()).map(|n| n as usize),
         },
+        "get_blocks" => {
+            let raw = args
+                .get("ids")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| "missing required argument: ids".to_string())?;
+            let mut ids = Vec::with_capacity(raw.len());
+            for v in raw {
+                let s = v
+                    .as_str()
+                    .ok_or_else(|| "ids must be an array of block-id strings".to_string())?;
+                ids.push(BlockId::parse(s).map_err(|_| format!("invalid block id: {s}"))?);
+            }
+            Request::GetBlocks { ids }
+        }
         "list_blocks" => {
             if args
                 .get("roots_only")
@@ -492,8 +517,9 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
         }),
         Response::Ids(v) => to_json(v),
         Response::Names(n) => to_json(n),
-        Response::Hits(h) => to_json(h),
+        Response::Hits(h) => hits_to_json(h),
         Response::Block(b) => to_json(b),
+        Response::Blocks(b) => blocks_to_json(b),
         Response::Page(p) => to_json(p),
         // The MCP server never heartbeats or long-polls, but the match must stay exhaustive.
         Response::Heartbeat { generation } => Ok(generation.to_string()),
@@ -510,8 +536,116 @@ pub fn format_response(resp: &Response) -> Result<String, String> {
     }
 }
 
-fn to_json<T: serde::Serialize>(v: &T) -> Result<String, String> {
+fn to_json<T: serde::Serialize + ?Sized>(v: &T) -> Result<String, String> {
     serde_json::to_string_pretty(v).map_err(|e| e.to_string())
+}
+
+/// Escape hatch: set `MKB_MCP_SEARCH_FULL=1` (or `true`/`yes`) to return full search hits (every
+/// block field, including the whole body) instead of the lean snippet shape — the pre-snippet
+/// behavior, for the rare caller that genuinely wants full bodies from `search`.
+fn search_full_enabled() -> bool {
+    std::env::var("MKB_MCP_SEARCH_FULL")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            !(v.is_empty() || v == "0" || v == "false" || v == "no")
+        })
+        .unwrap_or(false)
+}
+
+/// The lean per-hit shape the MCP `search` returns by default: enough to judge a hit and fetch it,
+/// without the full body or the `contextual_text` embedding blob. `get_block` returns the rest.
+#[derive(serde::Serialize)]
+struct SnippetHit<'a> {
+    id: &'a BlockId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    tags: &'a [String],
+    score: f64,
+    /// Calibrated semantic similarity (raw cosine, ~0..1) when a vector match contributed — lets
+    /// the agent judge "is this the same fact?" (near-1.0) vs "merely related" on a write-time
+    /// dedup check, rather than eyeballing a truncated snippet. Absent for keyword/filter-only hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    similarity: Option<f64>,
+    snippet: String,
+    /// Root page(s) this block lives on (from lineage); empty for a root or when unresolved.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    roots: Vec<&'a str>,
+    /// Only emitted when true (human-only block).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    locked: bool,
+}
+
+/// Serialize search hits. Default: the lean [`SnippetHit`] shape (bounded context). With
+/// `MKB_MCP_SEARCH_FULL` set, the full raw hits (pre-snippet behavior).
+fn hits_to_json(hits: &[mkb_core::SearchHit]) -> Result<String, String> {
+    hits_to_json_impl(hits, search_full_enabled())
+}
+
+/// Serialize search hits. `full` (from `MKB_MCP_SEARCH_FULL`) returns the raw hits (pre-snippet
+/// behavior); otherwise the lean [`SnippetHit`] shape. Split from the env read so it's testable
+/// without touching process-global state.
+fn hits_to_json_impl(hits: &[mkb_core::SearchHit], full: bool) -> Result<String, String> {
+    if full {
+        return to_json(hits);
+    }
+    let lean: Vec<SnippetHit> = hits
+        .iter()
+        .map(|h| SnippetHit {
+            id: &h.block.id,
+            title: h.block.title.as_deref(),
+            tags: &h.block.tags,
+            score: h.score,
+            similarity: h.similarity,
+            snippet: mkb_core::snippet(&h.block.content, mkb_core::SNIPPET_MAX),
+            roots: h
+                .lineage
+                .as_ref()
+                .map(|l| l.roots.iter().map(|c| c.title.as_str()).collect())
+                .unwrap_or_default(),
+            locked: h.block.locked,
+        })
+        .collect();
+    to_json(&lean)
+}
+
+/// A batch-fetched block for `get_blocks`: the FULL body (the point — for comparison/dedup) plus
+/// identifying metadata, but deliberately WITHOUT the `contextual_text` embedding blob (an
+/// internal that would double the payload, ×N here).
+#[derive(serde::Serialize)]
+struct BlockCard<'a> {
+    id: &'a BlockId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    tags: &'a [String],
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    props: &'a [(String, String)],
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    locked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    updated: Option<&'a str>,
+    content: &'a str,
+}
+
+/// Serialize batch-fetched blocks as lean full-content cards (no `contextual_text`).
+fn blocks_to_json(blocks: &[mkb_core::BlockRecord]) -> Result<String, String> {
+    let cards: Vec<BlockCard> = blocks
+        .iter()
+        .map(|b| BlockCard {
+            id: &b.id,
+            title: b.title.as_deref(),
+            tags: &b.tags,
+            props: &b.props,
+            locked: b.locked,
+            created: b.created.as_deref(),
+            updated: b.updated.as_deref(),
+            content: &b.content,
+        })
+        .collect();
+    to_json(&cards)
 }
 
 #[cfg(test)]
@@ -574,7 +708,7 @@ mod tests {
     fn every_tool_name_builds_a_request() {
         let id = BlockId::generate().to_string();
         let args = json!({
-            "query": "q", "id": id, "source_id": id, "target_id": id, "parent_id": id,
+            "query": "q", "id": id, "ids": [id], "source_id": id, "target_id": id, "parent_id": id,
             "child_id": id, "title": "T", "body": "b", "embed": true, "tags": ["x"],
             "props": [{"key": "source", "value": "git"}], "keys": ["source"],
             "old": "b", "new": "c", "text": "more", "start": 1, "end": 2,
@@ -751,5 +885,115 @@ mod tests {
             message: "boom".into(),
         };
         assert_eq!(format_response(&resp).unwrap_err(), "boom");
+    }
+
+    fn hit_with_body(body: &str) -> mkb_core::SearchHit {
+        let rec = mkb_core::BlockRecord {
+            id: BlockId::parse("01KVKJ1RH7H3T01HXTN3HTQRAT").unwrap(),
+            title: Some("A Title".into()),
+            tags: vec!["principle".into()],
+            langs: vec![],
+            content: body.to_string(),
+            contextual_text: format!("A Title\n\n{body}"),
+            child_count: 0,
+            locked: false,
+            props: vec![],
+            created: None,
+            updated: None,
+        };
+        mkb_core::SearchHit {
+            block: rec,
+            score: 1.5,
+            similarity: Some(0.87),
+            lineage: None,
+        }
+    }
+
+    #[test]
+    fn search_hits_are_lean_snippets_by_default() {
+        let big = "word ".repeat(500); // ~2500 chars of body
+        let out = hits_to_json_impl(&[hit_with_body(&big)], false).unwrap();
+        // The embedding blob and full body must NOT be shipped.
+        assert!(!out.contains("contextual_text"), "leaked contextual_text");
+        assert!(out.contains("snippet"), "missing snippet field");
+        assert!(
+            out.contains('…'),
+            "long body should be truncated with an ellipsis"
+        );
+        // The response is bounded, not the full 2500-char body.
+        assert!(
+            out.len() < 1_000,
+            "snippet response should be small, got {}",
+            out.len()
+        );
+        // Still carries what a caller needs to fetch the block.
+        assert!(out.contains("01KVKJ1RH7H3T01HXTN3HTQRAT"));
+        assert!(out.contains("A Title"));
+        // The calibrated similarity is surfaced (the dedup signal RRF would otherwise hide).
+        assert!(out.contains("similarity"), "missing similarity field");
+        assert!(out.contains("0.87"), "similarity value not serialized");
+    }
+
+    #[test]
+    fn keyword_only_hit_omits_similarity() {
+        // A hit with no vector component (similarity None) must not emit the field.
+        let mut hit = hit_with_body("kw only");
+        hit.similarity = None;
+        let out = hits_to_json_impl(&[hit], false).unwrap();
+        assert!(
+            !out.contains("similarity"),
+            "similarity should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn get_blocks_maps_id_array() {
+        let req = build_request(
+            "get_blocks",
+            &json!({"ids": ["01KVKJ1RH7H3T01HXTN3HTQRAT", "01KWQY11QZQ081XBTX2BDPSJJQ"]}),
+        )
+        .unwrap();
+        match req {
+            Request::GetBlocks { ids } => assert_eq!(ids.len(), 2),
+            other => panic!("expected GetBlocks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_blocks_requires_ids_and_rejects_bad_id() {
+        assert!(build_request("get_blocks", &json!({})).is_err());
+        assert!(build_request("get_blocks", &json!({"ids": ["not-a-ulid"]})).is_err());
+    }
+
+    #[test]
+    fn get_blocks_response_is_full_body_without_contextual_text() {
+        let hit = hit_with_body("the full body to compare");
+        let out = format_response(&Response::Blocks(vec![hit.block])).unwrap();
+        assert!(
+            out.contains("the full body to compare"),
+            "full content must be present"
+        );
+        assert!(
+            !out.contains("contextual_text"),
+            "must not ship the embedding blob"
+        );
+    }
+
+    #[test]
+    fn short_body_is_not_truncated() {
+        let out = hits_to_json_impl(&[hit_with_body("just a short note")], false).unwrap();
+        assert!(out.contains("just a short note"));
+        assert!(!out.contains('…'));
+    }
+
+    #[test]
+    fn search_full_returns_whole_hits() {
+        // Full mode includes the fields the lean shape drops.
+        let out = hits_to_json_impl(&[hit_with_body("a body")], true).unwrap();
+        assert!(
+            out.contains("contextual_text"),
+            "full mode should include the raw record"
+        );
+        assert!(out.contains("child_count"));
     }
 }

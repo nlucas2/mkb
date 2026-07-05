@@ -411,6 +411,16 @@ pub struct SearchHit {
     pub block: BlockRecord,
     /// Combined relevance score (higher is better).
     pub score: f64,
+    /// Calibrated semantic similarity — the raw cosine (roughly `0..1`) when a vector match
+    /// contributed to this hit. This is the signal the fused RRF `score` otherwise hides, so a
+    /// caller can distinguish a near-duplicate (~0.95) from a merely-related hit (~0.6) — the
+    /// basis for a principled "is this the same fact?" check on write. `None` for keyword-only or
+    /// filter-only hits (no vector component to measure).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub similarity: Option<f64>,
     /// Upward context (which page(s) this block lives on). `None` from the index read path; the
     /// service overlays it from the vault DAG so a hit on a nested block isn't a context-free
     /// fragment. See [`crate::Lineage`].
@@ -1051,6 +1061,7 @@ pub mod testing {
                 .map(|b| SearchHit {
                     block: b.clone(),
                     score: 1.0,
+                    similarity: None,
                     lineage: None,
                 })
                 .collect();

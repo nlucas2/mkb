@@ -321,6 +321,27 @@ impl<I: Index> Service<I> {
         Ok(record)
     }
 
+    /// Batch variant of [`get_block`]: fetch several records in one call, skipping any unknown id.
+    /// Order follows `ids`. Metadata (lock/props/timestamps) is overlaid per record, same as the
+    /// single fetch.
+    ///
+    /// [`get_block`]: Service::get_block
+    pub fn get_blocks(
+        &self,
+        ctx: &RequestContext,
+        ids: &[BlockId],
+    ) -> Result<Vec<BlockRecord>, IndexError> {
+        ctx.authorize(Capability::Read)?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(mut rec) = self.engine.index().block(id)? {
+                self.overlay_metadata(&mut rec);
+                out.push(rec);
+            }
+        }
+        Ok(out)
+    }
+
     /// Display title for a neighbour block (falls back to its id when untitled/absent).
     fn crumb_title(&self, id: &BlockId) -> String {
         self.engine

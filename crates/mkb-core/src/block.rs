@@ -164,6 +164,19 @@ fn truncate_chars(s: &str, n: usize) -> String {
     }
 }
 
+/// A compact one-line plain-text preview of block-body `content`: whitespace runs collapsed to
+/// single spaces, then truncated to `max` characters on a char boundary (with a trailing `…` when
+/// cut). Defined once here so **every** client's search-result preview is identical — the UI and
+/// the MCP server can't grow divergent snippet logic (see `AGENTS.md`).
+pub fn snippet(content: &str, max: usize) -> String {
+    let collapsed = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&collapsed, max)
+}
+
+/// Default preview length for a search-result snippet. A single shared constant so all clients cut
+/// at the same place by default.
+pub const SNIPPET_MAX: usize = 160;
+
 #[cfg(test)]
 mod tests {
     use super::*;

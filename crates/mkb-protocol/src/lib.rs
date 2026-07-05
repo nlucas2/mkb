@@ -74,6 +74,13 @@ pub enum Request {
         /// Block id.
         id: BlockId,
     },
+    /// Batch-fetch several block records by id in one round-trip (unknown ids are skipped). For
+    /// inspecting a handful of candidates at once — e.g. a write-time dedup check comparing the
+    /// full text of the top search hits — without N separate `get_block` calls.
+    GetBlocks {
+        /// Block ids to fetch.
+        ids: Vec<BlockId>,
+    },
     /// Rich, self-contained read of a block: content (raw, rendered, or a line range) plus its
     /// lineage and its incoming/outgoing relationships. Folds together [`GetBlock`],
     /// [`RenderBlock`], [`GetBlockSourceRange`], [`LinksFrom`] and [`Backlinks`].
@@ -410,6 +417,7 @@ impl Request {
             | Request::PlanExports { .. }
             | Request::Search { .. }
             | Request::GetBlock { .. }
+            | Request::GetBlocks { .. }
             | Request::GetBlockView { .. }
             | Request::GetBlockSource { .. }
             | Request::BlockVersion { .. }
@@ -460,6 +468,8 @@ pub enum Response {
     Hits(Vec<SearchHit>),
     /// A single (optional) block record.
     Block(Option<BlockRecord>),
+    /// Several block records (batch fetch; unknown ids omitted).
+    Blocks(Vec<BlockRecord>),
     /// A single (optional) rich page view (block + lineage + relationships).
     Page(Option<PageView>),
     /// Reply to [`Request::Heartbeat`]: the lease is renewed, and `generation` is the daemon's
@@ -581,6 +591,9 @@ fn handle<I: Index>(
         }
         Request::Search { query } => Response::Hits(service.search(ctx, query).map_err(to_str)?),
         Request::GetBlock { id } => Response::Block(service.get_block(ctx, &id).map_err(to_str)?),
+        Request::GetBlocks { ids } => {
+            Response::Blocks(service.get_blocks(ctx, &ids).map_err(to_str)?)
+        }
         Request::GetBlockView {
             id,
             rendered,
@@ -1111,6 +1124,14 @@ impl Client {
     pub fn get_block(&self, id: BlockId) -> io::Result<Option<BlockRecord>> {
         match self.call(&Request::GetBlock { id })? {
             Response::Block(b) => Ok(b),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Convenience: batch-fetch several block records (unknown ids skipped).
+    pub fn get_blocks(&self, ids: Vec<BlockId>) -> io::Result<Vec<BlockRecord>> {
+        match self.call(&Request::GetBlocks { ids })? {
+            Response::Blocks(b) => Ok(b),
             other => Err(unexpected(other)),
         }
     }
