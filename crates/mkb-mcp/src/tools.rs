@@ -5,6 +5,8 @@
 //! schemas and (de)serialization — so the MCP server cannot diverge (see `AGENTS.md`). The
 //! unit is the **block** (one file); reuse is by block id (`![[id]]` child / `[[id]]` ref).
 
+use std::borrow::Cow;
+
 use mkb_core::{BlockId, SearchQuery};
 use mkb_protocol::{Request, Response};
 use serde_json::{json, Value};
@@ -56,7 +58,7 @@ pub fn all_tool_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "search",
-            description: "Search the knowledge base (keyword + semantic). Returns lean hits — id, title, tags, score, a short body snippet, and the root page(s) it lives on — NOT the full body; call get_block with a hit's id for the complete text. Optional filters: lang, tags, limit, and created/updated date ranges (the staleness/freshness audit — e.g. updated_before to find blocks not touched since a date). Dates are YYYY-MM-DD or RFC 3339. created comes free from each block's id; updated is the last-write time.",
+            description: "Search the knowledge base (keyword + semantic). Each hit is a flat card: the full block (id, title, tags, body, properties, timestamps) plus this query's relevance score and semantic similarity (raw cosine — near-1.0 means near-duplicate), and the root page(s) it lives on. Optional filters: lang, tags, limit, and created/updated date ranges (the staleness/freshness audit — e.g. updated_before to find blocks not touched since a date). Dates are YYYY-MM-DD or RFC 3339. created comes free from each block's id; updated is the last-write time.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -514,11 +516,12 @@ fn to_json<T: serde::Serialize + ?Sized>(v: &T) -> Result<String, String> {
     serde_json::to_string_pretty(v).map_err(|e| e.to_string())
 }
 
-/// Escape hatch: set `MKB_MCP_SEARCH_FULL=1` (or `true`/`yes`) to return full search hits (every
-/// block field, including the whole body) instead of the lean snippet shape — the pre-snippet
-/// behavior, for the rare caller that genuinely wants full bodies from `search`.
-fn search_full_enabled() -> bool {
-    std::env::var("MKB_MCP_SEARCH_FULL")
+/// Opt-in: set `MKB_MCP_SEARCH_SNIPPET=1` (or `true`/`yes`) to truncate each hit's body to a short
+/// snippet instead of returning the full block. Off by default — at the current corpus scale full
+/// bodies are cheap, and truncating discards context the agent usually wants; this is only a guard
+/// for pathologically large blocks or large result sets.
+fn search_snippet_enabled() -> bool {
+    std::env::var("MKB_MCP_SEARCH_SNIPPET")
         .map(|v| {
             let v = v.trim().to_ascii_lowercase();
             !(v.is_empty() || v == "0" || v == "false" || v == "no")
@@ -526,61 +529,60 @@ fn search_full_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// The lean per-hit shape the MCP `search` returns by default: enough to judge a hit and fetch it,
-/// without the full body or the `contextual_text` embedding blob. `get_block` returns the rest.
+/// The flat per-hit shape MCP `search` returns. The whole block record is flattened up (via
+/// `#[serde(flatten)]`, so **every** block field is present and none is silently dropped) alongside
+/// the per-query ranking fields — `score` and the calibrated `similarity` (raw cosine) — plus
+/// `roots`, the block's root page title(s) distilled from lineage (the semantic "where it lives",
+/// without the verbose DAG object). The index-internal `contextual_text` never serializes (it is
+/// field-skipped on `BlockRecord`). `content` is the full body unless `MKB_MCP_SEARCH_SNIPPET`
+/// truncates it. Flattening the real record is the DRY choice: a new `BlockRecord` field appears
+/// here automatically, so this projection cannot drift from the source type.
 #[derive(serde::Serialize)]
-struct SnippetHit<'a> {
-    id: &'a BlockId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    title: Option<&'a str>,
-    #[serde(skip_serializing_if = "<[_]>::is_empty")]
-    tags: &'a [String],
+struct McpSearchHit<'a> {
+    #[serde(flatten)]
+    block: Cow<'a, mkb_core::BlockRecord>,
     score: f64,
     /// Calibrated semantic similarity (raw cosine, ~0..1) when a vector match contributed — lets
     /// the agent judge "is this the same fact?" (near-1.0) vs "merely related" on a write-time
-    /// dedup check, rather than eyeballing a truncated snippet. Absent for keyword/filter-only hits.
+    /// dedup check. Absent for keyword/filter-only hits (no vector component to measure).
     #[serde(skip_serializing_if = "Option::is_none")]
     similarity: Option<f64>,
-    snippet: String,
     /// Root page(s) this block lives on (from lineage); empty for a root or when unresolved.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     roots: Vec<&'a str>,
-    /// Only emitted when true (human-only block).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    locked: bool,
 }
 
-/// Serialize search hits. Default: the lean [`SnippetHit`] shape (bounded context). With
-/// `MKB_MCP_SEARCH_FULL` set, the full raw hits (pre-snippet behavior).
+/// Serialize search hits as flat [`McpSearchHit`] cards. Body truncation is opt-in via
+/// `MKB_MCP_SEARCH_SNIPPET`; by default each hit carries the full block body.
 fn hits_to_json(hits: &[mkb_core::SearchHit]) -> Result<String, String> {
-    hits_to_json_impl(hits, search_full_enabled())
+    hits_to_json_impl(hits, search_snippet_enabled())
 }
 
-/// Serialize search hits. `full` (from `MKB_MCP_SEARCH_FULL`) returns the raw hits (pre-snippet
-/// behavior); otherwise the lean [`SnippetHit`] shape. Split from the env read so it's testable
-/// without touching process-global state.
-fn hits_to_json_impl(hits: &[mkb_core::SearchHit], full: bool) -> Result<String, String> {
-    if full {
-        return to_json(hits);
-    }
-    let lean: Vec<SnippetHit> = hits
+/// Serialize search hits as flat [`McpSearchHit`] cards. When `snippet` (from
+/// `MKB_MCP_SEARCH_SNIPPET`) each body is truncated to [`mkb_core::SNIPPET_MAX`] on an owned clone;
+/// otherwise the full record is borrowed and returned whole. Split from the env read so it's
+/// testable without touching process-global state.
+fn hits_to_json_impl(hits: &[mkb_core::SearchHit], snippet: bool) -> Result<String, String> {
+    let cards: Vec<McpSearchHit> = hits
         .iter()
-        .map(|h| SnippetHit {
-            id: &h.block.id,
-            title: h.block.title.as_deref(),
-            tags: &h.block.tags,
+        .map(|h| McpSearchHit {
+            block: if snippet {
+                let mut rec = h.block.clone();
+                rec.content = mkb_core::snippet(&h.block.content, mkb_core::SNIPPET_MAX);
+                Cow::Owned(rec)
+            } else {
+                Cow::Borrowed(&h.block)
+            },
             score: h.score,
             similarity: h.similarity,
-            snippet: mkb_core::snippet(&h.block.content, mkb_core::SNIPPET_MAX),
             roots: h
                 .lineage
                 .as_ref()
                 .map(|l| l.roots.iter().map(|c| c.title.as_str()).collect())
                 .unwrap_or_default(),
-            locked: h.block.locked,
         })
         .collect();
-    to_json(&lean)
+    to_json(&cards)
 }
 
 #[cfg(test)]
@@ -845,28 +847,34 @@ mod tests {
     }
 
     #[test]
-    fn search_hits_are_lean_snippets_by_default() {
+    fn search_hits_are_full_flat_cards_by_default() {
         let big = "word ".repeat(500); // ~2500 chars of body
         let out = hits_to_json_impl(&[hit_with_body(&big)], false).unwrap();
-        // The embedding blob and full body must NOT be shipped.
-        assert!(!out.contains("contextual_text"), "leaked contextual_text");
-        assert!(out.contains("snippet"), "missing snippet field");
+        // Default returns the FULL body, not a truncated snippet.
+        assert!(!out.contains('…'), "default must not truncate");
         assert!(
-            out.contains('…'),
-            "long body should be truncated with an ellipsis"
-        );
-        // The response is bounded, not the full 2500-char body.
-        assert!(
-            out.len() < 1_000,
-            "snippet response should be small, got {}",
+            out.len() > 2_000,
+            "full body should be returned, got {}",
             out.len()
         );
-        // Still carries what a caller needs to fetch the block.
-        assert!(out.contains("01KVKJ1RH7H3T01HXTN3HTQRAT"));
-        assert!(out.contains("A Title"));
-        // The calibrated similarity is surfaced (the dedup signal RRF would otherwise hide).
+        // Flat shape: block fields sit at top level, not nested under a "block" key.
+        assert!(
+            !out.contains("\"block\""),
+            "card should be flat, not nested"
+        );
+        // The index-internal embedding blob never leaks.
+        assert!(!out.contains("contextual_text"), "leaked contextual_text");
+        // Metadata the old lean card wrongly dropped is present now (via flatten).
+        for field in ["child_count", "langs", "locked"] {
+            assert!(out.contains(field), "missing block field {field}");
+        }
+        // Per-query ranking fields sit alongside the block.
+        assert!(out.contains("score"));
         assert!(out.contains("similarity"), "missing similarity field");
         assert!(out.contains("0.87"), "similarity value not serialized");
+        // Still carries what a caller needs to identify the block.
+        assert!(out.contains("01KVKJ1RH7H3T01HXTN3HTQRAT"));
+        assert!(out.contains("A Title"));
     }
 
     #[test]
@@ -882,20 +890,23 @@ mod tests {
     }
 
     #[test]
-    fn short_body_is_not_truncated() {
-        let out = hits_to_json_impl(&[hit_with_body("just a short note")], false).unwrap();
-        assert!(out.contains("just a short note"));
-        assert!(!out.contains('…'));
-    }
-
-    #[test]
-    fn search_full_returns_whole_hits() {
-        // Full mode includes the fields the lean shape drops.
-        let out = hits_to_json_impl(&[hit_with_body("a body")], true).unwrap();
+    fn snippet_mode_truncates_body_but_keeps_the_card() {
+        let big = "word ".repeat(500);
+        let out = hits_to_json_impl(&[hit_with_body(&big)], true).unwrap();
+        // Opt-in snippet mode truncates the body with an ellipsis and stays small.
         assert!(
-            out.contains("contextual_text"),
-            "full mode should include the raw record"
+            out.contains('…'),
+            "snippet mode should truncate with an ellipsis"
         );
-        assert!(out.contains("child_count"));
+        assert!(
+            out.len() < 1_000,
+            "snippet response should be small, got {}",
+            out.len()
+        );
+        // It is still a flat card carrying metadata + ranking, never the embedding blob.
+        assert!(!out.contains("\"block\""), "still flat");
+        assert!(out.contains("child_count"), "snippet mode keeps metadata");
+        assert!(out.contains("similarity"));
+        assert!(!out.contains("contextual_text"));
     }
 }

@@ -27,7 +27,13 @@ pub struct BlockRecord {
     pub langs: Vec<String>,
     /// The Markdown body (verbatim).
     pub content: String,
-    /// Title-prepended plain text used for embedding/search context.
+    /// Title-prepended plain text used for embedding/search context. This is an **index-internal**
+    /// artifact (a lossy, search-optimized rewrite of `content`), so it is never serialized to a
+    /// client — no consumer wants it, and emitting it roughly doubled every payload. It is produced
+    /// in-process (`Block::contextual_text`), persisted as an explicit SQLite column, and read back
+    /// only to feed the embedder/FTS; `default` keeps deserialization working now that the field is
+    /// absent from the wire.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing))]
     pub contextual_text: String,
     /// Number of resolved children (transclusions).
     pub child_count: usize,

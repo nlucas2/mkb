@@ -1,7 +1,7 @@
 ---
 title: "README: Roadmap"
 tags: [doc/readme]
-updated: 2026-07-05T02:30:00Z
+updated: 2026-07-05T07:35:00Z
 ---
 
 ## Roadmap
@@ -203,5 +203,5 @@ updated: 2026-07-05T02:30:00Z
       one block and embed it back everywhere.
   - Reconciliation stays **human-approved** (candidates surfaced, not auto-merged): some repetition is
     legitimately contextual, and over-eager merging into tiny generic blocks harms human browsing.
-    Note: full-body search hits remain available behind `MKB_MCP_SEARCH_FULL` for a deliberate, bounded
-    audit sweep.
+    Note: `search` returns full block bodies by default (body truncation is opt-in via
+    `MKB_MCP_SEARCH_SNIPPET`), so a corpus audit sweep already has the text it needs.
