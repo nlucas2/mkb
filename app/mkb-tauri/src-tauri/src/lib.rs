@@ -79,6 +79,248 @@ fn bundled_mkbd(app: &tauri::AppHandle) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
+/// The CLI command names bundled inside the app's `bin/` and exposed on PATH. They are staged under
+/// their real names (no `mkb-cli` rename), so on macOS the symlink `/usr/local/bin/<name>` points at
+/// `bin/<name>` directly, and on Windows the same `bin/` directory is what the installer adds to PATH.
+#[cfg(target_os = "macos")]
+const CLI_NAMES: [&str; 3] = ["mkb", "mkb-mcp", "mkbd"];
+
+/// Where the CLI tools are exposed on PATH on macOS (the conventional location Docker Desktop et al.
+/// use; on the default PATH of every shell).
+#[cfg(target_os = "macos")]
+const CLI_LINK_DIR: &str = "/usr/local/bin";
+
+/// macOS: compute which CLI symlinks are missing or stale (point somewhere other than the current
+/// bundle). Pure — it only reads the filesystem — so the linking decision is unit-testable without
+/// touching `/usr/local/bin` or prompting. Returns `(source binary, link path)` pairs still to
+/// create. A bundled binary that doesn't exist (e.g. a `cargo tauri dev` run, which has no staged
+/// `bin/`) is skipped, so an empty result means either "already linked" or "nothing to link."
+#[cfg(target_os = "macos")]
+fn cli_link_plan(bin: &std::path::Path, link_dir: &std::path::Path) -> Vec<(PathBuf, PathBuf)> {
+    let mut work = Vec::new();
+    for name in CLI_NAMES {
+        let src = bin.join(name);
+        if !src.exists() {
+            continue;
+        }
+        let link = link_dir.join(name);
+        if std::fs::read_link(&link).ok().as_deref() != Some(src.as_path()) {
+            work.push((src, link));
+        }
+    }
+    work
+}
+
+/// The app's bundled `bin/` directory (where the staged CLI binaries live), if resolvable.
+fn bundled_bin_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().resource_dir().ok().map(|r| r.join("bin"))
+}
+
+/// The `mkb` CLI's on-disk filename for this platform (`mkb.exe` on Windows, `mkb` elsewhere).
+fn cli_exe_name() -> &'static str {
+    if cfg!(windows) {
+        "mkb.exe"
+    } else {
+        "mkb"
+    }
+}
+
+/// Resolve what the user's shell would actually run for `mkb`, following the *real* PATH — the crux
+/// of the diagnostic. On macOS a GUI app's own PATH is the sparse launchd one (`/usr/bin:/bin:…`)
+/// that can't see `~/.cargo/bin`/Homebrew, so we source the **login shell** (`$SHELL -lc 'command -v
+/// mkb'`) to reflect what the *terminal* runs. On Windows we ask `where mkb`, whose first line is the
+/// entry that wins the PATH order. Returns the resolved path, or `None` if nothing is found. This is
+/// the ~1–3s step (profile sourcing / process spawn), so it only runs behind the Settings button.
+fn mkb_on_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let out = std::process::Command::new(shell)
+            .args(["-l", "-c", "command -v mkb"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!p.is_empty()).then(|| PathBuf::from(p))
+    }
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("where")
+            .arg("mkb")
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        // `where` lists every match in PATH order, one per line; the first is what runs.
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(PathBuf::from)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        None
+    }
+}
+
+/// Parse a `mkb --version` line (`"mkb 0.3.0"`) down to the bare version (`"0.3.0"`). Pure, so it's
+/// unit-testable. Returns the last whitespace-separated token, or `None` for empty output.
+fn parse_version_output(s: &str) -> Option<String> {
+    s.split_whitespace().last().map(|v| v.to_string())
+}
+
+/// Run a resolved binary's `--version` and return its bare version string, or `None` if it can't be
+/// run (e.g. `mkb` resolved to a shell alias/function rather than a real file). `mkb --version` is a
+/// clap builtin: it prints and exits without touching the daemon, so this is fast and side-effect-free.
+fn binary_version(path: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_version_output(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// **Cheap** CLI status for the startup toast and the Settings section's visibility — filesystem
+/// only, **no shell/process**. Returns a bare state string:
+/// - `unavailable` — no bundled binary (a `cargo tauri dev` run), so nothing to say → hide the UI.
+/// - `linked` (macOS) — our `/usr/local/bin` symlink is in place → no toast, but Settings can verify.
+/// - `unlinked` (macOS) — our symlink is missing/stale → show the startup toast to offer installing.
+/// - `managed` (Windows) — a bundled binary exists and the **installer** owns PATH (so there's no
+///   in-app install), but Settings still offers a diagnostic "Check" → show the section, no toast.
+///
+/// It deliberately does **not** resolve the PATH (that's the slow part, reserved for the Settings
+/// "Check" button), so it's safe on the hot startup path.
+#[tauri::command]
+fn cli_tools_status(app: tauri::AppHandle) -> String {
+    let Some(bin) = bundled_bin_dir(&app) else {
+        return "unavailable".into();
+    };
+    if !bin.join(cli_exe_name()).exists() {
+        return "unavailable".into(); // no staged binary → dev run; stay out of the way.
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if cli_link_plan(&bin, std::path::Path::new(CLI_LINK_DIR)).is_empty() {
+            "linked".into()
+        } else {
+            "unlinked".into()
+        }
+    }
+    #[cfg(windows)]
+    {
+        "managed".into() // installer owns PATH; Settings offers a read-only diagnostic.
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        "unavailable".into()
+    }
+}
+
+/// **Deep** CLI diagnostic for the Settings "Check" button — the one that resolves the real PATH
+/// (see [`mkb_on_path`]). Answers the questions a user needs *together*, so they can decide, as JSON
+/// `{ available, can_install, on_path, resolved, linked, path_version, app_version, version_match }`:
+/// 1. **on_path** — is `mkb` found on the shell's PATH at all? `resolved` is where it points.
+/// 2. **linked** — is that the binary *this* app bundle ships (path identity)? If not, another `mkb`
+///    is superseding this app's — surfaced regardless of platform (a stale `~/.cargo/bin` on macOS,
+///    an older install earlier on `%PATH%` on Windows).
+/// 3. **version_match** — does the on-PATH `mkb --version` (`path_version`) equal the app's version?
+///
+/// `can_install` is true only where the app itself can fix PATH (macOS symlinks); on Windows it's
+/// false (the installer owns PATH), so the UI shows the diagnostic without an Install button.
+/// `available:false` means no bundled binary to compare against (a dev run). Costs ~1–3s, so it runs
+/// only on an explicit click.
+#[tauri::command]
+fn cli_tools_check(app: tauri::AppHandle) -> String {
+    let unavailable = r#"{"available":false}"#.to_string();
+    let Some(bin) = bundled_bin_dir(&app) else {
+        return unavailable;
+    };
+    let our_bin = bin.join(cli_exe_name());
+    if !our_bin.exists() {
+        return unavailable; // dev run.
+    }
+    let ours = std::fs::canonicalize(&our_bin).unwrap_or(our_bin);
+    let app_version = env!("CARGO_PKG_VERSION");
+
+    let (on_path, resolved, linked, path_version) = match mkb_on_path() {
+        None => (false, None, false, None),
+        Some(p) => {
+            let canon = std::fs::canonicalize(&p).unwrap_or(p);
+            let linked = canon == ours;
+            let ver = binary_version(&canon);
+            (true, Some(canon.display().to_string()), linked, ver)
+        }
+    };
+    let version_match = path_version.as_deref() == Some(app_version);
+
+    serde_json::json!({
+        "available": true,
+        "can_install": cfg!(target_os = "macos"),
+        "on_path": on_path,
+        "resolved": resolved,
+        "linked": linked,
+        "path_version": path_version,
+        "app_version": app_version,
+        "version_match": version_match,
+    })
+    .to_string()
+}
+
+/// Expose the bundled CLI tools (`mkb`, `mkb-mcp`, `mkbd`) on PATH — the action behind the UI's
+/// "install command-line tools" button (macOS). Symlinks them into `/usr/local/bin`, Docker-style;
+/// writing there needs admin rights, so this triggers **one** macOS authentication prompt (via
+/// `osascript … with administrator privileges`). The links target the fixed in-bundle path, so a
+/// later app update — which overwrites those binaries in place — is picked up with no re-linking.
+/// Returns `Ok(())` on success (or if already linked), `Err` with a message if the user declines or
+/// it fails, so the front-end can surface it. Only invoked on the user's explicit click.
+#[tauri::command]
+fn install_cli_tools(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let bin = bundled_bin_dir(&app).ok_or("Could not locate the bundled CLI tools.")?;
+        let work = cli_link_plan(&bin, std::path::Path::new(CLI_LINK_DIR));
+        if work.is_empty() {
+            return Ok(()); // already linked (or nothing to link) — no prompt.
+        }
+        // One privileged script: ensure the dir exists, then (re)create each link.
+        let mut sh = format!("/bin/mkdir -p {CLI_LINK_DIR}");
+        for (src, link) in &work {
+            sh.push_str(&format!(" && /bin/ln -sf '{}' '{}'", src.display(), link.display()));
+        }
+        let escaped = sh.replace('\\', "\\\\").replace('"', "\\\"");
+        let osa = format!("do shell script \"{escaped}\" with administrator privileges");
+        let out = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&osa)
+            .output()
+            .map_err(|e| format!("Could not launch the authentication prompt: {e}"))?;
+        if out.status.success() {
+            log_line!("mkb: linked CLI tools into {CLI_LINK_DIR}");
+            Ok(())
+        } else {
+            // A user cancel and a real failure both land here; the stderr distinguishes them.
+            let msg = String::from_utf8_lossy(&out.stderr);
+            if msg.contains("-128") || msg.to_lowercase().contains("cancel") {
+                Err("Cancelled.".into())
+            } else {
+                Err(format!("Could not install the CLI tools: {}", msg.trim()))
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("On this platform the installer manages the command-line tools.".into())
+    }
+}
+
 /// Whitelist a **local** vault directory in the WebView asset-protocol scope so rendered image
 /// sources under it (`mkb-asset:` URLs from [`markdown_to_html_with_assets`], mapped to the asset
 /// protocol by the front-end) are allowed to load. Recursive, so `assets/` and any nested folders
@@ -718,7 +960,70 @@ pub fn run() {
             connection_status,
             restart_daemon,
             pick_vault,
+            cli_tools_status,
+            cli_tools_check,
+            install_cli_tools,
         ])
         .run(tauri::generate_context!())
         .expect("error while running mkb desktop shell");
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::cli_link_plan;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    // `cli_link_plan` decides which CLI symlinks the *install action* must (re)create, without
+    // touching /usr/local/bin or prompting. We stage a fake bundle `bin/` and a fake link dir in a
+    // tempdir and assert the plan across: missing link, stale link, correct link, absent binary.
+    #[test]
+    fn plan_covers_missing_stale_correct_and_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        let links = tmp.path().join("links");
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(&links).unwrap();
+
+        // Stage `mkb` and `mkb-mcp` as bundled binaries; deliberately omit `mkbd` (absent case).
+        let mkb_src = bin.join("mkb");
+        let mcp_src = bin.join("mkb-mcp");
+        fs::write(&mkb_src, b"bin").unwrap();
+        fs::write(&mcp_src, b"bin").unwrap();
+
+        // `mkb` link is MISSING; `mkb-mcp` link is STALE (points elsewhere).
+        symlink(tmp.path().join("somewhere-else"), links.join("mkb-mcp")).unwrap();
+
+        let plan = cli_link_plan(&bin, &links);
+        // mkb (missing) and mkb-mcp (stale) need work; mkbd (no bundled binary) is skipped.
+        assert_eq!(plan.len(), 2, "expected mkb + mkb-mcp, got {plan:?}");
+        assert!(plan.iter().any(|(s, l)| s == &mkb_src && l == &links.join("mkb")));
+        assert!(plan.iter().any(|(s, l)| s == &mcp_src && l == &links.join("mkb-mcp")));
+        assert!(
+            !plan.iter().any(|(_, l)| l == &links.join("mkbd")),
+            "mkbd has no bundled binary; it must not be planned"
+        );
+
+        // Now make the `mkb` link CORRECT and re-plan: only the still-stale mkb-mcp remains.
+        symlink(&mkb_src, links.join("mkb")).unwrap();
+        let plan = cli_link_plan(&bin, &links);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].1, links.join("mkb-mcp"));
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::parse_version_output;
+
+    // `parse_version_output` reduces a `mkb --version` line to the bare version — the input to the
+    // deep check's version_match. Cross-platform (Windows uses the same parse). Covers the normal
+    // line, trailing newline, and empty output.
+    #[test]
+    fn parse_version_extracts_bare_version() {
+        assert_eq!(parse_version_output("mkb 0.3.0").as_deref(), Some("0.3.0"));
+        assert_eq!(parse_version_output("mkb 0.3.0\n").as_deref(), Some("0.3.0"));
+        assert_eq!(parse_version_output("   ").as_deref(), None);
+        assert_eq!(parse_version_output("").as_deref(), None);
+    }
 }

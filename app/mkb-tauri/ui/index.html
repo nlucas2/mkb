@@ -432,6 +432,8 @@
       .form { max-width:34rem; } .form label { display:block; margin:.8rem 0 .2rem; font-weight:600; }
       .form input[type=text] { width:100%; padding:.5rem .6rem; background:var(--field); border:1px solid var(--border); border-radius:6px; color:var(--fg); }
       .form .row { display:flex; gap:.5rem; align-items:center; }
+      .form .row button { flex:0 0 auto; white-space:nowrap; }
+      .form .row .muted { flex:1 1 auto; min-width:0; }
       .modes { display:flex; gap:1rem; margin:.5rem 0; }
       .hint { color:var(--muted); font-size:.85em; margin-top:.3rem; }
       .savebar { margin-top:1rem; display:flex; gap:.6rem; align-items:center; }
@@ -444,6 +446,39 @@
         border-radius:8px; padding:.6rem .8rem; font-size:.9em; box-shadow:0 6px 24px rgba(0,0,0,.35); animation:toastin .15s ease-out; }
       .toast.error { border-left-color:var(--bad); }
       @keyframes toastin { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+      /* CLI-tools offer: a bottom-centered bar shown only when the tools aren't on PATH. Accent-
+         tinted (left bar + glow) so it registers as an actionable prompt, not passive chrome. */
+      .clibanner { position:fixed; left:50%; bottom:1.25rem; transform:translateX(-50%); z-index:55;
+        display:flex; align-items:center; gap:.7rem; max-width:min(92vw,42rem);
+        background:var(--panel); border:1px solid var(--accent); border-left:4px solid var(--accent);
+        border-radius:10px; padding:.7rem .9rem;
+        box-shadow:0 10px 34px rgba(0,0,0,.45), 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+        animation:clipop .22s cubic-bezier(.2,.9,.3,1.2); }
+      @keyframes clipop { from { opacity:0; transform:translate(-50%,10px) scale(.98); } to { opacity:1; transform:translate(-50%,0) scale(1); } }
+      .clibanner[hidden] { display:none; }
+      .clibanner .cliico { font-size:1.15em; color:var(--accent); }
+      .clibanner .clitext { font-size:.9em; flex:1 1 auto; }
+      .clibanner code { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:0 .25em; font-size:.9em; }
+      .clibtn { border:1px solid var(--border); background:var(--bg); color:var(--fg);
+        border-radius:7px; padding:.4rem .75rem; font-size:.85em; cursor:pointer; white-space:nowrap; }
+      .clibtn:hover { background:var(--hover); }
+      .clibtn.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+      .clibtn.primary:hover { filter:brightness(1.08); }
+      .clibtn:disabled { opacity:.6; cursor:default; }
+      /* Settings "Check" result — the three facts (on PATH / from this app / version), shown at once. */
+      .cliresult { margin-top:.6rem; display:flex; flex-direction:column; gap:.3rem; }
+      .cliresult:empty { display:none; }
+      .clifact { display:flex; align-items:baseline; gap:.5rem; font-size:.85em; }
+      .clifact .cf-ico { flex:0 0 1.1em; text-align:center; font-weight:700; }
+      .clifact .cf-ico.ok { color:var(--ok); }
+      .clifact .cf-ico.bad { color:var(--bad); }
+      .clifact .cf-ico.warn { color:var(--tag); }
+      .clifact .cf-label { flex:0 0 8.5rem; color:var(--fg); }
+      .clifact .cf-detail { color:var(--muted); word-break:break-all; }
+      .cliadvice { margin-top:.4rem; padding:.5rem .65rem; font-size:.85em; line-height:1.4;
+        background:color-mix(in srgb, var(--accent) 10%, var(--panel)); border:1px solid var(--border);
+        border-left:3px solid var(--accent); border-radius:7px; }
+      .cliadvice code { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:0 .25em; }
       .modal-back { position:fixed; inset:0; z-index:60; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; }
       .modal { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:1.2rem 1.3rem; max-width:26rem; box-shadow:0 12px 48px rgba(0,0,0,.5); }
       .modal p { margin:0 0 1rem; }
@@ -478,6 +513,12 @@
       <div id="bootbannermsg" style="color:var(--muted)">Loading your knowledge base.</div></div>
     </div>
     <div class="toastwrap" id="toasts"></div>
+    <div id="clibanner" class="clibanner" hidden>
+      <span class="cliico">⌘</span>
+      <span class="clitext">Install the <code>mkb</code> command-line tools so <code>mkb</code> and <code>mkb-mcp</code> work in your terminal.</span>
+      <button id="cliinstall" class="clibtn primary">Install</button>
+      <button id="cliskip" class="clibtn">Not now</button>
+    </div>
     <div class="layout">
       <nav id="nav">
         <input id="search" type="search" placeholder="Search…  (tag:  #tag  lang:rust)" />
@@ -2819,6 +2860,13 @@
             <p class="hint">Restart the background <code>mkbd</code> — it shuts down and a fresh one starts on the next action. Use this after updating the app so a still-running older daemon is replaced.</p>
             <div class="row"><button id="restartd">Restart daemon</button><span class="muted" id="restartmsg"></span></div>
             <hr style="border:none;border-top:1px solid var(--border);margin:1.4rem 0"/>
+            <div id="clisection">
+            <label>Command-line tools</label>
+            <p class="hint">The <code>mkb</code> and <code>mkb-mcp</code> commands (for the terminal and AI clients) are bundled with this app. <strong>Check</strong> verifies what your terminal's <code>mkb</code> resolves to — whether it's on your PATH, whether it's this app's copy, and whether the version matches.</p>
+            <div class="row"><button id="clicheck">Check</button><button id="cliinstallbtn">Install</button><span class="muted" id="climsg"></span></div>
+            <div id="cliresult" class="cliresult"></div>
+            <hr style="border:none;border-top:1px solid var(--border);margin:1.4rem 0"/>
+            </div>
             <label>Unused images</label>
             <p class="hint">Images under <code>assets/</code> that no block references. Deleting one removes the file from the vault; this is never automatic, since an image can be shared by several blocks.</p>
             <div id="orphans"><span class="muted">Scanning…</span></div>
@@ -2839,6 +2887,101 @@
             toast("Daemon restarted.");
           } catch (e) { msg.textContent = String(e); toast(String(e), "error"); }
         };
+        // Command-line tools. Two-tier so startup/open stays cheap:
+        //  • open + post-install use the CHEAP `cli_tools_status` (filesystem, no process) to decide
+        //    section visibility and whether an in-app Install applies.
+        //  • the "Check" button runs the DEEP `cli_tools_check` (resolves the real PATH, ~1–3s) and
+        //    reports THREE facts at once — on PATH / from this app / version — so the user can decide.
+        // On Windows the installer owns PATH, so there's no Install button — Check is a diagnostic
+        // (e.g. spotting an older mkb earlier on %PATH% superseding this app's).
+        {
+          const section = mainEl.querySelector("#clisection");
+          const msgEl = mainEl.querySelector("#climsg");
+          const resultEl = mainEl.querySelector("#cliresult");
+          const checkBtn = mainEl.querySelector("#clicheck");
+          const installBtn = mainEl.querySelector("#cliinstallbtn");
+
+          // Render the three facts as a small checklist. `ok`: true→✓ green, false→✗ red, "warn"→⚠ amber.
+          const fact = (ok, label, detail) => {
+            const cls = ok === true ? "ok" : ok === "warn" ? "warn" : "bad";
+            const glyph = ok === true ? "✓" : ok === "warn" ? "⚠" : "✗";
+            return `<div class="clifact"><span class="cf-ico ${cls}">${glyph}</span>` +
+              `<span class="cf-label">${label}</span><span class="cf-detail">${detail}</span></div>`;
+          };
+          const renderFacts = (info) => {
+            if (!info || info.available === false) { resultEl.innerHTML = ""; return; }
+            const canInstall = info.can_install === true; // macOS can link; Windows: installer owns PATH
+            const rows = [];
+            rows.push(fact(info.on_path, "On your PATH",
+              info.on_path ? esc(info.resolved || "") : "not found"));
+            if (info.on_path) {
+              rows.push(fact(info.linked, "From this app",
+                info.linked ? "yes — this is the bundled binary" : "no — it points elsewhere (see above)"));
+              // Version: green if it matches; amber (not red) if it differs — it still works, just isn't this build.
+              rows.push(fact(info.version_match ? true : "warn", "Version",
+                info.version_match
+                  ? `${esc(info.path_version || info.app_version)} matches the app`
+                  : `terminal ${esc(info.path_version || "unknown")} ≠ app ${esc(info.app_version)}`));
+            }
+            // A plain-language next step, worded for the platform (macOS can Install; Windows can't).
+            let advice = "";
+            if (!info.on_path) {
+              advice = canInstall
+                ? "Click <strong>Install</strong> to add <code>mkb</code> to your PATH."
+                : "Not on your PATH. Reinstall the app (its installer adds <code>mkb</code> to PATH), then open a new terminal.";
+            } else if (!info.linked) {
+              const other = `<code>${esc(info.resolved || "")}</code>`;
+              advice = canInstall
+                ? `Your terminal uses a different <code>mkb</code> (${other}) instead of this app's. Click <strong>Install</strong>, then remove that other copy so the app's version runs.`
+                : `A different <code>mkb</code> (${other}) is earlier on your PATH and supersedes this app's. Remove it (or reorder your PATH) so the app's version runs.`;
+            } else if (!info.version_match) {
+              advice = "The <code>mkb</code> on your PATH is a different version than the app — reinstall (or restart the app) to sync them.";
+            } else {
+              advice = "You're all set — <code>mkb</code> in your terminal is this app's version.";
+            }
+            rows.push(`<div class="cliadvice">${advice}</div>`);
+            resultEl.innerHTML = rows.join("");
+          };
+
+          // Cheap gate on open: hide the section where there's nothing to manage (dev run); on
+          // Windows ("managed") the installer owns PATH so drop the Install button, keep Check.
+          (async () => {
+            let status; try { status = await invoke("cli_tools_status"); } catch { return; }
+            if (status === "unavailable") { if (section) section.hidden = true; return; }
+            if (status === "managed") {
+              installBtn.hidden = true;
+              msgEl.textContent = "The installer manages these on Windows. Click Check to verify your PATH.";
+              return;
+            }
+            msgEl.textContent = status === "linked"
+              ? "Installed. Click Check to verify what your terminal resolves."
+              : "Not linked yet. Install to expose mkb in your terminal.";
+          })();
+
+          checkBtn.onclick = async () => {
+            checkBtn.disabled = true; msgEl.textContent = "Checking your PATH…"; resultEl.innerHTML = "";
+            try {
+              const info = JSON.parse(await invoke("cli_tools_check"));
+              msgEl.textContent = "";
+              renderFacts(info);
+            } catch (e) { msgEl.textContent = String(e); }
+            finally { checkBtn.disabled = false; }
+          };
+          installBtn.onclick = async () => {
+            installBtn.disabled = true; checkBtn.disabled = true;
+            const prev = installBtn.textContent; installBtn.textContent = "Installing…";
+            try {
+              await invoke("install_cli_tools");
+              toast("Command-line tools installed. Open a new terminal to use mkb.");
+              msgEl.textContent = "Installed. Click Check to verify your shell picks it up.";
+              resultEl.innerHTML = "";
+            } catch (e) {
+              const m = String(e); if (!/cancel/i.test(m)) toast(m, "error");
+            } finally {
+              installBtn.textContent = prev; installBtn.disabled = false; checkBtn.disabled = false;
+            }
+          };
+        }
         // Appearance: reflect the saved theme and switch on click (persists + reskins live).
         const themeseg = mainEl.querySelector("#themeseg");
         themeseg.querySelectorAll("button").forEach((b) => {
@@ -2965,6 +3108,41 @@
         // user away or resetting their graph layout.
       });
 
+      // CLI-tools offer (macOS): startup banner. Uses the CHEAP `cli_tools_status` — a pure
+      // filesystem symlink check (no login shell, so it's safe on the hot startup path). It returns
+      // `unlinked` only when our /usr/local/bin symlink is missing/stale → offer to install;
+      // `linked`/`unavailable` show nothing. The deeper "is a *different* mkb shadowing us" check is
+      // login-shell-based and lives only behind the Settings "Check" button, never at startup.
+      // "Not now" is a soft dismiss for this launch only — it reappears next time the app opens.
+      async function maybeOfferCliTools() {
+        let status;
+        try { status = await invoke("cli_tools_status"); } catch { return; }
+        if (status !== "unlinked") return;
+        const bar = document.getElementById("clibanner");
+        const textEl = bar && bar.querySelector(".clitext");
+        const installBtn = document.getElementById("cliinstall");
+        const skipBtn = document.getElementById("cliskip");
+        if (!bar || !textEl || !installBtn || !skipBtn) return;
+        textEl.innerHTML = "Install the <code>mkb</code> command-line tools so <code>mkb</code> and <code>mkb-mcp</code> work in your terminal.";
+        bar.hidden = false;
+        skipBtn.onclick = () => { bar.hidden = true; }; // soft dismiss; reappears next launch
+        installBtn.onclick = async () => {
+          installBtn.disabled = true; skipBtn.disabled = true;
+          installBtn.textContent = "Installing…";
+          try {
+            await invoke("install_cli_tools");
+            bar.hidden = true;
+            toast("Command-line tools installed. Open a new terminal to use mkb.");
+          } catch (e) {
+            const msg = String(e);
+            // A cancelled auth prompt isn't an error — just leave the banner for later.
+            if (!/cancel/i.test(msg)) toast(msg, "error");
+            installBtn.disabled = false; skipBtn.disabled = false;
+            installBtn.textContent = "Install";
+          }
+        };
+      }
+
       // Startup loader: the full-window #bootbanner (in the static HTML) shows instantly — even
       // before this script runs — so the window never appears blank. The first data load may wait
       // on a cold daemon's initial reconcile (re-embedding a new or just-changed vault); escalate
@@ -2981,7 +3159,7 @@
       // least one painted frame first; then we load.
       function startLoad() {
         loadBlocks()
-          .then(() => { clearTimeout(indexingTimer); hideBanner(); })
+          .then(() => { clearTimeout(indexingTimer); hideBanner(); maybeOfferCliTools(); })
           .catch(() => { clearTimeout(indexingTimer); hideBanner(); });
       }
       requestAnimationFrame(() => requestAnimationFrame(startLoad));

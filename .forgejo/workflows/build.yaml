@@ -241,12 +241,13 @@ jobs:
           # Generate the icon set from the single tracked source (icons/ is git-ignored build output).
           ( cd app/mkb-tauri && cargo tauri icon app-icon.png )
           # The app bundles the daemon (local-vault auto-start) and the CLI tools (mkb + mkb-mcp)
-          # as resources, so the in-app "Install command-line tools" action can expose them on PATH.
-          # The CLI is staged as `mkb-cli` to keep the bundle glob unambiguous; it installs as `mkb`.
+          # as resources; the NSIS PATH hook exposes the whole bin/ dir on PATH, so `mkb` and
+          # `mkb-mcp` work in the terminal after install. Staged under real command names.
+          rm -rf app/mkb-tauri/src-tauri/bin
           mkdir -p app/mkb-tauri/src-tauri/bin
           cp target/x86_64-pc-windows-msvc/release/mkbd.exe   app/mkb-tauri/src-tauri/bin/mkbd.exe
           cp target/x86_64-pc-windows-msvc/release/mkb-mcp.exe app/mkb-tauri/src-tauri/bin/mkb-mcp.exe
-          cp target/x86_64-pc-windows-msvc/release/mkb.exe     app/mkb-tauri/src-tauri/bin/mkb-cli.exe
+          cp target/x86_64-pc-windows-msvc/release/mkb.exe     app/mkb-tauri/src-tauri/bin/mkb.exe
           ( cd app/mkb-tauri/src-tauri && \
             cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis )
 
@@ -266,7 +267,7 @@ jobs:
           cp "$APPREL/mkb-tauri.exe" dist/
           cp "$REL/mkbd.exe" "$REL/mkb.exe" "$REL/mkb-mcp.exe" dist/
           cp "$REL/mkbd.exe" "$REL/mkb-mcp.exe" dist/bin/
-          cp "$REL/mkb.exe" dist/bin/mkb-cli.exe
+          cp "$REL/mkb.exe" dist/bin/mkb.exe
           ( cd dist && zip -qr "../mkb-$V-windows-x64.zip" . )
 
           # The NSIS installer (which itself bundles app + cli + mcp + daemon as resources).

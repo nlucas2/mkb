@@ -29,5 +29,8 @@ mkb-protocol = { path = "../../../crates/mkb-protocol" }
 mkb-view = { path = "../../../crates/mkb-view" }
 mkb-app-core = { path = "../../../crates/mkb-app-core" }
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

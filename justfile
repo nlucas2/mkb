@@ -75,19 +75,25 @@ install: install-cli app
         echo "Built installer is under $bundle — run it to install." ;;
     esac
 
-# Windows variant: run the NSIS installer the `app` recipe produced (best-effort; untested host).
+# Windows: build the app (which bundles the CLI + daemon and, via the NSIS PATH hook, puts them on
+# PATH), then run the exact installer we just produced — pinned to the current version from
+# tauri.conf.json (arch via glob; newest first if several), never a blind "first match". No separate
+# CLI step: the installer is the whole product, exactly like the downloaded release.
 [windows]
-install: install-cli app
+install: app
     #!powershell
     $ErrorActionPreference = 'Stop'
-    $bundle = '{{tauri}}/target/release/bundle'
-    $setup = Get-ChildItem -Path (Join-Path $bundle 'nsis') -Filter '*-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $nsis = '{{tauri}}/target/release/bundle/nsis'
+    $ver = (Get-Content '{{tauri}}/tauri.conf.json' -Raw | ConvertFrom-Json).version
+    $setup = Get-ChildItem -Path $nsis -Filter "mkb_${ver}_*-setup.exe" -ErrorAction SilentlyContinue |
+             Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($setup) {
       Write-Host "Running $($setup.Name) (silent)"
       Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
-      Write-Host 'Installed mkb (Start menu).'
+      Write-Host 'Installed mkb (Start menu; mkb + mkb-mcp on your PATH — open a new terminal).'
     } else {
-      Write-Host "Built installer is under $bundle\nsis — run the *-setup.exe to install."
+      Write-Host "No mkb_${ver}_*-setup.exe under $nsis — build may have failed."
+      exit 1
     }
 
 # Semantic search is compiled in, so this works offline. The desktop app is added by `just install`.
@@ -137,26 +143,27 @@ icons:
 # Build the desktop app (Tauri) from source for the host platform.
 [unix]
 app: icons
-    # Release binaries the app bundles as resources (auto-start daemon + in-app "install CLI tools").
+    # Release binaries the app bundles as resources (auto-start daemon + CLI-on-PATH install).
     cargo build --release -p mkbd -p mkb-cli -p mkb-mcp
-    mkdir -p {{tauri}}/bin
-    # The CLI is staged as `mkb-cli` so the bundle glob is unambiguous; it installs as `mkb`.
-    cp target/release/mkbd   {{tauri}}/bin/mkbd
+    rm -rf {{tauri}}/bin && mkdir -p {{tauri}}/bin
+    # Stage under real command names — the whole bin/ dir is bundled and exposed on PATH as-is.
+    cp target/release/mkbd    {{tauri}}/bin/mkbd
     cp target/release/mkb-mcp {{tauri}}/bin/mkb-mcp
-    cp target/release/mkb     {{tauri}}/bin/mkb-cli
+    cp target/release/mkb     {{tauri}}/bin/mkb
     cd {{tauri}} && cargo tauri build
 
 [windows]
 app: icons
     #!powershell
-    # Release binaries the app bundles as resources; the bundle globs (bin/mkbd*, …) match the .exe.
+    # Release binaries the app bundles as resources; the NSIS hook adds the whole bin/ dir to PATH.
     $ErrorActionPreference = 'Stop'
     cargo build --release -p mkbd -p mkb-cli -p mkb-mcp
+    Remove-Item -Recurse -Force '{{tauri}}/bin' -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path '{{tauri}}/bin' | Out-Null
     Copy-Item 'target/release/mkbd.exe'    '{{tauri}}/bin/mkbd.exe'    -Force
     Copy-Item 'target/release/mkb-mcp.exe' '{{tauri}}/bin/mkb-mcp.exe' -Force
-    # The CLI is staged as `mkb-cli` so the bundle glob is unambiguous; it installs as `mkb`.
-    Copy-Item 'target/release/mkb.exe'     '{{tauri}}/bin/mkb-cli.exe' -Force
+    # Stage under the real command name so PATH exposes `mkb`, not `mkb-cli`.
+    Copy-Item 'target/release/mkb.exe'     '{{tauri}}/bin/mkb.exe'     -Force
     Set-Location '{{tauri}}'
     cargo tauri build
 

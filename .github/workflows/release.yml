@@ -122,7 +122,7 @@ jobs:
       # ── Desktop app (Tauri) ──────────────────────────────────────────────────────
       # Build the desktop app + its native installer on this same runner so the release for
       # this platform is complete on its own. The app bundles the onnx daemon built above as a
-      # resource (src-tauri/bin/mkbd[.exe], matching bundle.resources "bin/mkbd*"), so
+      # resource (src-tauri/bin/ is bundled whole via bundle.resources "bin/"), so
       # local-vault auto-start works from the installed app. The frontend is static (../ui), so
       # no Node toolchain is needed.
       - name: Install Linux desktop bundling deps
@@ -222,7 +222,7 @@ jobs:
           mkdir -p app/mkb-tauri/src-tauri/bin
           cp "$D/mkbd.exe"    app/mkb-tauri/src-tauri/bin/mkbd.exe
           cp "$D/mkb-mcp.exe" app/mkb-tauri/src-tauri/bin/mkb-mcp.exe
-          cp "$D/mkb.exe"     app/mkb-tauri/src-tauri/bin/mkb-cli.exe
+          cp "$D/mkb.exe"     app/mkb-tauri/src-tauri/bin/mkb.exe
           ( cd app/mkb-tauri/src-tauri && \
             cargo tauri build --no-bundle --target ${{ matrix.target }} )
 
@@ -296,18 +296,18 @@ jobs:
           D="target/${{ matrix.target }}/release"
           mkdir -p app/mkb-tauri/src-tauri/bin
           # Stage the daemon (local-vault auto-start) + the CLI tools (mkb + mkb-mcp) as app
-          # resources, so the in-app "Install command-line tools" action can expose them on PATH.
-          # The CLI is staged as `mkb-cli` to keep the bundle glob unambiguous; it installs as `mkb`.
+          # resources under their real command names. macOS exposes them on PATH via the app's
+          # first-run /usr/local/bin symlinks; the Linux .deb ships them to the system bin.
           case "${{ runner.os }}" in
             macOS)
               cp "$D/mkbd"   app/mkb-tauri/src-tauri/bin/mkbd
               cp "$D/mkb-mcp" app/mkb-tauri/src-tauri/bin/mkb-mcp
-              cp "$D/mkb"     app/mkb-tauri/src-tauri/bin/mkb-cli
+              cp "$D/mkb"     app/mkb-tauri/src-tauri/bin/mkb
               BUNDLES=app,dmg ;;
             *)
               cp "$D/mkbd"   app/mkb-tauri/src-tauri/bin/mkbd
               cp "$D/mkb-mcp" app/mkb-tauri/src-tauri/bin/mkb-mcp
-              cp "$D/mkb"     app/mkb-tauri/src-tauri/bin/mkb-cli
+              cp "$D/mkb"     app/mkb-tauri/src-tauri/bin/mkb
               BUNDLES=deb,appimage ;;
           esac
           ( cd app/mkb-tauri/src-tauri && \
@@ -395,7 +395,7 @@ jobs:
           Copy-Item "$D/mkbd.exe","$D/mkb.exe","$D/mkb-mcp.exe" dist/
           Get-ChildItem "$D" -Filter "onnxruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination dist/
           Copy-Item "$D/mkbd.exe","$D/mkb-mcp.exe" dist/bin/
-          Copy-Item "$D/mkb.exe" dist/bin/mkb-cli.exe
+          Copy-Item "$D/mkb.exe" dist/bin/mkb.exe
           $A = "mkb-$V-$N.zip"
           Compress-Archive -Path dist/* -DestinationPath $A -Force
           (Get-FileHash $A -Algorithm SHA256).Hash.ToLower() + "  " + $A | Out-File -Encoding ascii "$A.sha256"
