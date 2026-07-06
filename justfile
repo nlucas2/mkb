@@ -111,7 +111,7 @@ install: app
 # with FORCE=1 to remove anyway.
 # Remove the stale ~/.cargo/bin daemon/CLI/MCP copies left by the old `install-cli` (cargo uninstall).
 [unix]
-uninstall-cli:
+clean-cargo-installs:
     #!/usr/bin/env bash
     set -uo pipefail
     shopt -s nullglob
@@ -137,7 +137,7 @@ uninstall-cli:
       done
       echo "  Point them at a bare 'mkb-mcp' (now on PATH via the app) or the app's bundled copy, then re-run." >&2
       if [ "${FORCE:-}" != "1" ]; then
-        echo "  Aborted — no binaries removed. Re-run with FORCE=1 to uninstall anyway." >&2
+        echo "  Aborted — no binaries removed. Re-run with FORCE=1 to remove them anyway." >&2
         exit 1
       fi
       echo "  FORCE=1 set — continuing despite the above." >&2
@@ -154,7 +154,7 @@ uninstall-cli:
 # `cargo uninstall` can delete them; a client respawns from the app's copy on next use. Same
 # hardcoded-path guard as the unix recipe (abort on a hit unless FORCE=1).
 [windows]
-uninstall-cli:
+clean-cargo-installs:
     #!powershell
     $ErrorActionPreference = 'Continue'
     $scan = @(
@@ -180,7 +180,7 @@ uninstall-cli:
       }
       Write-Host "  Point them at a bare 'mkb-mcp' (on PATH via the app) or the app's bundled copy, then re-run."
       if ($env:FORCE -ne '1') {
-        Write-Host "  Aborted - no binaries removed. Re-run with FORCE=1 to uninstall anyway."
+        Write-Host "  Aborted - no binaries removed. Re-run with FORCE=1 to remove them anyway."
         exit 1
       }
       Write-Host "  FORCE=1 set - continuing despite the above."
