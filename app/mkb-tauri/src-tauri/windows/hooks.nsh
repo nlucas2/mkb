@@ -11,8 +11,14 @@
 ; correctly — none of which hand-rolled NSIS string surgery does safely. Tauri's default install
 ; mode is per-user, so we edit the *user* PATH and need no administrator rights.
 ;
-; The install directory is stable across upgrades, so the PATH entry is added once; app updates
-; overwrite the binaries under it in place, so the CLI on PATH is always the version installed.
+; The install directory is stable across upgrades, so app updates overwrite the binaries under it
+; in place — the CLI on PATH is always the version installed. We **prepend** our directory (and
+; de-duplicate any existing occurrence first) so it wins PATH resolution: running the installer is
+; the user declaring "make this the active mkb", and prepending is the Windows norm for that
+; (rustup's .cargo\bin, Docker Desktop, and VS Code CLI all prepend). Because rustup's .cargo\bin
+; lives in the *user* PATH too, prepending to the user PATH reliably beats a stale `cargo install`
+; copy. (The one case prepend can't win is a stale mkb on the *system* PATH, which always precedes
+; the user PATH — the app's Settings "Check" diagnostic surfaces that.)
 ;
 ; NSIS escaping note: `$$` emits a literal `$`, so PowerShell variables ($$d/$$p/$$parts/$$np)
 ; survive NSIS macro expansion; `$INSTDIR` is a genuine NSIS variable and is expanded by NSIS.
@@ -20,8 +26,8 @@
 ; passed through literally. Written to Tauri/NSIS spec; validate the escaping on a real Windows host.
 
 !macro NSIS_HOOK_POSTINSTALL
-  DetailPrint "Adding the mkb command-line tools to your PATH..."
-  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = '$INSTDIR\resources\bin'; $$p = [Environment]::GetEnvironmentVariable('Path','User'); if (-not $$p) { $$p = '' }; if (($$p -split ';') -notcontains $$d) { $$np = if ($$p) { $$p.TrimEnd(';') + ';' + $$d } else { $$d }; [Environment]::SetEnvironmentVariable('Path', $$np, 'User') }"`
+  DetailPrint "Adding the mkb command-line tools to the front of your PATH..."
+  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = '$INSTDIR\resources\bin'; $$p = [Environment]::GetEnvironmentVariable('Path','User'); if (-not $$p) { $$p = '' }; $$parts = $$p -split ';' | Where-Object { $$_ -and $$_ -ne $$d }; $$np = (@($$d) + $$parts) -join ';'; [Environment]::SetEnvironmentVariable('Path', $$np, 'User')"`
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
