@@ -315,10 +315,22 @@ transparently respawns it — at most a brief cold start.
   and several recipes used bash-only constructs (`uname`/`case`/`osascript`) and Unix coreutils
   (`mkdir -p`/`cp`). The justfile now sets `windows-shell` to PowerShell for the plain `cargo` recipes
   and ships `[windows]` variants of `install` / `app` / `icons` / `app-dev` (the macOS/Linux recipes
-  are unchanged). Exercised on a Windows host: `just install` builds the bundles, the staged `bin\*.exe`
-  names match the Tauri `resources` globs (`bin/mkbd*`, `bin/mkb-mcp*`, `bin/mkb-cli*`), and the plain
-  recipes run under `powershell.exe`.
+  are unchanged). Exercised on a Windows host: `just install` builds the bundles, the staged
+  `bin\{mkbd,mkb-mcp,mkb}.exe` (real command names — no `mkb-cli` rename) are bundled whole-dir via
+  `resources: ["bin/"]`, and the plain recipes run under `powershell.exe`.
 
+- **Installer owns CLI-on-PATH — one artifact, `mkb` just works** *(done; Linux pending a hardware
+  check)*: installing the desktop app is the whole product — it puts `mkb`/`mkb-mcp` on PATH with no
+  separate step. The old `install-cli` / `cargo install` path that shadowed copies into `~/.cargo/bin`
+  is gone (a `just clean-cargo-installs` recipe clears a stale one, guarding MCP configs that hardcode
+  the cargo-bin path first). On **Windows** an NSIS installer hook prepends the bundled CLI directory
+  (`$INSTDIR\bin`, where Tauri's `resources: ["bin/"]` actually lands — not `resources\bin`) to the
+  user PATH, so a fresh terminal's `mkb` is the app's copy ahead of a stale `cargo install` one —
+  **validated on a real Windows host** (the app's Settings → Command-line tools check reports
+  on-PATH / from-this-app / version-match all green). On **macOS/Linux** the app symlinks the bundled
+  binaries into `/usr/local/bin` from a first-run prompt (macOS validated; Linux code shipped, pending
+  a hardware check) — the daemon resolves `mkbd` as a sibling of the symlink target, so no 67 MB copy
+  is duplicated onto PATH.
 - **Approximate-nearest-neighbour (ANN) vector search** *(planned)*: semantic matching is currently
   an exact brute-force cosine scan over every stored embedding (`mkb-index`) — exact, dependency-free,
   and comfortably fast for everything mkb has been used for so far. At large scale the linear scan (and
