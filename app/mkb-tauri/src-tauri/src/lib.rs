@@ -79,23 +79,28 @@ fn bundled_mkbd(app: &tauri::AppHandle) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// The CLI command names bundled inside the app's `bin/` and exposed on PATH. They are staged under
-/// their real names (no `mkb-cli` rename), so on macOS the symlink `/usr/local/bin/<name>` points at
-/// `bin/<name>` directly, and on Windows the same `bin/` directory is what the installer adds to PATH.
-#[cfg(target_os = "macos")]
+/// The CLI command names bundled inside the app's `bin/` and exposed on PATH, staged under their
+/// real names (no `mkb-cli` rename). On Unix a symlink `<link-dir>/<name>` points at `bin/<name>`;
+/// `mkbd` is symlinked too so the CLI finds it as a sibling (`resolve_mkbd` in mkb-protocol resolves
+/// `current_exe()`, which follows the symlink, then looks beside it). On Windows the same `bin/`
+/// directory is what the installer adds to PATH.
+#[cfg(unix)]
 const CLI_NAMES: [&str; 3] = ["mkb", "mkb-mcp", "mkbd"];
 
-/// Where the CLI tools are exposed on PATH on macOS (the conventional location Docker Desktop et al.
-/// use; on the default PATH of every shell).
-#[cfg(target_os = "macos")]
+/// Where the CLI tools are symlinked onto PATH on Unix: `/usr/local/bin` — the conventional spot
+/// (Docker Desktop et al. use it on macOS) that is on **every** shell's default PATH out of the box,
+/// on both macOS and Linux. It's system-owned, so writing needs a one-time privilege prompt (macOS
+/// admin via osascript; Linux via pkexec). We prefer this over the user-owned `~/.local/bin` because
+/// that isn't reliably on PATH across distros/shells or until the next login.
+#[cfg(unix)]
 const CLI_LINK_DIR: &str = "/usr/local/bin";
 
-/// macOS: compute which CLI symlinks are missing or stale (point somewhere other than the current
-/// bundle). Pure — it only reads the filesystem — so the linking decision is unit-testable without
-/// touching `/usr/local/bin` or prompting. Returns `(source binary, link path)` pairs still to
-/// create. A bundled binary that doesn't exist (e.g. a `cargo tauri dev` run, which has no staged
-/// `bin/`) is skipped, so an empty result means either "already linked" or "nothing to link."
-#[cfg(target_os = "macos")]
+/// Compute which CLI symlinks are missing or stale (point somewhere other than the current bundle).
+/// Pure — it only reads the filesystem — so the linking decision is unit-testable without touching
+/// the real link dir or prompting. Returns `(source binary, link path)` pairs still to create. A
+/// bundled binary that doesn't exist (e.g. a `cargo tauri dev` run, which has no staged `bin/`) is
+/// skipped, so an empty result means either "already linked" or "nothing to link."
+#[cfg(unix)]
 fn cli_link_plan(bin: &std::path::Path, link_dir: &std::path::Path) -> Vec<(PathBuf, PathBuf)> {
     let mut work = Vec::new();
     for name in CLI_NAMES {
@@ -126,15 +131,21 @@ fn cli_exe_name() -> &'static str {
 }
 
 /// Resolve what the user's shell would actually run for `mkb`, following the *real* PATH — the crux
-/// of the diagnostic. On macOS a GUI app's own PATH is the sparse launchd one (`/usr/bin:/bin:…`)
-/// that can't see `~/.cargo/bin`/Homebrew, so we source the **login shell** (`$SHELL -lc 'command -v
-/// mkb'`) to reflect what the *terminal* runs. On Windows we ask `where mkb`, whose first line is the
-/// entry that wins the PATH order. Returns the resolved path, or `None` if nothing is found. This is
-/// the ~1–3s step (profile sourcing / process spawn), so it only runs behind the Settings button.
+/// of the diagnostic. On Unix a GUI app's own PATH is a sparse session one (macOS's launchd PATH;
+/// a bare desktop-session PATH on Linux) that may miss `~/.local/bin`, `~/.cargo/bin`, or Homebrew,
+/// so we source the **login shell** (`$SHELL -lc 'command -v mkb'`) to reflect what the *terminal*
+/// runs. On Windows we ask `where mkb`, whose first line is the entry that wins the PATH order.
+/// Returns the resolved path, or `None` if nothing is found. This is the ~1–3s step (profile
+/// sourcing / process spawn), so it only runs behind the Settings button.
 fn mkb_on_path() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let default_shell = if cfg!(target_os = "macos") {
+            "/bin/zsh"
+        } else {
+            "/bin/sh"
+        };
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| default_shell.into());
         let out = std::process::Command::new(shell)
             .args(["-l", "-c", "command -v mkb"])
             .output()
@@ -161,7 +172,7 @@ fn mkb_on_path() -> Option<PathBuf> {
             .find(|l| !l.is_empty())
             .map(PathBuf::from)
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(unix, windows)))]
     {
         None
     }
@@ -190,8 +201,9 @@ fn binary_version(path: &std::path::Path) -> Option<String> {
 /// **Cheap** CLI status for the startup toast and the Settings section's visibility — filesystem
 /// only, **no shell/process**. Returns a bare state string:
 /// - `unavailable` — no bundled binary (a `cargo tauri dev` run), so nothing to say → hide the UI.
-/// - `linked` (macOS) — our `/usr/local/bin` symlink is in place → no toast, but Settings can verify.
-/// - `unlinked` (macOS) — our symlink is missing/stale → show the startup toast to offer installing.
+/// - `linked` (Unix) — our symlink (`/usr/local/bin` on macOS, `~/.local/bin` on Linux) is in place
+///   → no toast, but Settings can verify.
+/// - `unlinked` (Unix) — our symlink is missing/stale → show the startup toast to offer installing.
 /// - `managed` (Windows) — a bundled binary exists and the **installer** owns PATH (so there's no
 ///   in-app install), but Settings still offers a diagnostic "Check" → show the section, no toast.
 ///
@@ -205,7 +217,7 @@ fn cli_tools_status(app: tauri::AppHandle) -> String {
     if !bin.join(cli_exe_name()).exists() {
         return "unavailable".into(); // no staged binary → dev run; stay out of the way.
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     {
         if cli_link_plan(&bin, std::path::Path::new(CLI_LINK_DIR)).is_empty() {
             "linked".into()
@@ -217,7 +229,7 @@ fn cli_tools_status(app: tauri::AppHandle) -> String {
     {
         "managed".into() // installer owns PATH; Settings offers a read-only diagnostic.
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(unix, windows)))]
     {
         "unavailable".into()
     }
@@ -232,10 +244,10 @@ fn cli_tools_status(app: tauri::AppHandle) -> String {
 ///    an older install earlier on `%PATH%` on Windows).
 /// 3. **version_match** — does the on-PATH `mkb --version` (`path_version`) equal the app's version?
 ///
-/// `can_install` is true only where the app itself can fix PATH (macOS symlinks); on Windows it's
-/// false (the installer owns PATH), so the UI shows the diagnostic without an Install button.
-/// `available:false` means no bundled binary to compare against (a dev run). Costs ~1–3s, so it runs
-/// only on an explicit click.
+/// `can_install` is true where the app itself can fix PATH (Unix — it symlinks the tools into
+/// `/usr/local/bin` on macOS or `~/.local/bin` on Linux); on Windows it's false (the installer owns
+/// PATH), so the UI shows the diagnostic without an Install button. `available:false` means no
+/// bundled binary to compare against (a dev run). Costs ~1–3s, so it runs only on an explicit click.
 #[tauri::command]
 fn cli_tools_check(app: tauri::AppHandle) -> String {
     let unavailable = r#"{"available":false}"#.to_string();
@@ -262,7 +274,7 @@ fn cli_tools_check(app: tauri::AppHandle) -> String {
 
     serde_json::json!({
         "available": true,
-        "can_install": cfg!(target_os = "macos"),
+        "can_install": cfg!(unix),
         "on_path": on_path,
         "resolved": resolved,
         "linked": linked,
@@ -274,37 +286,43 @@ fn cli_tools_check(app: tauri::AppHandle) -> String {
 }
 
 /// Expose the bundled CLI tools (`mkb`, `mkb-mcp`, `mkbd`) on PATH — the action behind the UI's
-/// "install command-line tools" button (macOS). Symlinks them into `/usr/local/bin`, Docker-style;
-/// writing there needs admin rights, so this triggers **one** macOS authentication prompt (via
-/// `osascript … with administrator privileges`). The links target the fixed in-bundle path, so a
-/// later app update — which overwrites those binaries in place — is picked up with no re-linking.
-/// Returns `Ok(())` on success (or if already linked), `Err` with a message if the user declines or
-/// it fails, so the front-end can surface it. Only invoked on the user's explicit click.
+/// "install command-line tools" button on Unix. Symlinks them into `/usr/local/bin`, Docker-style.
+/// That dir is system-owned, so this triggers **one** privilege prompt: a macOS authentication
+/// dialog (`osascript … with administrator privileges`) or, on Linux, a polkit dialog (`pkexec`).
+/// The links target the fixed in-bundle path, so a later app update — which overwrites those
+/// binaries in place — is picked up with no re-linking. Returns `Ok(())` on success (or if already
+/// linked), `Err("Cancelled.")` if the user dismisses the prompt, or `Err(msg)` on failure, so the
+/// front-end can surface it. Only invoked on the user's explicit click; a no-op on Windows (the
+/// installer owns PATH there).
 #[tauri::command]
 fn install_cli_tools(app: tauri::AppHandle) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     {
         let bin = bundled_bin_dir(&app).ok_or("Could not locate the bundled CLI tools.")?;
         let work = cli_link_plan(&bin, std::path::Path::new(CLI_LINK_DIR));
         if work.is_empty() {
             return Ok(()); // already linked (or nothing to link) — no prompt.
         }
-        // One privileged script: ensure the dir exists, then (re)create each link.
-        let mut sh = format!("/bin/mkdir -p {CLI_LINK_DIR}");
+        // One privileged shell command: ensure the dir exists, then (re)create each symlink.
+        let mut sh = format!("mkdir -p {CLI_LINK_DIR}");
         for (src, link) in &work {
-            sh.push_str(&format!(" && /bin/ln -sf '{}' '{}'", src.display(), link.display()));
+            sh.push_str(&format!(" && ln -sf '{}' '{}'", src.display(), link.display()));
         }
-        let escaped = sh.replace('\\', "\\\\").replace('"', "\\\"");
-        let osa = format!("do shell script \"{escaped}\" with administrator privileges");
-        let out = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(&osa)
-            .output()
-            .map_err(|e| format!("Could not launch the authentication prompt: {e}"))?;
-        if out.status.success() {
-            log_line!("mkb: linked CLI tools into {CLI_LINK_DIR}");
-            Ok(())
-        } else {
+
+        #[cfg(target_os = "macos")]
+        {
+            // AppleScript string: escape backslashes then double-quotes, then elevate once.
+            let escaped = sh.replace('\\', "\\\\").replace('"', "\\\"");
+            let osa = format!("do shell script \"{escaped}\" with administrator privileges");
+            let out = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&osa)
+                .output()
+                .map_err(|e| format!("Could not launch the authentication prompt: {e}"))?;
+            if out.status.success() {
+                log_line!("mkb: linked CLI tools into {CLI_LINK_DIR}");
+                return Ok(());
+            }
             // A user cancel and a real failure both land here; the stderr distinguishes them.
             let msg = String::from_utf8_lossy(&out.stderr);
             if msg.contains("-128") || msg.to_lowercase().contains("cancel") {
@@ -313,8 +331,30 @@ fn install_cli_tools(app: tauri::AppHandle) -> Result<(), String> {
                 Err(format!("Could not install the CLI tools: {}", msg.trim()))
             }
         }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Linux: pkexec runs the command as root behind a polkit password dialog.
+            let out = std::process::Command::new("pkexec")
+                .args(["/bin/sh", "-c", &sh])
+                .output()
+                .map_err(|e| {
+                    format!("Could not launch the authentication prompt (pkexec): {e}")
+                })?;
+            if out.status.success() {
+                log_line!("mkb: linked CLI tools into {CLI_LINK_DIR}");
+                return Ok(());
+            }
+            // pkexec exits 126 when the dialog is dismissed / authorization is not obtained.
+            match out.status.code() {
+                Some(126) => Err("Cancelled.".into()),
+                _ => {
+                    let msg = String::from_utf8_lossy(&out.stderr);
+                    Err(format!("Could not install the CLI tools: {}", msg.trim()))
+                }
+            }
+        }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(unix))]
     {
         let _ = app;
         Err("On this platform the installer manages the command-line tools.".into())
@@ -968,7 +1008,7 @@ pub fn run() {
         .expect("error while running mkb desktop shell");
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, unix))]
 mod tests {
     use super::cli_link_plan;
     use std::fs;

@@ -34,18 +34,17 @@ desktop app, the daemon, the CLI, and the MCP server.
 
 ```sh
 just install        # everything: desktop app + daemon + CLI + MCP server
-just install-cli    # headless only (daemon + CLI + MCP), no GUI
 ```
 
 Prefer not to build? Grab a **prebuilt release** (installer or portable archive) from the
-**Releases** page, run it as a **container**, or `cargo install` just the headless tools — all
-detailed in the **[install guide](docs/INSTALL.md)**.
+**Releases** page or run it as a **container** — both detailed in the
+**[install guide](docs/INSTALL.md)**.
 
 > **Heads-up:** the prebuilt **release pipeline is still a work in progress** — published
 > artifacts can lag behind `main` or miss a platform. Until it stabilises, **`just install` from a
 > fresh checkout is the most reliable way to get the latest version.**
 
-Building **from source** (`just install`, `cargo install`, or `cargo tauri build`) needs these on
+Building **from source** (`just install` or `cargo tauri build`) needs these on
 your machine. Prebuilt releases and the container need none of them.
 
 - **Rust** (stable) — the `cargo` toolchain; the workspace pins `rust-version = 1.80`.

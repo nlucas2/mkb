@@ -1,10 +1,10 @@
 ---
 title: Prerequisites (list)
 tags: [doc/install]
-updated: 2026-07-02T06:45:47Z
+updated: 2026-07-06T05:03:18Z
 ---
 
-Building **from source** (`just install`, `cargo install`, or `cargo tauri build`) needs these on
+Building **from source** (`just install` or `cargo tauri build`) needs these on
 your machine. Prebuilt releases and the container need none of them.
 
 - **Rust** (stable) — the `cargo` toolchain; the workspace pins `rust-version = 1.80`.

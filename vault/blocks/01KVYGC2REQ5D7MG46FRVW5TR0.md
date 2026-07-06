@@ -1,7 +1,7 @@
 ---
 title: "README: Install"
 tags: [doc/readme]
-updated: 2026-07-02T06:45:46Z
+updated: 2026-07-06T05:01:55Z
 ---
 
 ### Install
@@ -12,12 +12,11 @@ desktop app, the daemon, the CLI, and the MCP server.
 
 ```sh
 just install        # everything: desktop app + daemon + CLI + MCP server
-just install-cli    # headless only (daemon + CLI + MCP), no GUI
 ```
 
 Prefer not to build? Grab a **prebuilt release** (installer or portable archive) from the
-**Releases** page, run it as a **container**, or `cargo install` just the headless tools — all
-detailed in the **[install guide](docs/INSTALL.md)**.
+**Releases** page or run it as a **container** — both detailed in the
+**[install guide](docs/INSTALL.md)**.
 
 > **Heads-up:** the prebuilt **release pipeline is still a work in progress** — published
 > artifacts can lag behind `main` or miss a platform. Until it stabilises, **`just install` from a

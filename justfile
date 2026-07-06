@@ -1,5 +1,5 @@
 # mkb task runner. Install `just` (https://github.com/casey/just), then run e.g. `just`,
-# `just install`, or `just install-cli`. These recipes are the canonical build steps — the same
+# `just install`, or `just build`. These recipes are the canonical build steps — the same
 # icon → stage → bundle sequence the release CI runs — so "build it from source" is one command on
 # any platform (notably arm64 Linux, which has no prebuilt desktop release).
 
@@ -31,14 +31,15 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
-# Installs the WHOLE product: the headless tools (daemon, CLI, MCP server) onto ~/.cargo/bin,
-# AND the desktop app (macOS → /Applications, Linux → .deb or a ~/.local AppImage, Windows → the
-# NSIS installer, silent). mkb is one product — the app, the daemon it drives, and the MCP server
-# an AI client uses all share one vault — so the default install gives you all of it. (Daemon-only
-# is the container deployment, not this.)
-# Install mkb — the desktop app, the daemon, the CLI, and the MCP server.
+# Build and install the WHOLE product from source: the desktop app plus the bundled daemon, CLI,
+# and MCP server (macOS → /Applications, Linux → .deb or a ~/.local AppImage, Windows → the NSIS
+# installer). The command-line tools (`mkb`, `mkb-mcp`) ship *inside* the app and are exposed on
+# PATH by the app itself — on Windows the installer's PATH hook does it; on macOS/Linux launch the
+# app once and use the "Install command-line tools" prompt (or Settings → Command-line tools).
+# There is no separate CLI-only install: the app is the one product, sharing one vault with its daemon.
+# Install mkb from source — the desktop app plus its bundled daemon, CLI, and MCP server.
 [unix]
-install: install-cli app
+install: app
     #!/usr/bin/env bash
     set -euo pipefail
     bundle="{{tauri}}/target/release/bundle"
@@ -56,13 +57,14 @@ install: install-cli app
         echo "Installing mkb.app → /Applications"
         rm -rf /Applications/mkb.app
         cp -R "$bundle/macos/mkb.app" /Applications/mkb.app
-        echo "Done. Launch mkb from /Applications (or Spotlight)." ;;
+        echo "Done. Launch mkb from /Applications; the app can add mkb + mkb-mcp to your PATH." ;;
       Linux)
         deb=$(ls "$bundle"/deb/*.deb 2>/dev/null | head -1 || true)
         appimage=$(ls "$bundle"/appimage/*.AppImage 2>/dev/null | head -1 || true)
         if [ -n "$deb" ] && command -v dpkg >/dev/null 2>&1; then
           echo "Installing $deb (sudo dpkg -i)"
           sudo dpkg -i "$deb"
+          echo "Done. Launch mkb; the app can add mkb + mkb-mcp to your PATH."
         elif [ -n "$appimage" ]; then
           mkdir -p "$HOME/.local/bin"
           cp "$appimage" "$HOME/.local/bin/mkb.AppImage"
@@ -96,33 +98,103 @@ install: app
       exit 1
     }
 
-# Semantic search is compiled in, so this works offline. The desktop app is added by `just install`.
-# Install the headless tools (daemon + CLI + MCP) onto ~/.cargo/bin.
+# Undo the OLD `just install-cli` (removed): delete the daemon/CLI/MCP copies it installed onto
+# ~/.cargo/bin, via `cargo uninstall` — which removes ONLY what cargo recorded installing (tracked
+# in ~/.cargo/.crates.toml) and never touches anything else in ~/.cargo/bin. The app now owns
+# CLI-on-PATH, so these cargo-bin copies are just a stale shadow that can win over the app's; this
+# clears them. Harmless no-op for each tool you never installed that way.
+#
+# Guard: an MCP client config (or its launcher) that HARDCODES the ~/.cargo/bin copy we're about to
+# remove would break silently once it's gone. A bare `mkb-mcp` (PATH-resolved) or a path into the
+# app bundle is fine — only an absolute ~/.cargo/bin/mkb* reference is the hazard. We scan the
+# common config locations (best-effort; clients vary) and ABORT on a hit so nothing breaks — re-run
+# with FORCE=1 to remove anyway.
+# Remove the stale ~/.cargo/bin daemon/CLI/MCP copies left by the old `install-cli` (cargo uninstall).
 [unix]
-install-cli:
-    cargo install --path crates/mkbd
-    cargo install --path crates/mkb-cli
-    cargo install --path crates/mkb-mcp
+uninstall-cli:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    shopt -s nullglob
+    scan=(
+      ./.mcp.json ./.vscode/mcp.json
+      "$HOME/.copilot/mcp-config.json"
+      "$HOME/.copilot/bin/"*-launcher
+      "$HOME/.claude.json"
+      "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+      "$HOME/.config/Claude/claude_desktop_config.json"
+      "$HOME/.cursor/mcp.json"
+    )
+    hits=()
+    for f in "${scan[@]}"; do
+      [ -f "$f" ] || continue
+      grep -qE '\.cargo/bin/mkb' "$f" 2>/dev/null && hits+=("$f")
+    done
+    if [ "${#hits[@]}" -gt 0 ]; then
+      echo "WARNING: these MCP configs hardcode a ~/.cargo/bin/mkb* path we're about to remove:" >&2
+      for f in "${hits[@]}"; do
+        echo "    $f" >&2
+        grep -nE '\.cargo/bin/mkb' "$f" | sed 's/^/      /' >&2
+      done
+      echo "  Point them at a bare 'mkb-mcp' (now on PATH via the app) or the app's bundled copy, then re-run." >&2
+      if [ "${FORCE:-}" != "1" ]; then
+        echo "  Aborted — no binaries removed. Re-run with FORCE=1 to uninstall anyway." >&2
+        exit 1
+      fi
+      echo "  FORCE=1 set — continuing despite the above." >&2
+    fi
+    for pkg in mkb-cli mkb-mcp mkbd; do
+      if cargo uninstall "$pkg" >/dev/null 2>&1; then
+        echo "removed $pkg from ~/.cargo/bin"
+      else
+        echo "$pkg not cargo-installed — skipped"
+      fi
+    done
 
-# Windows locks a running .exe, so a live daemon or MCP server still using the
-# ~/.cargo/bin copy (auto-started by the CLI, the app, or an AI client) makes
-# `cargo install` fail with "Access is denied (os error 5)". The recipe stops just
-# those cargo-bin copies first — a client respawns the daemon on next use, and the
-# desktop app's own bundled daemon (under %LOCALAPPDATA%) is a different file, so
-# it is left untouched.
-# Install the headless tools (daemon + CLI + MCP) onto ~/.cargo/bin.
+# Windows locks a running .exe, so stop any cargo-bin copies (auto-started daemon/MCP) before
+# `cargo uninstall` can delete them; a client respawns from the app's copy on next use. Same
+# hardcoded-path guard as the unix recipe (abort on a hit unless FORCE=1).
 [windows]
-install-cli:
+uninstall-cli:
     #!powershell
-    $ErrorActionPreference = 'Stop'
+    $ErrorActionPreference = 'Continue'
+    $scan = @(
+      './.mcp.json', './.vscode/mcp.json',
+      (Join-Path $env:USERPROFILE '.copilot\mcp-config.json'),
+      (Join-Path $env:USERPROFILE '.claude.json'),
+      (Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'),
+      (Join-Path $env:USERPROFILE '.cursor\mcp.json')
+    )
+    $launchers = @(Get-ChildItem (Join-Path $env:USERPROFILE '.copilot\bin') -Filter '*-launcher*' -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.FullName })
+    $scan += $launchers
+    $hits = @()
+    foreach ($f in $scan) {
+      if ((Test-Path $f) -and (Select-String -Path $f -Pattern '\.cargo[\\/]+bin[\\/]+mkb' -Quiet)) { $hits += $f }
+    }
+    if ($hits.Count -gt 0) {
+      Write-Host "WARNING: these MCP configs hardcode a .cargo\bin\mkb* path we're about to remove:"
+      foreach ($f in $hits) {
+        Write-Host "    $f"
+        Select-String -Path $f -Pattern '\.cargo[\\/]+bin[\\/]+mkb' |
+            ForEach-Object { Write-Host "      $($_.LineNumber): $($_.Line.Trim())" }
+      }
+      Write-Host "  Point them at a bare 'mkb-mcp' (on PATH via the app) or the app's bundled copy, then re-run."
+      if ($env:FORCE -ne '1') {
+        Write-Host "  Aborted - no binaries removed. Re-run with FORCE=1 to uninstall anyway."
+        exit 1
+      }
+      Write-Host "  FORCE=1 set - continuing despite the above."
+    }
     $bin = Join-Path $env:USERPROFILE '.cargo\bin'
     Get-Process mkbd, mkb-mcp, mkb -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($bin, [System.StringComparison]::OrdinalIgnoreCase) } |
         Stop-Process -Force
     Start-Sleep -Milliseconds 500
-    cargo install --path crates/mkbd
-    cargo install --path crates/mkb-cli
-    cargo install --path crates/mkb-mcp
+    foreach ($pkg in 'mkb-cli', 'mkb-mcp', 'mkbd') {
+      cargo uninstall $pkg 2>$null
+      if ($LASTEXITCODE -eq 0) { Write-Host "removed $pkg from ~/.cargo/bin" }
+      else { Write-Host "$pkg not cargo-installed - skipped" }
+    }
 
 # icons/ is git-ignored build output that `tauri::generate_context!` needs to compile.
 # Generate the desktop app's icon set from the tracked source app-icon.png.

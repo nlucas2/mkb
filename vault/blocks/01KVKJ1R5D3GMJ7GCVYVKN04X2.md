@@ -1,7 +1,7 @@
 ---
 title: "README: Install — from source"
 tags: [doc/readme]
-updated: 2026-07-02T06:45:43Z
+updated: 2026-07-06T05:02:42Z
 ---
 
 ## From source
@@ -12,7 +12,6 @@ prebuilt desktop release — gets the app:
 
 ```sh
 just install        # everything: desktop app + daemon + CLI + MCP server
-just install-cli    # headless tools only (daemon + CLI + MCP), no GUI
 just app            # build just the desktop app bundle
 just --list         # every recipe (build, test, check, docs, …)
 ```
@@ -21,20 +20,17 @@ Requires the [prerequisites](PREREQS.md) (Rust, `just`, Tauri CLI, system build 
 Building from source on macOS also avoids the Gatekeeper "damaged" prompt that a downloaded,
 unsigned `.dmg` triggers.
 
-**Without `just`** (the raw commands `just install` runs). The headless tools install with one
-`cargo install`; the desktop app is built with `cargo tauri build` right alongside it:
+**Without `just`** (the raw commands `just install` runs). Build the daemon, CLI, and MCP server,
+stage them beside the app so it can bundle them, then build and install the desktop bundle — the
+app is what puts `mkb` and `mkb-mcp` on your PATH:
 
 ```sh
-# 1. headless tools (daemon + CLI + MCP) → ~/.cargo/bin
-cargo install --git https://github.com/<you>/mkb mkbd mkb-cli mkb-mcp
-
-# 2. desktop app — build the bundle from a checkout
 git clone https://github.com/<you>/mkb && cd mkb
-cargo build --release -p mkbd -p mkb-cli -p mkb-mcp        # bins the app bundles
+cargo build --release -p mkbd -p mkb-cli -p mkb-mcp        # the bins the app bundles
 mkdir -p app/mkb-tauri/src-tauri/bin
 cp target/release/mkbd    app/mkb-tauri/src-tauri/bin/mkbd
 cp target/release/mkb-mcp app/mkb-tauri/src-tauri/bin/mkb-mcp
-cp target/release/mkb     app/mkb-tauri/src-tauri/bin/mkb-cli
+cp target/release/mkb     app/mkb-tauri/src-tauri/bin/mkb
 cd app/mkb-tauri && cargo tauri icon app-icon.png           # generate the icon set
 cd src-tauri && cargo tauri build                            # bundle → target/release/bundle/
 ```
