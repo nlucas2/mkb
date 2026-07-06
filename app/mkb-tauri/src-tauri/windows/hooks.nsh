@@ -1,9 +1,16 @@
 ; mkb — NSIS installer hooks (wired via bundle.windows.nsis.installerHooks in tauri.conf.json).
 ;
 ; The installer IS the whole product: it bundles the CLI tools (mkb.exe, mkb-mcp.exe, mkbd.exe)
-; under $INSTDIR\resources\bin, and these hooks put that directory on the user's PATH so the
-; commands work from any terminal — the way Docker Desktop's Windows installer adds its
-; resources\bin to PATH. No separate "install the CLI" step is needed; typing `mkb` just works.
+; under $INSTDIR\bin, and these hooks put that directory on the user's PATH so the commands work
+; from any terminal — the way Docker Desktop's Windows installer adds its resources dir to PATH.
+; No separate "install the CLI" step is needed; typing `mkb` just works.
+;
+; Directory note: Tauri's `bundle.resources: ["bin/"]` lands at $INSTDIR\bin on Windows NSIS —
+; there is NO `resources\` segment (that intermediate exists only on macOS, inside the .app). The
+; app's Rust side reaches the same files via `resource_dir().join("bin")`, and on Windows
+; `resource_dir()` returns $INSTDIR (the exe's own directory), so both agree on $INSTDIR\bin. The
+; directory this hook adds to PATH MUST match where the bundle drops the exes, or the PATH entry
+; points at nothing and a stale `cargo install` copy wins.
 ;
 ; Mechanism: shell out (via nsExec, a CORE NSIS plugin that's always present — unlike EnVar) to
 ; PowerShell and edit PATH through .NET's [Environment]::(Get|Set)EnvironmentVariable(..., 'User').
@@ -27,10 +34,10 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   DetailPrint "Adding the mkb command-line tools to the front of your PATH..."
-  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = '$INSTDIR\resources\bin'; $$p = [Environment]::GetEnvironmentVariable('Path','User'); if (-not $$p) { $$p = '' }; $$parts = $$p -split ';' | Where-Object { $$_ -and $$_ -ne $$d }; $$np = (@($$d) + $$parts) -join ';'; [Environment]::SetEnvironmentVariable('Path', $$np, 'User')"`
+  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = '$INSTDIR\bin'; $$p = [Environment]::GetEnvironmentVariable('Path','User'); if (-not $$p) { $$p = '' }; $$parts = $$p -split ';' | Where-Object { $$_ -and $$_ -ne $$d }; $$np = (@($$d) + $$parts) -join ';'; [Environment]::SetEnvironmentVariable('Path', $$np, 'User')"`
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
   DetailPrint "Removing the mkb command-line tools from your PATH..."
-  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = '$INSTDIR\resources\bin'; $$p = [Environment]::GetEnvironmentVariable('Path','User'); if ($$p) { $$np = ($$p -split ';' | Where-Object { $$_ -and $$_ -ne $$d }) -join ';'; [Environment]::SetEnvironmentVariable('Path', $$np, 'User') }"`
+  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = '$INSTDIR\bin'; $$p = [Environment]::GetEnvironmentVariable('Path','User'); if ($$p) { $$np = ($$p -split ';' | Where-Object { $$_ -and $$_ -ne $$d }) -join ';'; [Environment]::SetEnvironmentVariable('Path', $$np, 'User') }"`
 !macroend
