@@ -82,10 +82,11 @@ fn bundled_mkbd(app: &tauri::AppHandle) -> Option<PathBuf> {
 /// The CLI command names bundled inside the app's `bin/` and exposed on PATH, staged under their
 /// real names (no `mkb-cli` rename). On Unix a symlink `<link-dir>/<name>` points at `bin/<name>`;
 /// `mkbd` is symlinked too so the CLI finds it as a sibling (`resolve_mkbd` in mkb-protocol resolves
-/// `current_exe()`, which follows the symlink, then looks beside it). On Windows the same `bin/`
-/// directory is what the installer adds to PATH.
+/// `current_exe()`, which follows the symlink, then looks beside it). `mkb-web` (the browser
+/// front-end) is symlinked too, so `mkb-web` is launchable by name on every platform. On Windows the
+/// same `bin/` directory is what the installer adds to PATH.
 #[cfg(unix)]
-const CLI_NAMES: [&str; 3] = ["mkb", "mkb-mcp", "mkbd"];
+const CLI_NAMES: [&str; 4] = ["mkb", "mkb-mcp", "mkbd", "mkb-web"];
 
 /// Where the CLI tools are symlinked onto PATH on Unix: `/usr/local/bin` — the conventional spot
 /// (Docker Desktop et al. use it on macOS) that is on **every** shell's default PATH out of the box,
