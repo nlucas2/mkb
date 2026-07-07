@@ -135,7 +135,7 @@
       nav li a:hover { background:var(--hover); }
       nav li.active a { background:var(--accent); color:var(--panel); font-weight:600; }
       /* Sidebar group-by select + grouped tree. */
-      .groupby { appearance:none; -webkit-appearance:none; background:var(--field); color:var(--fg); border:1px solid var(--border); border-radius:5px; padding:.15rem 1.3rem .15rem .4rem; font:inherit; font-size:.8em; line-height:1.4; text-align:left; cursor:pointer; background-image:linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position:calc(100% - 11px) center, calc(100% - 7px) center; background-size:4px 4px, 4px 4px; background-repeat:no-repeat; }
+      .groupby { appearance:none; -webkit-appearance:none; background:var(--field); color:var(--fg); border:1px solid var(--border); border-radius:5px; padding:.15rem 1.3rem .15rem .4rem; font:inherit; font-size:.8em; cursor:pointer; background-image:linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position:calc(100% - 11px) center, calc(100% - 7px) center; background-size:4px 4px, 4px 4px; background-repeat:no-repeat; }
       .groupby:hover { border-color:var(--accent); }
       nav ul.grouped li { display:block; }
       /* A tag/path node row (node = category, whole row toggles expand). */
@@ -453,7 +453,6 @@
         display:flex; align-items:center; gap:.7rem; max-width:min(92vw,42rem);
         background:var(--panel); border:1px solid var(--accent); border-left:4px solid var(--accent);
         border-radius:10px; padding:.7rem .9rem;
-        box-shadow:0 10px 34px rgba(0,0,0,.45), 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
         animation:clipop .22s cubic-bezier(.2,.9,.3,1.2); }
       @keyframes clipop { from { opacity:0; transform:translate(-50%,10px) scale(.98); } to { opacity:1; transform:translate(-50%,0) scale(1); } }
       .clibanner[hidden] { display:none; }
@@ -528,7 +527,7 @@
           width:100vw; max-width:none; flex-basis:auto;
           padding-top:3.2rem;
           transform:translateX(-100%); transition:transform .22s ease;
-          z-index:40; box-shadow:2px 0 24px rgba(0,0,0,.4);
+          z-index:40;
         }
         .layout.navopen nav { transform:translateX(0); }
         /* Neutralise the desktop collapse/resize states — the drawer owns positioning on mobile. */
@@ -596,7 +595,12 @@
           <button id="graphbtn"><span class="ico">◎</span><span class="label">Graph</span></button>
         </div>
         <div class="navhd"><span>Blocks</span>
-          <button id="groupby" class="groupby" type="button" aria-haspopup="menu" title="How to organize the block list"></button>
+          <select id="groupby" class="groupby" title="How to organize the block list">
+            <option value="hierarchy" selected>Hierarchy</option>
+            <option value="none">Flat</option>
+            <option value="tags">Tags</option>
+            <option value="path">Path</option>
+          </select>
         </div>
         <ul id="blocks"></ul>
         <button id="newblock" class="addrow" title="New block (⌘↵ to save · Esc to discard)"><span class="ico">+</span> New block</button>
@@ -3294,35 +3298,14 @@
       // embeds/links, the default), Flat (every block), Tags (many-home /-tree), or a property like
       // Path (single-home /-tree). Persisted. Replaces the old Roots/All toggle (Hierarchy collapsed
       // IS "roots").
-      // Group-by control. This is a plain button (styled to look like the old dropdown) that opens the
-      // app's OWN context menu, rather than a native <select>. Reason: on macOS/iOS the native
-      // <select> popup renders its options at an OS-controlled size we can't enlarge, so it stayed
-      // tiny on touch. Reusing showContextMenu gives one code path, a consistent look, and a menu we
-      // can size up for thumbs (see the mobile .ctxmenu rules).
       (() => {
-        const btn = document.getElementById("groupby");
-        const OPTS = [
-          { value: "hierarchy", label: "Hierarchy" },
-          { value: "none", label: "Flat" },
-          { value: "tags", label: "Tags" },
-          { value: "path", label: "Path" },
-        ];
-        const labelFor = (v) => (OPTS.find((o) => o.value === v) || {}).label || v;
-        const paint = () => { btn.textContent = labelFor(groupBy); };
-        paint();
-        btn.onclick = (e) => {
-          e.stopPropagation();
-          if (ctxMenuEl) { closeContextMenu(); return; } // second click on the button closes it
-          const r = btn.getBoundingClientRect();
-          showContextMenu(r.left, r.bottom + 4, OPTS.map((o) => ({
-            label: (o.value === groupBy ? "✓ " : "") + o.label,
-            run: () => {
-              groupBy = o.value;
-              try { localStorage.setItem("mkb.groupBy", groupBy); } catch {}
-              paint();
-              loadBlocks(active, { navOnly: true });
-            },
-          })));
+        const sel = document.getElementById("groupby");
+        const known = ["hierarchy", "none", "tags", "path"];
+        sel.value = known.includes(groupBy) ? groupBy : "path";
+        sel.onchange = () => {
+          groupBy = sel.value;
+          try { localStorage.setItem("mkb.groupBy", groupBy); } catch {}
+          loadBlocks(active, { navOnly: true });
         };
       })();
       window.__mkb = { settings: showSettings };
