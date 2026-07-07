@@ -232,7 +232,7 @@ jobs:
           cp "$SDK/pathcch.lib"  "$HOME/winlibs/PathCch.lib"
           cargo xwin build --release --target x86_64-pc-windows-msvc -p mkbd
           # The thin clients never need the embedder.
-          cargo xwin build --release --target x86_64-pc-windows-msvc -p mkb-cli -p mkb-mcp
+          cargo xwin build --release --target x86_64-pc-windows-msvc -p mkb-cli -p mkb-mcp -p mkb-web
 
       - name: Cross-compile desktop app (Tauri — raw .exe + NSIS installer)
         run: |
@@ -240,14 +240,16 @@ jobs:
           . "$HOME/.cargo/env"
           # Generate the icon set from the single tracked source (icons/ is git-ignored build output).
           ( cd app/mkb-tauri && cargo tauri icon app-icon.png )
-          # The app bundles the daemon (local-vault auto-start) and the CLI tools (mkb + mkb-mcp)
-          # as resources; the NSIS PATH hook exposes the whole bin/ dir on PATH, so `mkb` and
-          # `mkb-mcp` work in the terminal after install. Staged under real command names.
+          # The app bundles the daemon (local-vault auto-start), the CLI tools (mkb + mkb-mcp), and
+          # the web UI server (mkb-web) as resources; the NSIS PATH hook exposes the whole bin/ dir
+          # on PATH, so `mkb`, `mkb-mcp`, and `mkb-web` work in the terminal after install. Staged
+          # under real command names.
           rm -rf app/mkb-tauri/src-tauri/bin
           mkdir -p app/mkb-tauri/src-tauri/bin
-          cp target/x86_64-pc-windows-msvc/release/mkbd.exe   app/mkb-tauri/src-tauri/bin/mkbd.exe
+          cp target/x86_64-pc-windows-msvc/release/mkbd.exe    app/mkb-tauri/src-tauri/bin/mkbd.exe
           cp target/x86_64-pc-windows-msvc/release/mkb-mcp.exe app/mkb-tauri/src-tauri/bin/mkb-mcp.exe
           cp target/x86_64-pc-windows-msvc/release/mkb.exe     app/mkb-tauri/src-tauri/bin/mkb.exe
+          cp target/x86_64-pc-windows-msvc/release/mkb-web.exe app/mkb-tauri/src-tauri/bin/mkb-web.exe
           ( cd app/mkb-tauri/src-tauri && \
             cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis )
 
@@ -258,15 +260,15 @@ jobs:
           REL=target/x86_64-pc-windows-msvc/release
           APPREL=app/mkb-tauri/src-tauri/target/x86_64-pc-windows-msvc/release
 
-          # ONE complete archive: the desktop app + every CLI (mkb, mkb-mcp) + the
-          # daemon. The daemon is self-contained — the embedding model is compiled into the
-          # binary — so no model files ship alongside. bin/ mirrors the app's bundled-resource
+          # ONE complete archive: the desktop app + every CLI (mkb, mkb-mcp) + the web UI server
+          # (mkb-web) + the daemon. The daemon is self-contained — the embedding model is compiled
+          # into the binary — so no model files ship alongside. bin/ mirrors the app's bundled-resource
           # layout so launching mkb-tauri.exe portably can auto-start its daemon. Every download
           # is the full product.
           rm -rf dist && mkdir -p dist/bin
           cp "$APPREL/mkb-tauri.exe" dist/
-          cp "$REL/mkbd.exe" "$REL/mkb.exe" "$REL/mkb-mcp.exe" dist/
-          cp "$REL/mkbd.exe" "$REL/mkb-mcp.exe" dist/bin/
+          cp "$REL/mkbd.exe" "$REL/mkb.exe" "$REL/mkb-mcp.exe" "$REL/mkb-web.exe" dist/
+          cp "$REL/mkbd.exe" "$REL/mkb-mcp.exe" "$REL/mkb-web.exe" dist/bin/
           cp "$REL/mkb.exe" dist/bin/mkb.exe
           ( cd dist && zip -qr "../mkb-$V-windows-x64.zip" . )
 
