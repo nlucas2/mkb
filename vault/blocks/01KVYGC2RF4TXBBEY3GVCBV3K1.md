@@ -1,13 +1,14 @@
 ---
 title: INSTALL page
 tags: [doc/install, page]
-updated: 2026-07-02T06:45:47Z
+updated: 2026-07-07T02:51:48Z
 ---
 
 # Installing mkb
 
-mkb is one product — the desktop app a human uses, the daemon it drives, the CLI, and the MCP
-server an AI client connects to. They install together; the container is the only daemon-only case.
+mkb is one product — the desktop app a human uses (or the same UI in a browser via `mkb-web`),
+the daemon it drives, the CLI, and the MCP server an AI client connects to. They install together;
+the container is the only daemon-only case.
 
 For the quickest complete install, just run `just install` from a checkout (see
 [From source](#from-source)). The other methods below trade the build step for a download, or get

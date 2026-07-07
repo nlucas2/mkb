@@ -347,12 +347,14 @@ transparently respawns it — at most a brief cold start.
   crate such as `turbovec`, rebuilt from the stored vectors and owned by the long-lived daemon) versus a
   persisted `sqlite-vec` (`vec0`) table in the same file. Decide when a real vault actually approaches the
   crossover, not before.
-- **Web frontend over the shared app-core** *(possible future)*: the desktop app's UI operation logic
-  (reads, writes, vault-registry ops) now lives in the transport-neutral **`mkb-app-core`** crate, with
-  the Tauri commands as thin shims over it. That seam means a browser frontend — a small server exposing
-  the same `mkb-app-core` operations over the daemon and rendering through the shared `mkb-view` — could
-  be added without duplicating any core behaviour. Not built; noted because the boundary is already in
-  place if a web UI is ever wanted.
+- **Web frontend over the shared app-core** *(done)*: shipped as **`mkb-web`** — a small axum server
+  that serves the *same* UI in a browser as another thin client over `mkb-app-core` + `mkb-view`, so the
+  desktop and web front-ends share one source and cannot diverge. Launch `mkb-web`, open
+  `http://127.0.0.1:8787`, and it is the app in a browser tab (per-tab vault selection, live refresh via
+  SSE, editor draft persistence for mobile). The UI is compiled into the binary (like the Tauri app's
+  own frontend and the daemon's model), so it is self-contained and ships as a fourth binary in the one
+  installer alongside the daemon, CLI, and MCP server — no separate install. (Bundling it into the
+  container image is the remaining, deliberately-deferred piece.)
 - **Change tracking / audit + restore — git-aware, not git-owning** *(planned)*: mkb's founding promise
   is *auditable, refactorable* memory, but a **standalone** vault (a bare `blocks/` dir — e.g. a
   cluster/NFS vault or `~/mkb-vault`) keeps **no history**: a whole-body write overwrites the file and

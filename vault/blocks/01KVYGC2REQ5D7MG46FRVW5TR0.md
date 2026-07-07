@@ -1,14 +1,14 @@
 ---
 title: "README: Install"
 tags: [doc/readme]
-updated: 2026-07-06T05:01:55Z
+updated: 2026-07-07T02:53:38Z
 ---
 
 ### Install
 
 The fastest complete install is one command from a checkout, via
 [`just`](https://github.com/casey/just) — it builds and installs the **whole product**: the
-desktop app, the daemon, the CLI, and the MCP server.
+desktop app (also reachable in a browser via `mkb-web`), the daemon, the CLI, and the MCP server.
 
 ```sh
 just install        # everything: desktop app + daemon + CLI + MCP server

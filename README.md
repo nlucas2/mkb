@@ -11,8 +11,8 @@ app, instead of an opaque store you can't see into.
 Knowledge is a **block**: one Markdown file. Blocks *embed* others (`![[id]]`, a live copy) or
 *link* to them (`[[id]]`), so a fact is written once, reused everywhere, and edited in one
 place — memory that stays organized and refactorable as it grows, not a pile of near-duplicates.
-Two equal consumers share one vault: **you**, through the desktop app, and **AI clients**,
-through an MCP server; it works fully with AI turned off. The Markdown files are the single
+Two equal consumers share one vault: **you**, through the desktop app (or the same UI in a
+browser via `mkb-web`), and **AI clients**, through an MCP server; it works fully with AI turned off. The Markdown files are the single
 source of truth; the index is a rebuildable cache.
 
 <p align="center">
@@ -30,7 +30,7 @@ source of truth; the index is a rebuildable cache.
 
 The fastest complete install is one command from a checkout, via
 [`just`](https://github.com/casey/just) — it builds and installs the **whole product**: the
-desktop app, the daemon, the CLI, and the MCP server.
+desktop app (also reachable in a browser via `mkb-web`), the daemon, the CLI, and the MCP server.
 
 ```sh
 just install        # everything: desktop app + daemon + CLI + MCP server
