@@ -127,34 +127,7 @@ changing curated content.
 
 ## Exporting & publishing
 
-`mkb export` renders blocks — embeds resolved inline — to flat Markdown files, so a slice of the
-vault becomes ordinary documents anyone can read without mkb. It has a few modes:
-
-- **Docs-as-data (default)** — with a `vault/export.toml` present, `mkb export` regenerates each
-  mapped doc (plus every block that routes itself via `path` / `filename` properties). `--check`
-  verifies without writing — non-zero exit on drift — which is the CI gate. See the
-  [docs-as-data skill](skills/mkb-docs-as-data/SKILL.md).
-- **By tag** — `mkb export --tag ops` dumps every **root** tagged `ops` to `<slug>.md` under
-  `docs-export/`; add `--include-non-root` to include tagged non-root blocks too.
-- **Whole vault** — with no manifest and no `--tag`, `mkb export` dumps every root to
-  `docs-export/`.
-- **A custom manifest** — `mkb export --manifest my.toml` (or a `.json` file) uses your own
-  path → block map instead of the vault's `export.toml`.
-
-Two modifiers apply to the tag and whole-vault dumps:
-
-- `--follow-links` — pull blocks linked *outside* the export into it, so links resolve instead of
-  degrading to plain text.
-- `--raw` — omit the `<!-- @generated … -->` banner, for publishing to non-mkb readers.
-
-`--root DIR` overrides the output directory (defaults: `docs-export/` for a dump, the current
-directory for a manifest).
-
-## MCP tool tiers
-
-The MCP server exposes a **lean core surface** by default — the read tools and everyday writes an
-AI assistant needs, and nothing more. Setting `MKB_MCP_TOOLS=full` (or `all`) adds the **advanced
-tier**: `set_props`, `unset_props`, `carve_block`, and `flatten_block`, for agents that actively
-refactor the graph. Keep the default surface unless an assistant genuinely needs to restructure
-blocks — a smaller toolset is easier for a model to use well. See the
-[configuration guide](CONFIGURATION.md#environment-variables).
+`mkb export` renders blocks (with their embeds resolved inline) to flat Markdown files, so a slice
+of the vault becomes ordinary documents anyone can read without mkb. See the 
+[Export Guide](EXPORT.md) for the full mechanics of `path` properties, manifests,
+and cross-document link resolution.

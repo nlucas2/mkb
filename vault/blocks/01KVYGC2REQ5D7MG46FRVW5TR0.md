@@ -1,7 +1,7 @@
 ---
 title: "README: Install"
 tags: [doc/readme]
-updated: 2026-07-07T04:37:40Z
+updated: 2026-07-07T04:59:58Z
 ---
 
 ### Install
@@ -16,5 +16,5 @@ just install        # everything: desktop app (+ mkb-web) + CLI + MCP server
 
 Prefer not to build? Grab a **prebuilt release** (installer or portable archive) from the
 **Releases** page or run it as a **container** — both detailed in the
-**[install guide](docs/INSTALL.md)**. (As a pre-release, published artifacts can lag behind `main`
+[[01KVYGC2RF4TXBBEY3GVCBV3K1|install guide]]. (As a pre-release, published artifacts can lag behind `main`
 or miss a platform; `just install` from a fresh checkout is the most reliable way to get the latest.)

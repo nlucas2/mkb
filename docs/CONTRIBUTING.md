@@ -5,9 +5,9 @@
 
 This page collects the developer-facing material — workspace layout, internals, and the roadmap.
 Two companions go deeper: the design rationale is in
-[`docs/architecture.md`](architecture.md) and the exact on-disk format in
-[`docs/SPEC.md`](SPEC.md). The **mandatory working rules** (tests, the shared-core boundary,
-docs-as-data, the pre-commit gate) live in [`AGENTS.md`](../AGENTS.md) — read it before sending a
+[docs/architecture.md](architecture.md) and the exact on-disk format in
+[docs/SPEC.md](SPEC.md). The **mandatory working rules** (tests, the shared-core boundary,
+docs-as-data, the pre-commit gate) live in [AGENTS.md](../AGENTS.md) — read it before sending a
 change.
 
 ## Workspace layout
@@ -21,12 +21,17 @@ change.
 | `crates/mkbd` | bin | Headless daemon: owns the watcher, index, and writes; serves a local socket (Unix socket / Windows named pipe). |
 | `crates/mkb-mcp` | bin (`mkb-mcp`) | MCP server (stdio); thin client that forwards tool calls to the daemon. |
 | `crates/mkb-cli` | bin (`mkb`) | CLI for scripting/manual ops, thin client. |
+| `crates/mkb-web` | bin (`mkb-web`) | Serves the desktop UI in a browser; thin client over `mkb-app-core` + `mkb-view` + daemon, UI compiled in. |
 | `crates/mkb-view` | lib | Shared presentation: Markdown→HTML rendering + page templating for any UI. |
 | `crates/mkb-app-core` | lib | Transport-neutral logic behind each UI command (over the daemon client), so every front-end shares one implementation. No presentation-shell/platform deps. |
 | `app/mkb-tauri` | app | Desktop shell (Tauri); thin client over `mkb-app-core` + `mkb-view` + daemon. *(separate workspace)* |
 
 If a piece of behavior doesn't clearly belong to transport or presentation, it belongs in
 `mkb-core`.
+
+Run the desktop app in development with `cargo tauri dev` from `app/mkb-tauri` (it needs the Tauri
+toolchain + a system webview, which is why it's a separate workspace). `just install` builds and
+installs the whole product — app, `mkb-web`, CLI, and MCP server.
 
 ### What each crate/module does
 
@@ -127,7 +132,7 @@ CI/pre-commit gate). Within a single export, co-exported docs **cross-link** (a 
 between them becomes a relative link); a reference to a block outside the export degrades to plain
 text and prints a `warning:` — unless **`--follow-links`** pulls the linked block into the export.
 
-The CLI/MCP skills, **[`docs/SPEC.md`](./docs/SPEC.md)**, **[`AGENTS.md`](./AGENTS.md)**, and this
+The CLI/MCP skills, [docs/SPEC.md](SPEC.md), [AGENTS.md](../AGENTS.md), and this
 README are all generated from blocks in the vault.
 
 ## Under the hood
@@ -428,7 +433,7 @@ transparently respawns it — at most a brief cold start.
 
 ## Working rules
 
-These are mandatory; the canonical copy is [`AGENTS.md`](../AGENTS.md), generated from the same
+These are mandatory; the canonical copy is [AGENTS.md](../AGENTS.md), generated from the same
 blocks. In short: every behavior change ships with tests, `cargo test --workspace` is green before
 every commit, shared behavior lives in `mkb-core` (clients stay thin), and generated docs are
 edited at their **source block** then re-exported — never by hand.

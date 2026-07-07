@@ -2387,11 +2387,32 @@
       // emits `<pre><code class="language-xxx">`; the common bundle plus vendored grammars cover
       // C#/Python/Rust/Go/shell/SQL/YAML/Docker/PowerShell/nginx/Kusto(KQL)/etc. Unknown
       // languages degrade to plain text.
+      // Apply syntax highlighting to every code block under `root`. highlight.js is a vendored
+      // classic <script>; in the desktop app's webview that local script very occasionally hasn't
+      // evaluated yet when the first block renders (a custom-protocol load race), and without it the
+      // code blocks stay unstyled for the whole session — the symptom that a restart "fixed". Guard
+      // against that: if hljs isn't ready, poll briefly and re-highlight whatever is currently shown
+      // once it loads, so it self-heals instead of needing a restart.
+      let hljsRetry = null;
       function highlightIn(root) {
-        if (!window.hljs) return;
+        if (!window.hljs) {
+          if (!hljsRetry) {
+            let tries = 0;
+            hljsRetry = setInterval(() => {
+              if (window.hljs) {
+                clearInterval(hljsRetry); hljsRetry = null;
+                // The head's alias registration may have run before hljs loaded; redo it now.
+                try { window.hljs.registerAliases(["kusto", "azuremonitor", "loganalytics"], { languageName: "kql" }); } catch {}
+                highlightIn(mainEl); // re-highlight the open block now that the highlighter is up
+              } else if (++tries > 50) { clearInterval(hljsRetry); hljsRetry = null; }
+            }, 100);
+          }
+          return;
+        }
         root.querySelectorAll("pre code").forEach((el) => {
           // Mermaid blocks are rendered as diagrams (mermaidIn), not syntax-highlighted.
           if (el.classList.contains("language-mermaid")) return;
+          if (el.dataset.highlighted) return; // already highlighted (idempotent re-runs)
           try { window.hljs.highlightElement(el); } catch {}
         });
       }
@@ -3314,15 +3335,34 @@
         if (!(e.target instanceof HTMLTextAreaElement)) e.preventDefault();
       });
 
-      // Intercept clicks on shared `mkb:` reference links (chips + embed-card headers) to navigate.
+      // Global link guard. In the desktop webview a normal <a> click NAVIGATES the whole page —
+      // reloading the SPA back to its default block (the "clicking a link dumps me on Welcome" bug).
+      // So every anchor in rendered content is intercepted: `mkb:` links open the target block
+      // in-app; http(s)/mailto open in the OS browser; anything else (a stray relative path a link
+      // shouldn't have been) is swallowed so it can never blow away the app. Authored cross-doc links
+      // should be `[[block refs]]` (which export to `mkb:` chips) — this is the safety net for the
+      // rest. In the browser build (mkb-web) real links behave normally; only `mkb:` is special.
       mainEl.addEventListener("click", (e) => {
-        const a = e.target.closest && e.target.closest('a[href^="mkb:"]');
+        const a = e.target.closest && e.target.closest("a[href]");
         if (!a) return;
+        const href = a.getAttribute("href") || "";
+        if (href.startsWith("mkb:")) {
+          e.preventDefault(); e.stopPropagation();
+          const rest = href.slice("mkb:".length);
+          if (rest.startsWith("?")) return;
+          const id = decodeURIComponent(rest.split("#")[0]);
+          if (id) openBlock(id);
+          return;
+        }
+        if (window.__MKB_WEB__) return;          // browser build: let normal links work as usual
+        if (href.startsWith("#")) return;         // in-page anchor: allow intra-doc scroll
+        if (/^(https?|mailto):/i.test(href)) {    // web/mail: open in the OS browser, not the webview
+          e.preventDefault(); e.stopPropagation();
+          invoke("open_external", { url: href }).catch(() => {});
+          return;
+        }
+        // Anything else (a relative repo path, etc.): swallow so a stray link can't navigate the SPA.
         e.preventDefault(); e.stopPropagation();
-        const rest = a.getAttribute("href").slice("mkb:".length);
-        if (rest.startsWith("?")) return;
-        const id = decodeURIComponent(rest.split("#")[0]);
-        if (id) openBlock(id);
       }, true);
 
       // Live refresh: the daemon advances a content "generation" on every block change; the app's

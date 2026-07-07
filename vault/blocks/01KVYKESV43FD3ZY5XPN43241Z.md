@@ -1,16 +1,16 @@
 ---
 title: CONTRIBUTING page
 tags: [doc/contributing, page, dev]
-updated: 2026-07-02T06:45:47Z
+updated: 2026-07-07T05:18:34Z
 ---
 
 # Contributing to mkb
 
 This page collects the developer-facing material — workspace layout, internals, and the roadmap.
 Two companions go deeper: the design rationale is in
-[`docs/architecture.md`](architecture.md) and the exact on-disk format in
-[`docs/SPEC.md`](SPEC.md). The **mandatory working rules** (tests, the shared-core boundary,
-docs-as-data, the pre-commit gate) live in [`AGENTS.md`](../AGENTS.md) — read it before sending a
+[[01KVKJM4J0Z8A822SA8GVF8G8B|docs/architecture.md]] and the exact on-disk format in
+[[01KVKBYMJS5MGCVSSFR8Z6H4MK|docs/SPEC.md]]. The **mandatory working rules** (tests, the shared-core boundary,
+docs-as-data, the pre-commit gate) live in [[01KVKH5H7VGN3SAVZC2YQCK236|AGENTS.md]] — read it before sending a
 change.
 
 ## Workspace layout
@@ -42,7 +42,7 @@ the daemon for you — but it matters when hacking on the daemon or deploying it
 
 ## Working rules
 
-These are mandatory; the canonical copy is [`AGENTS.md`](../AGENTS.md), generated from the same
+These are mandatory; the canonical copy is [[01KVKH5H7VGN3SAVZC2YQCK236|AGENTS.md]], generated from the same
 blocks. In short: every behavior change ships with tests, `cargo test --workspace` is green before
 every commit, shared behavior lives in `mkb-core` (clients stay thin), and generated docs are
 edited at their **source block** then re-exported — never by hand.

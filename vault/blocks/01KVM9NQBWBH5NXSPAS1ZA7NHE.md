@@ -1,6 +1,6 @@
 ---
 title: "README: Install — container"
-updated: 2026-07-02T21:39:27Z
+updated: 2026-07-07T05:32:14Z
 ---
 
 ## Container / Kubernetes
@@ -19,4 +19,4 @@ docker run -d --name mkb -p 127.0.0.1:7820:7820 \
 mkb search --remote 127.0.0.1:7820 --token "$MKB_TOKEN" "…"
 ```
 
-See [`deploy/README.md`](./deploy/README.md) for the Kubernetes manifest and full cluster setup.
+See [[01KWXGZGYKM072QF2D79W86B4C|deploy/README.md]] for the Kubernetes manifest and full cluster setup.

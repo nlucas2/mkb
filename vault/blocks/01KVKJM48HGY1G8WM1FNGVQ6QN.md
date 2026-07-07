@@ -1,7 +1,7 @@
 ---
 title: "Architecture: a block is a file"
 tags: [doc/architecture]
-updated: 2026-07-02T06:45:44Z
+updated: 2026-07-07T05:17:04Z
 ---
 
 ## The core idea: a block is a file
@@ -20,4 +20,4 @@ Each block is one file `blocks/<ULID>.md`: the ULID filename **is** the identity
 file freely. Targets may also be written as a block **title** (resolved case-insensitively) for
 convenience, but a title is not identity, so prefer the ULID when a link must survive renames or
 when titles could collide. The exact on-disk format — frontmatter, the `![[child]]` /
-`[[reference]]` directives — is specified in [`SPEC.md`](./SPEC.md).
+`[[reference]]` directives — is specified in [[01KVKBYMJS5MGCVSSFR8Z6H4MK|the on-disk format spec]].

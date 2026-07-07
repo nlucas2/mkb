@@ -1,7 +1,7 @@
 ---
 title: "Architecture: the index is a rebuildable cache"
 tags: [doc/architecture]
-updated: 2026-07-04T02:15:00Z
+updated: 2026-07-07T05:17:25Z
 ---
 
 ## The index is a rebuildable cache
@@ -21,4 +21,4 @@ Semantic matching is currently an **exact brute-force cosine scan** over the sto
 simple, dependency-free, and exact, which has been more than fast enough for everything mkb has
 been used for so far. The `Index` trait is the seam to swap in an approximate-nearest-neighbour
 (ANN) engine should a vault ever grow large enough for the linear scan to matter — see the roadmap
-in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+in [[01KVYKESV43FD3ZY5XPN43241Z|CONTRIBUTING.md]].

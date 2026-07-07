@@ -4,8 +4,8 @@
 # mkb architecture — the file-per-block model
 
 This is the architecture of mkb's **file-per-block** model: how knowledge is stored, composed,
-indexed, and served. The exact on-disk format is in [`SPEC.md`](./SPEC.md); how to run and use
-mkb is in the [`README`](../README.md).
+indexed, and served. The exact on-disk format is in [the format spec](SPEC.md); how to run and use
+mkb is in the [README](../README.md).
 
 ## What mkb is
 
@@ -30,7 +30,7 @@ These hold throughout the design:
 - **One shared core.** All block / transclusion / index / search / parsing / write behavior lives
   in `mkb-core` and is reached through the daemon; the CLI, MCP server, and desktop app
   are thin clients, so a bug fixed once is fixed everywhere. (Enforced by the contributing rules
-  in [`AGENTS.md`](../AGENTS.md).)
+  in [AGENTS.md](../AGENTS.md).)
 - **Pluggable seams are traits** (`Index`, `Embedder`, `IdCodec`, transport) — program to the
   trait, not the concrete type, so engines/encodings can be swapped without touching callers.
 
@@ -58,7 +58,7 @@ Each block is one file `blocks/<ULID>.md`: the ULID filename **is** the identity
 file freely. Targets may also be written as a block **title** (resolved case-insensitively) for
 convenience, but a title is not identity, so prefer the ULID when a link must survive renames or
 when titles could collide. The exact on-disk format — frontmatter, the `![[child]]` /
-`[[reference]]` directives — is specified in [`SPEC.md`](./SPEC.md).
+`[[reference]]` directives — is specified in [the on-disk format spec](SPEC.md).
 
 ## The model is a DAG
 
@@ -149,7 +149,7 @@ Semantic matching is currently an **exact brute-force cosine scan** over the sto
 simple, dependency-free, and exact, which has been more than fast enough for everything mkb has
 been used for so far. The `Index` trait is the seam to swap in an approximate-nearest-neighbour
 (ANN) engine should a vault ever grow large enough for the linear scan to matter — see the roadmap
-in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Daemon & clients
 

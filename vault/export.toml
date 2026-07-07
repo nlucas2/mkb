@@ -66,3 +66,8 @@ block = "CONFIGURATION page"
 [[doc]]
 path  = "docs/USAGE.md"
 block = "USAGE page"
+
+# Full reference on how export works
+[[doc]]
+path  = "docs/EXPORT.md"
+block = "Exporting and publishing"

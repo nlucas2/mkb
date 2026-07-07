@@ -1,7 +1,7 @@
 ---
 title: "Skill: the edit-block to re-export loop"
 tags: [skill/docs-as-data]
-updated: 2026-07-02T06:45:46Z
+updated: 2026-07-07T05:18:12Z
 ---
 
 ### The loop: edit the block, then re-export
@@ -17,3 +17,7 @@ updated: 2026-07-02T06:45:46Z
    shell or asks the human.)
 6. **Verify:** `mkb export --vault vault --check` writes nothing and exits non-zero on drift. Commit the
    block change and the regenerated file(s) **together**.
+
+**Linking to another doc?** Use a `[[block reference]]` to the target's source block. The exporter
+turns a `[[ref]]` between two exported docs into the correct relative link, and the same reference
+opens that block directly in the app.

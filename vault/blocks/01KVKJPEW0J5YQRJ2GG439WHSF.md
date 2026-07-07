@@ -1,7 +1,7 @@
 ---
 title: "Architecture: non-negotiables"
 tags: [doc/architecture]
-updated: 2026-07-02T06:45:45Z
+updated: 2026-07-07T05:18:42Z
 ---
 
 ## Non-negotiables
@@ -13,6 +13,6 @@ These hold throughout the design:
 - **One shared core.** All block / transclusion / index / search / parsing / write behavior lives
   in `mkb-core` and is reached through the daemon; the CLI, MCP server, and desktop app
   are thin clients, so a bug fixed once is fixed everywhere. (Enforced by the contributing rules
-  in [`AGENTS.md`](../AGENTS.md).)
+  in [[01KVKH5H7VGN3SAVZC2YQCK236|AGENTS.md]].)
 - **Pluggable seams are traits** (`Index`, `Embedder`, `IdCodec`, transport) — program to the
   trait, not the concrete type, so engines/encodings can be swapped without touching callers.

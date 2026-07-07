@@ -1,6 +1,6 @@
 ---
 title: USAGE page
-updated: 2026-07-03T04:08:12Z
+updated: 2026-07-07T05:28:37Z
 ---
 
 # Using mkb
@@ -21,6 +21,9 @@ a specific vault.
 
 ![[01KVP1DEBEDM8G5BXCB3JHC6VM]]
 
-![[01KWDWCX0Q87SPVPM4G4BDCR8S]]
+## Exporting & publishing
 
-![[01KWDWCXFCFGC2M3H01TKMZ741]]
+`mkb export` renders blocks (with their embeds resolved inline) to flat Markdown files, so a slice
+of the vault becomes ordinary documents anyone can read without mkb. See the 
+[[01KWXGS7X4EQR76GADKD8VBT0J|Export Guide]] for the full mechanics of `path` properties, manifests,
+and cross-document link resolution.

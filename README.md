@@ -19,8 +19,8 @@ the index is a rebuildable cache.
   <a href="docs/images/app-read.png"><img src="docs/images/app-read.png" alt="mkb desktop app in Read mode — a block with its embeds dissolved into one clean Markdown document" width="820"></a>
 </p>
 
-> **Pre-release** (`0.1.0`). See **[`docs/architecture.md`](./docs/architecture.md)** for the design
-> and **[`docs/SPEC.md`](./docs/SPEC.md)** for the on-disk format.
+> **Pre-release** (`0.1.0`). See [the design overview](docs/architecture.md) and the
+> [on-disk format spec](docs/SPEC.md).
 
 ## Getting started
 
@@ -36,18 +36,18 @@ just install        # everything: desktop app (+ mkb-web) + CLI + MCP server
 
 Prefer not to build? Grab a **prebuilt release** (installer or portable archive) from the
 **Releases** page or run it as a **container** — both detailed in the
-**[install guide](docs/INSTALL.md)**. (As a pre-release, published artifacts can lag behind `main`
+[install guide](docs/INSTALL.md). (As a pre-release, published artifacts can lag behind `main`
 or miss a platform; `just install` from a fresh checkout is the most reliable way to get the latest.)
 
 Building from source needs Rust, [`just`](https://github.com/casey/just), and your platform's
-webview build libraries — see **[Installing the prerequisites](docs/PREREQS.md)**. Prebuilt releases
+webview build libraries — see [Installing the prerequisites](docs/PREREQS.md). Prebuilt releases
 and the container need none of them.
 
 ### Choosing your vault
 
 Point a client at a folder and go — `mkb search --vault ~/notes "…"` — or set a default once and
 drop the flag (`mkb search "…"`). The resolution order and naming several vaults live in the
-**[configuration guide](docs/CONFIGURATION.md)**.
+[configuration guide](docs/CONFIGURATION.md).
 
 ### Where your vault lives — local or synced
 
@@ -70,20 +70,21 @@ conflict copy, mkb won't index it — `mkb conflicts` surfaces it to merge in pl
 
 ### One vault, many interfaces
 
-mkb is one knowledge base with three front-ends, and a full install gives you all of them — reach
+mkb is one knowledge base with several front-ends, and a full install gives you all of them — reach
 for whichever fits the task.
 
 | If you want to… | Use | What it is |
 |---|---|---|
 | Read, edit, and browse the graph | **Desktop app** | a Markdown editor + knowledge-graph browser |
+| Reach your vault from a phone or another machine | **Web UI** — `mkb-web` | the same app, served in a browser |
 | Script, search, or pipe from a terminal | **CLI** — `mkb` | `mkb search --vault ~/vault "how do I…"` |
 | Give an AI assistant your notes | **MCP server** — `mkb-mcp` | a set of tools your MCP client calls |
 
 Everything works with AI turned off; semantic search runs entirely on a local model (see the
-**[configuration guide](docs/CONFIGURATION.md)**).
+[configuration guide](docs/CONFIGURATION.md)).
 
 For a tour of the everyday features — searching, browsing and grouping, human-only blocks, and
-exporting — see the **[usage guide](docs/USAGE.md)**.
+exporting — see the [usage guide](docs/USAGE.md).
 
 ### Command line (`mkb`)
 
@@ -93,7 +94,7 @@ exporting — see the **[usage guide](docs/USAGE.md)**.
 mkb search "how do I restart nginx"   # hybrid keyword + semantic search
 ```
 
-See the **[usage guide](docs/USAGE.md)** for the CLI in context, and `mkb --help` (or
+See the [usage guide](docs/USAGE.md) for the CLI in context, and `mkb --help` (or
 `mkb <cmd> --help`) for the full command surface. From a source checkout, use
 `cargo run -p mkb-cli -- …` in place of `mkb`.
 
@@ -115,7 +116,7 @@ The desktop app is the human surface — a full **editor and graph browser** (Re
 modes, inline block editing, a `[[` link picker, a force-directed knowledge graph, and per-block
 linked references). You and the AI co-manage one vault: toggle a block **🔒 human-only** and AI
 clients can read it but never modify it. It opens a **local** vault or a **remote** one (`host:port`
-+ token); manage vaults from **Settings**. See [`app/mkb-tauri/README.md`](./app/mkb-tauri/README.md).
++ token); manage vaults from **Settings**.
 
 <table>
   <tr>
@@ -130,11 +131,11 @@ clients can read it but never modify it. It opens a **local** vault or a **remot
   </tr>
 </table>
 
-Optional, advanced setup — choosing a different embedder and managing multiple vaults — lives in the **[configuration guide](docs/CONFIGURATION.md)**.
+Optional, advanced setup — choosing a different embedder and managing multiple vaults — lives in the [configuration guide](docs/CONFIGURATION.md).
 
 ## Deployment
 
-See [`deploy/README.md`](./deploy/README.md). In short: run `mkbd --vault <dir>` locally,
+See [deploy/README.md](deploy/README.md). In short: run `mkbd --vault <dir>` locally,
 or deploy the daemon to k3s/Kubernetes as a single writer (`replicas: 1`) serving a
 token-gated TCP API (`deploy/k8s.yaml`, `Dockerfile`). Sync only the Markdown vault across
 machines; each daemon keeps its own local, rebuildable index.
@@ -143,18 +144,18 @@ machines; each daemon keeps its own local, rebuildable index.
 
 Reference **skills** ship in [`docs/skills/`](./docs/skills/) — drop them into your AI agent as-is, or treat them as a starting point to fork and tailor to how *you* use mkb:
 
-- **Using mkb well** — the DRY/transclusion principle, the search-before-write process, embed-vs-reference, and effective search patterns: [from an AI client (MCP)](./docs/skills/mkb-knowledge/SKILL.md) · [from the CLI](./docs/skills/mkb-cli/SKILL.md).
-- **Keeping the graph clean** — the dedup & audit discipline that finds and repairs near-duplicates: [MCP](./docs/skills/mkb-dedup-mcp/SKILL.md) · [CLI](./docs/skills/mkb-dedup/SKILL.md).
-- **Editing mkb's own docs** — the [docs-as-data workflow](./docs/skills/mkb-docs-as-data/SKILL.md): edit the source block, then regenerate.
+- **Using mkb well** — the DRY/transclusion principle, the search-before-write process, embed-vs-reference, and effective search patterns: [from an AI client (MCP)](docs/skills/mkb-knowledge/SKILL.md) · [from the CLI](docs/skills/mkb-cli/SKILL.md).
+- **Keeping the graph clean** — the dedup & audit discipline that finds and repairs near-duplicates: [MCP](docs/skills/mkb-dedup-mcp/SKILL.md) · [CLI](docs/skills/mkb-dedup/SKILL.md).
+- **Editing mkb's own docs** — the [docs-as-data workflow](docs/skills/mkb-docs-as-data/SKILL.md): edit the source block, then regenerate.
 
 They're plain Markdown with simple frontmatter, so adapt the wording, trim a section, or compose them into a larger skill of your own — a foundation to build on, not a fixed contract.
 
 ## Development
 
 Hacking on mkb? The workspace layout, the daemon/client internals, and the roadmap are in
-**[`docs/CONTRIBUTING.md`](./docs/CONTRIBUTING.md)**; the mandatory working rules are in
-**[`AGENTS.md`](./AGENTS.md)**, the design in **[`docs/architecture.md`](./docs/architecture.md)**,
-and the on-disk format in **[`docs/SPEC.md`](./docs/SPEC.md)**.
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md); the mandatory working rules are in
+[AGENTS.md](AGENTS.md), the design in [docs/architecture.md](docs/architecture.md),
+and the on-disk format in [docs/SPEC.md](docs/SPEC.md).
 
 ## License
 

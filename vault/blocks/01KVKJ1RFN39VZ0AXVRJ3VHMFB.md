@@ -1,7 +1,7 @@
 ---
 title: "README: Desktop app"
 tags: [doc/readme]
-updated: 2026-07-07T04:37:16Z
+updated: 2026-07-07T05:07:47Z
 ---
 
 ### Desktop app
@@ -10,7 +10,7 @@ The desktop app is the human surface — a full **editor and graph browser** (Re
 modes, inline block editing, a `[[` link picker, a force-directed knowledge graph, and per-block
 linked references). You and the AI co-manage one vault: toggle a block **🔒 human-only** and AI
 clients can read it but never modify it. It opens a **local** vault or a **remote** one (`host:port`
-+ token); manage vaults from **Settings**. See [`app/mkb-tauri/README.md`](./app/mkb-tauri/README.md).
++ token); manage vaults from **Settings**.
 
 <table>
   <tr>

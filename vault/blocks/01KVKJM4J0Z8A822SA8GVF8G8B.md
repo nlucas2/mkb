@@ -1,14 +1,14 @@
 ---
 title: Architecture page
 tags: [doc/architecture, page, dev]
-updated: 2026-07-02T06:45:44Z
+updated: 2026-07-07T05:17:35Z
 ---
 
 # mkb architecture — the file-per-block model
 
 This is the architecture of mkb's **file-per-block** model: how knowledge is stored, composed,
-indexed, and served. The exact on-disk format is in [`SPEC.md`](./SPEC.md); how to run and use
-mkb is in the [`README`](../README.md).
+indexed, and served. The exact on-disk format is in [[01KVKBYMJS5MGCVSSFR8Z6H4MK|the format spec]]; how to run and use
+mkb is in the [[01KVKJ1RRAWZ98JYF6VZ3X7DKA|README]].
 
 ## What mkb is
 
