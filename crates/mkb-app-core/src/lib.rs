@@ -587,12 +587,14 @@ pub fn discover_vaults(active: &ConnectionConfig) -> Vec<DiscoveredRow> {
 // client, re-whitelisting the vault's assets for a WebView — is the front-end's job (its transport
 // and platform), so it stays out of core.
 
-/// Set an existing entry as the launch default **and** return its connection to switch to.
+/// Switch the **active** connection to an existing registry entry: return its connection for the
+/// front-end to apply (reconnect to). This is deliberately *ephemeral* — it does **not** touch the
+/// launch `default`, which is a separate, deliberate user choice changed only via
+/// [`set_default_vault`]. (A per-window app or per-tab web client relaunches on the default; a mid-
+/// session switch shouldn't silently repin it.)
 pub fn switch_vault(name: &str) -> Result<ConnectionConfig, String> {
-    let mut reg = Registry::load();
-    reg.set_default(name)?;
-    reg.save()?;
-    reg.vaults
+    Registry::load()
+        .vaults
         .into_iter()
         .find(|e| e.name == name)
         .map(|e| e.connection)

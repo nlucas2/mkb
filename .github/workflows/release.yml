@@ -117,7 +117,7 @@ jobs:
         run: |
           set -eux
           cargo build --release --target ${{ matrix.target }} -p mkbd
-          cargo build --release --target ${{ matrix.target }} -p mkb-cli -p mkb-mcp
+          cargo build --release --target ${{ matrix.target }} -p mkb-cli -p mkb-mcp -p mkb-web
 
       # ── Desktop app (Tauri) ──────────────────────────────────────────────────────
       # Build the desktop app + its native installer on this same runner so the release for
@@ -195,6 +195,7 @@ jobs:
             ${{ github.workspace }}\target\${{ matrix.target }}\release\mkbd.exe
             ${{ github.workspace }}\target\${{ matrix.target }}\release\mkb.exe
             ${{ github.workspace }}\target\${{ matrix.target }}\release\mkb-mcp.exe
+            ${{ github.workspace }}\target\${{ matrix.target }}\release\mkb-web.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -223,6 +224,7 @@ jobs:
           cp "$D/mkbd.exe"    app/mkb-tauri/src-tauri/bin/mkbd.exe
           cp "$D/mkb-mcp.exe" app/mkb-tauri/src-tauri/bin/mkb-mcp.exe
           cp "$D/mkb.exe"     app/mkb-tauri/src-tauri/bin/mkb.exe
+          cp "$D/mkb-web.exe" app/mkb-tauri/src-tauri/bin/mkb-web.exe
           ( cd app/mkb-tauri/src-tauri && \
             cargo tauri build --no-bundle --target ${{ matrix.target }} )
 
@@ -295,19 +297,22 @@ jobs:
           ( cd app/mkb-tauri && cargo tauri icon app-icon.png )
           D="target/${{ matrix.target }}/release"
           mkdir -p app/mkb-tauri/src-tauri/bin
-          # Stage the daemon (local-vault auto-start) + the CLI tools (mkb + mkb-mcp) as app
-          # resources under their real command names. macOS exposes them on PATH via the app's
-          # first-run /usr/local/bin symlinks; the Linux .deb ships them to the system bin.
+          # Stage the daemon (local-vault auto-start), the CLI tools (mkb + mkb-mcp), and the web UI
+          # server (mkb-web) as app resources under their real command names. macOS exposes them on
+          # PATH via the app's first-run /usr/local/bin symlinks; the Linux .deb ships them to the
+          # system bin.
           case "${{ runner.os }}" in
             macOS)
               cp "$D/mkbd"   app/mkb-tauri/src-tauri/bin/mkbd
               cp "$D/mkb-mcp" app/mkb-tauri/src-tauri/bin/mkb-mcp
               cp "$D/mkb"     app/mkb-tauri/src-tauri/bin/mkb
+              cp "$D/mkb-web" app/mkb-tauri/src-tauri/bin/mkb-web
               BUNDLES=app,dmg ;;
             *)
               cp "$D/mkbd"   app/mkb-tauri/src-tauri/bin/mkbd
               cp "$D/mkb-mcp" app/mkb-tauri/src-tauri/bin/mkb-mcp
               cp "$D/mkb"     app/mkb-tauri/src-tauri/bin/mkb
+              cp "$D/mkb-web" app/mkb-tauri/src-tauri/bin/mkb-web
               BUNDLES=deb,appimage ;;
           esac
           ( cd app/mkb-tauri/src-tauri && \
@@ -336,10 +341,10 @@ jobs:
               sum "mkb-$V-$N.deb" ;;
           esac
 
-      # ONE complete archive per platform: the desktop app + every CLI (mkb, mkb-mcp)
-      # + the daemon. The daemon is self-contained — the embedding model is compiled into the
-      # binary — so no model files ship alongside. Every download is the full product, never a
-      # split. macOS ships the .app; Linux ships the runnable .AppImage (a bare mkb-tauri binary
+      # ONE complete archive per platform: the desktop app + every CLI (mkb, mkb-mcp) + the web UI
+      # server (mkb-web) + the daemon. The daemon is self-contained — the embedding model is compiled
+      # into the binary — so no model files ship alongside. Every download is the full product, never
+      # a split. macOS ships the .app; Linux ships the runnable .AppImage (a bare mkb-tauri binary
       # needs system webkit, the AppImage bundles it); Windows ships mkb-tauri.exe.
       - name: Assemble complete archive (Unix)
         if: runner.os != 'Windows' && matrix.headless != true
@@ -350,7 +355,7 @@ jobs:
           D="target/${{ matrix.target }}/release"
           B="app/mkb-tauri/src-tauri/target/${{ matrix.target }}/release/bundle"
           rm -rf dist && mkdir -p dist
-          cp "$D/mkbd" "$D/mkb" "$D/mkb-mcp" dist/
+          cp "$D/mkbd" "$D/mkb" "$D/mkb-mcp" "$D/mkb-web" dist/
           for lib in "$D"/libonnxruntime*.so* "$D"/libonnxruntime*.dylib; do
             [ -e "$lib" ] && cp "$lib" dist/ || true
           done
@@ -363,8 +368,9 @@ jobs:
           tar -C dist -czf "$A" .
           ( sha256sum "$A" 2>/dev/null || shasum -a 256 "$A" ) > "$A.sha256"
 
-      # Headless archive (Linux arm64): daemon + CLIs, no desktop app. Named `-headless`
-      # so it never reads as the complete product — matching the Forgejo arm64 tarball.
+      # Headless archive (Linux arm64): daemon + CLIs + web UI server, no desktop app. `mkb-web` is
+      # the way to get the GUI on a platform with no desktop bundle — run it and open a browser.
+      # Named `-headless` so it never reads as the complete product — matching the Forgejo arm64 tarball.
       - name: Assemble headless archive
         if: matrix.headless == true
         shell: bash
@@ -373,7 +379,7 @@ jobs:
           V="${{ github.ref_name }}"; N="${{ matrix.name }}"
           D="target/${{ matrix.target }}/release"
           rm -rf dist && mkdir -p dist
-          cp "$D/mkbd" "$D/mkb" "$D/mkb-mcp" dist/
+          cp "$D/mkbd" "$D/mkb" "$D/mkb-mcp" "$D/mkb-web" dist/
           for lib in "$D"/libonnxruntime*.so*; do
             [ -e "$lib" ] && cp "$lib" dist/ || true
           done
@@ -392,9 +398,9 @@ jobs:
           Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path dist/bin | Out-Null
           Copy-Item "$APPREL/mkb-tauri.exe" dist/
-          Copy-Item "$D/mkbd.exe","$D/mkb.exe","$D/mkb-mcp.exe" dist/
+          Copy-Item "$D/mkbd.exe","$D/mkb.exe","$D/mkb-mcp.exe","$D/mkb-web.exe" dist/
           Get-ChildItem "$D" -Filter "onnxruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination dist/
-          Copy-Item "$D/mkbd.exe","$D/mkb-mcp.exe" dist/bin/
+          Copy-Item "$D/mkbd.exe","$D/mkb-mcp.exe","$D/mkb-web.exe" dist/bin/
           Copy-Item "$D/mkb.exe" dist/bin/mkb.exe
           $A = "mkb-$V-$N.zip"
           Compress-Archive -Path dist/* -DestinationPath $A -Force

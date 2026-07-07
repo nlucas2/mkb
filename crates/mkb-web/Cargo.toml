@@ -1,0 +1,28 @@
+[package]
+name = "mkb-web"
+description = "Web front-end for mkb: serves the same desktop UI in a browser as a thin client over mkb-app-core (the app, at 127.0.0.1). A localhost, single-user transport — the browser-side twin of the Tauri shell."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mkb-web"
+path = "src/main.rs"
+
+[dependencies]
+mkb-app-core.workspace = true
+mkb-core = { workspace = true, features = ["serde"] }
+mkb-protocol.workspace = true
+mkb-view.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+clap.workspace = true
+# Async HTTP: axum 0.8 sits at the workspace MSRV floor (1.80); --locked CI pins the resolved
+# version so a patch-level MSRV bump can't sneak in (same guard the clap pin relies on). tokio's
+# spawn_blocking bridges each request onto the synchronous daemon client.
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+arc-swap = "1"

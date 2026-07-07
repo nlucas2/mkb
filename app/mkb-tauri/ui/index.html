@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>mkb</title>
+    <script src="platform-shim.js"></script>
     <script>
       // Resolve the theme BEFORE first paint so there's no flash. Stored preference is
       // "auto" (default; follow the OS), "light", or "dark". `auto` consults prefers-color-scheme.
@@ -1598,6 +1599,43 @@
         }
       }
 
+      // ---------- editor draft persistence (unsaved-work safety net) ----------
+      // Keep in-progress editor text in sessionStorage so it survives a **page reload** — most
+      // importantly a mobile browser *discarding* a backgrounded tab (iOS especially): a freeze keeps
+      // the DOM, but a discard reloads the page and would otherwise lose an unsaved draft.
+      // sessionStorage is per-tab (isolated from other tabs) and survives that reload. Drafts are
+      // keyed by block id (a new block uses "__new__", the inline "+" composer "__newchild__").
+      //
+      // Restore is scoped to reloads only: each draft is stamped with this page's load id, and a
+      // draft is restored **only if it was written under a different (earlier) page load** — i.e. it
+      // survived a refresh/discard. So normal in-session navigation is unchanged from before (leave
+      // an editor without saving → it's gone, no toast, no resurrection); only an actual reload
+      // brings work back. A restored draft still saves against the version it opened at (the conflict
+      // guard is untouched). Cleared on a successful save or an explicit discard.
+      const PAGE_LOAD_ID = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      const DRAFT_PREFIX = "mkb.draft.";
+      function draftStoreKey(id) { return DRAFT_PREFIX + (id || "__new__"); }
+      function persistDraft(id, data) {
+        try { sessionStorage.setItem(draftStoreKey(id), JSON.stringify({ ...data, _pl: PAGE_LOAD_ID })); } catch (_) {}
+      }
+      // Returns the draft data ONLY when it survived a reload (its page-load id differs from this
+      // page's); otherwise null, so in-session reopens never auto-restore. Claims a returned draft
+      // for this session so it isn't restored repeatedly.
+      function readDraft(id) {
+        try {
+          const s = sessionStorage.getItem(draftStoreKey(id));
+          if (!s) return null;
+          const obj = JSON.parse(s);
+          if (!obj || obj._pl === PAGE_LOAD_ID) return null; // same session → not a reload recovery
+          sessionStorage.setItem(draftStoreKey(id), JSON.stringify({ ...obj, _pl: PAGE_LOAD_ID }));
+          delete obj._pl;
+          return obj;
+        } catch (_) { return null; }
+      }
+      function dropDraft(id) {
+        try { sessionStorage.removeItem(draftStoreKey(id)); } catch (_) {}
+      }
+
       // The current view (read / blocks / edit) is **sticky**: navigating to another block
       // keeps the mode you're in. Mode only changes via the view tabs or creating a block.
       async function openBlock(id, _keepMode) {
@@ -1909,6 +1947,10 @@
         const wrap = document.createElement("div");
         const ta = document.createElement("textarea");
         ta.className = "editarea"; ta.value = src; ta.spellcheck = false;
+        // Restore an unsaved draft (e.g. after a mobile tab reload) if it differs from the loaded body.
+        const _d = readDraft(blockId);
+        if (_d && typeof _d.body === "string" && _d.body !== src) { ta.value = _d.body; toast("Restored an unsaved draft."); }
+        ta.addEventListener("input", () => persistDraft(blockId, { body: ta.value }));
         wrap.appendChild(ta);
         const bar = document.createElement("div");
         bar.className = "editbar";
@@ -1939,7 +1981,7 @@
                     return;
                   }
                 } catch (e) { toast(String(e), "error"); return; }
-                invalidate(); finished = true; done(); return;
+                invalidate(); finished = true; dropDraft(blockId); done(); return;
               }
               // r.action === "mine": overwrite the vault with the local draft.
               try {
@@ -1950,9 +1992,10 @@
             invalidate();
           }
           finished = true;
+          dropDraft(blockId);
           done();
         };
-        const cancel = () => { if (finished) return; finished = true; done(); };
+        const cancel = () => { if (finished) return; finished = true; dropDraft(blockId); done(); };
         bar.querySelector('[data-a="save"]').onclick = save;
         bar.querySelector('[data-a="cancel"]').onclick = cancel;
         ta.addEventListener("input", () => autosize(ta));
@@ -1993,6 +2036,17 @@
         body.querySelector("#t").value = title || "";
         const ta = body.querySelector("#b");
         ta.value = src; attachPicker(ta);
+        // Restore an unsaved draft (e.g. after a mobile tab reload) if it differs from what loaded.
+        const titleInput = body.querySelector("#t");
+        const _draft = readDraft(id);
+        if (_draft && (_draft.body !== src || (_draft.title || "") !== (title || ""))) {
+          if (typeof _draft.body === "string") ta.value = _draft.body;
+          if (typeof _draft.title === "string") titleInput.value = _draft.title;
+          toast("Restored an unsaved draft.");
+        }
+        const persistNow = () => persistDraft(id, { title: titleInput.value, body: ta.value });
+        ta.addEventListener("input", persistNow);
+        titleInput.addEventListener("input", persistNow);
         const legend = body.querySelector("#reflegend");
         // Ensure the block index is loaded so the legend resolves ULID targets to titles instead
         // of showing raw ids (the index is otherwise loaded lazily by the [[ picker).
@@ -2045,7 +2099,7 @@
           return false; // cancel / current: nothing newly saved
         }
         body.querySelector("#save").onclick = async () => {
-          if (await saveEditor()) { invalidate(); await loadBlocks(id); openBlock(id); }
+          if (await saveEditor()) { dropDraft(id); invalidate(); await loadBlocks(id); openBlock(id); }
         };
         body.querySelector("#carve").onclick = async () => {
           const start = ta.selectionStart, end = ta.selectionEnd;
@@ -2054,7 +2108,7 @@
             // Persist current body first so offsets match the stored block, then carve.
             if (!(await saveEditor())) return;
             await invoke("carve_selection", { parentId: id, start, end });
-            invalidate(); await loadBlocks(id); openBlock(id);
+            dropDraft(id); invalidate(); await loadBlocks(id); openBlock(id);
           } catch (e) { body.querySelector("#msg").textContent = String(e); }
         };
         // Image import: button, drag-and-drop, and paste all funnel through the shared wiring.
@@ -2453,14 +2507,23 @@
           </div>`;
         const tt = body.querySelector("#t"), ta = body.querySelector("#b");
         attachPicker(ta);
+        // Restore an unsaved new-block draft (survives a mobile tab reload); persist on every input.
+        const _nd = readDraft(null);
+        if (_nd && ((_nd.title && _nd.title.length) || (_nd.body && _nd.body.length))) {
+          tt.value = _nd.title || ""; ta.value = _nd.body || "";
+          toast("Restored an unsaved draft.");
+        }
+        const persistNew = () => persistDraft(null, { title: tt.value, body: ta.value });
+        tt.addEventListener("input", persistNew);
+        ta.addEventListener("input", persistNew);
         wireImageImport(ta, body.querySelector("#msg"), body.querySelector("#imgfile"), body.querySelector("#attach"));
-        const discard = () => { mode = "read"; loadBlocks(); if (active) openBlock(active); else mainEl.innerHTML = `<div class="pad"><p class="muted">Select or create a block.</p></div>`; };
+        const discard = () => { dropDraft(null); mode = "read"; loadBlocks(); if (active) openBlock(active); else mainEl.innerHTML = `<div class="pad"><p class="muted">Select or create a block.</p></div>`; };
         const create = async () => {
           const title = tt.value.trim() || null;
           if (!title && !ta.value.trim()) { discard(); return; }  // empty → just discard
           try {
             const id = await invoke("create_block", { title, body: ta.value });
-            invalidate(); await loadBlocks(id); mode = "edit"; openBlock(id, true);
+            dropDraft(null); invalidate(); await loadBlocks(id); mode = "edit"; openBlock(id, true);
           } catch (e) { body.querySelector("#msg").textContent = String(e); }
         };
         body.querySelector("#save").onclick = create;
@@ -2491,6 +2554,11 @@
         const ta = document.createElement("textarea");
         ta.className = "editarea"; ta.spellcheck = false;
         ta.placeholder = "Write the new block’s Markdown…";
+        // Restore an unsaved draft (survives a mobile tab reload); a distinct key from the full-page
+        // new-block composer so the two don't clobber each other.
+        const _cd = readDraft("__newchild__");
+        if (_cd && typeof _cd.body === "string" && _cd.body.length) { ta.value = _cd.body; toast("Restored an unsaved draft."); }
+        ta.addEventListener("input", () => persistDraft("__newchild__", { body: ta.value }));
         wrap.appendChild(ta);
         const bar = document.createElement("div");
         bar.className = "editbar";
@@ -2501,13 +2569,14 @@
         autosize(ta); ta.focus();
         attachPicker(ta);
         let finished = false;
-        const cancel = () => { if (finished) return; finished = true; cancelView(); };
+        const cancel = () => { if (finished) return; finished = true; dropDraft("__newchild__"); cancelView(); };
         const save = async () => {
           if (finished) return;
           if (!ta.value.trim()) { cancel(); return; } // empty draft: create nothing
           finished = true;
           try {
             const child = await invoke("create_block", { title: null, body: ta.value });
+            dropDraft("__newchild__");
             await commit(child);
             invalidate(); await loadBlocks(active); await openBlock(active, true);
           } catch (e) { toast(String(e), "error"); finished = false; }

@@ -216,12 +216,13 @@ icons:
 [unix]
 app: icons
     # Release binaries the app bundles as resources (auto-start daemon + CLI-on-PATH install).
-    cargo build --release -p mkbd -p mkb-cli -p mkb-mcp
+    cargo build --release -p mkbd -p mkb-cli -p mkb-mcp -p mkb-web
     rm -rf {{tauri}}/bin && mkdir -p {{tauri}}/bin
     # Stage under real command names — the whole bin/ dir is bundled and exposed on PATH as-is.
     cp target/release/mkbd    {{tauri}}/bin/mkbd
     cp target/release/mkb-mcp {{tauri}}/bin/mkb-mcp
     cp target/release/mkb     {{tauri}}/bin/mkb
+    cp target/release/mkb-web {{tauri}}/bin/mkb-web
     cd {{tauri}} && cargo tauri build
 
 [windows]
@@ -229,13 +230,14 @@ app: icons
     #!powershell
     # Release binaries the app bundles as resources; the NSIS hook adds the whole bin/ dir to PATH.
     $ErrorActionPreference = 'Stop'
-    cargo build --release -p mkbd -p mkb-cli -p mkb-mcp
+    cargo build --release -p mkbd -p mkb-cli -p mkb-mcp -p mkb-web
     Remove-Item -Recurse -Force '{{tauri}}/bin' -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path '{{tauri}}/bin' | Out-Null
     Copy-Item 'target/release/mkbd.exe'    '{{tauri}}/bin/mkbd.exe'    -Force
     Copy-Item 'target/release/mkb-mcp.exe' '{{tauri}}/bin/mkb-mcp.exe' -Force
     # Stage under the real command name so PATH exposes `mkb`, not `mkb-cli`.
     Copy-Item 'target/release/mkb.exe'     '{{tauri}}/bin/mkb.exe'     -Force
+    Copy-Item 'target/release/mkb-web.exe' '{{tauri}}/bin/mkb-web.exe' -Force
     Set-Location '{{tauri}}'
     cargo tauri build
 
