@@ -64,20 +64,10 @@ opens that block directly in the app.
 
 ### Add a new generated doc
 
-To make a block generate a file, give it a `path` property and (optionally) a `filename` property.
-`mkb export` automatically sweeps the vault for these blocks.
+Give a block a `path` property (the output directory) and optionally `filename` (the output file
+name; defaults to the title slug + `.md`) — `mkb export` automatically finds and exports it.
+Remove `path` to stop generating a doc; the file becomes hand-maintained again.
 
-- `path` — the output **directory** (e.g. `docs/skills/mkb-cli`).
-- `filename` — the output **file name** (e.g. `SKILL.md`). Omit it and the file is named from the
-  block's title slug (`My Page` → `my-page.md`); an extensionless name gets `.md` appended.
-
-*Example:* A block titled *CLI skill page* with `path: docs/skills/mkb-cli` and `filename: SKILL.md`
-generates `docs/skills/mkb-cli/SKILL.md`.
-
-To **stop** generating a doc, remove the `path` property. The file becomes hand-maintained again.
-
-#### Legacy / Override Manifest (`export.toml`)
-If a document needs shared banner policies (`raw = true`) or needs explicit override control, it may
-be mapped in `vault/export.toml` (`path = ...` and `block = ...`). The manifest stays authoritative:
-if `export.toml` already names a block, or already writes an output path, that wins over a
-property-derived one.
+For the full mechanics — the worked example, the `export.toml` override manifest, cross-document
+link rewriting, and ad-hoc export flags — see [Exporting and publishing](../../EXPORT.md) rather than duplicating
+them here.

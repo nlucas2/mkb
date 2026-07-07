@@ -1,6 +1,6 @@
 ---
 title: Exporting and publishing
-updated: 2026-07-07T05:55:18Z
+updated: 2026-07-07T06:08:51Z
 ---
 
 # Exporting & publishing
@@ -16,7 +16,7 @@ The primary way to publish a block is to let it route itself using two propertie
 
 So a block titled *CLI skill page* with `path: docs/skills/mkb-cli` and `filename: SKILL.md` generates `docs/skills/mkb-cli/SKILL.md`.
 
-When you run `mkb export` with no arguments, it finds every block with a `path` property and exports it.
+When you run `mkb export` with no arguments, it finds every block with a `path` property and exports it. Remove the `path` property to stop generating a doc — the file becomes hand-maintained again.
 
 ### The Manifest (`export.toml`)
 
