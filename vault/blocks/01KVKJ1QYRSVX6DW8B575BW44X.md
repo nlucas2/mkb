@@ -1,11 +1,10 @@
 ---
 title: Connecting an MCP client
 tags: [doc/concept]
-updated: 2026-07-02T06:45:42Z
+updated: 2026-07-07T04:17:50Z
 ---
 
-The MCP server (`mkb-mcp`) is a thin client of the daemon; point any MCP client at it and it
-auto-starts a daemon for the given vault.
+Point any MCP client at the `mkb-mcp` server, giving it the vault to work on.
 
 ```jsonc
 // example MCP client config entry

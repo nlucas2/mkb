@@ -1,14 +1,16 @@
 ---
 title: "README: Desktop app"
 tags: [doc/readme]
-updated: 2026-07-02T21:39:16Z
+updated: 2026-07-07T04:37:16Z
 ---
 
 ### Desktop app
 
-The desktop app is the human surface — a full **editor and graph browser**, not just a viewer. It
-connects either way: a **local** vault (auto-starting its daemon) or a **remote** TCP daemon
-`host:port` + token, and renders through the shared `mkb-view` layer.
+The desktop app is the human surface — a full **editor and graph browser** (Read / Blocks / Edit
+modes, inline block editing, a `[[` link picker, a force-directed knowledge graph, and per-block
+linked references). You and the AI co-manage one vault: toggle a block **🔒 human-only** and AI
+clients can read it but never modify it. It opens a **local** vault or a **remote** one (`host:port`
++ token); manage vaults from **Settings**. See [`app/mkb-tauri/README.md`](./app/mkb-tauri/README.md).
 
 <table>
   <tr>
@@ -23,18 +25,3 @@ connects either way: a **local** vault (auto-starting its daemon) or a **remote*
   </tr>
 </table>
 
-- **Desktop app** (`app/mkb-tauri`) — a Tauri app over the same crates, and a full **editor and
-  graph browser**, not just a viewer. It exposes the same three block modes as the rest of mkb —
-  **Read** (the clean document, embeds dissolved inline), **Blocks** (the working view, each embed
-  an editable card), and **Edit** (raw Markdown with the `[[` picker and **Carve selection**).
-
-  On top of those it adds **inline editing** (click rendered content to edit that block in place;
-  type `[[` for a link/embed picker), a **"references in this block" legend** under the editor
-  (the outgoing links/embeds, each resolved to its target with a preview, click-to-open) and
-  **hover previews** on rendered wikilink chips, **New / Add / Carve / Delete** block actions, a
-  force-directed **knowledge graph** (nodes sized by link degree, computed in `mkb-core`
-  `link_graph`), **linked references** per block, a **lock toggle** that pins a block as
-  **human-only** (🔒 — AI clients can read it but not modify it), and **Settings** — a **vault
-  switcher** (your named vaults, switch live, add or create one, or add a vault it detects already
-  running), a **Remote daemon** option (`host:port` + token), and a daemon restart, no env vars. Add
-  a vault there and go; see [`app/mkb-tauri/README.md`](./app/mkb-tauri/README.md).

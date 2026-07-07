@@ -1,7 +1,7 @@
 ---
 title: "Skill: CLI surface"
 tags: [skill/surface, cli]
-updated: 2026-07-02T20:10:04Z
+updated: 2026-07-07T04:40:57Z
 ---
 
 ## The CLI surface
@@ -76,12 +76,6 @@ child=$(printf 'shared chunk…\n' | mkb carve --vault <vault> <parent> --title=
 mkb flatten --vault <vault> <parent> <child>   # inverse of carve: inline parent's one ![[child]] and
                                         # delete child (errors unless child is referenced once)
 mkb delete --vault <vault> <id>                # delete a block
-```
-
-### Maintenance
-
-```sh
-mkb rebuild --vault <vault>             # rebuild the index from blocks/ (after external edits)
 ```
 
 When a command needs an id, get it from a prior `search`/`list` (or the id `create`/`carve`

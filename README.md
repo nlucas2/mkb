@@ -11,18 +11,16 @@ app, instead of an opaque store you can't see into.
 Knowledge is a **block**: one Markdown file. Blocks *embed* others (`![[id]]`, a live copy) or
 *link* to them (`[[id]]`), so a fact is written once, reused everywhere, and edited in one
 place — memory that stays organized and refactorable as it grows, not a pile of near-duplicates.
-Two equal consumers share one vault: **you**, through the desktop app (or the same UI in a
-browser via `mkb-web`), and **AI clients**, through an MCP server; it works fully with AI turned off. The Markdown files are the single
-source of truth; the index is a rebuildable cache.
+Two equal consumers share one vault: **you** (desktop app or web UI) and **AI clients** (an MCP
+server) — and it works fully with AI turned off. The Markdown files are the single source of truth;
+the index is a rebuildable cache.
 
 <p align="center">
   <a href="docs/images/app-read.png"><img src="docs/images/app-read.png" alt="mkb desktop app in Read mode — a block with its embeds dissolved into one clean Markdown document" width="820"></a>
 </p>
 
-> Status: core re-architected to the file-per-block model (parser, transclusion, index,
-> semantic search, daemon, MCP, and the desktop app). Versioned `0.1.0` / pre-release. See
-> **[`docs/architecture.md`](./docs/architecture.md)** for the design and
-> **[`docs/SPEC.md`](./docs/SPEC.md)** for the exact on-disk format.
+> **Pre-release** (`0.1.0`). See **[`docs/architecture.md`](./docs/architecture.md)** for the design
+> and **[`docs/SPEC.md`](./docs/SPEC.md)** for the on-disk format.
 
 ## Getting started
 
@@ -30,42 +28,25 @@ source of truth; the index is a rebuildable cache.
 
 The fastest complete install is one command from a checkout, via
 [`just`](https://github.com/casey/just) — it builds and installs the **whole product**: the
-desktop app (also reachable in a browser via `mkb-web`), the daemon, the CLI, and the MCP server.
+desktop app (also reachable in a browser via `mkb-web`), the CLI, and the MCP server.
 
 ```sh
-just install        # everything: desktop app + daemon + CLI + MCP server
+just install        # everything: desktop app (+ mkb-web) + CLI + MCP server
 ```
 
 Prefer not to build? Grab a **prebuilt release** (installer or portable archive) from the
 **Releases** page or run it as a **container** — both detailed in the
-**[install guide](docs/INSTALL.md)**.
+**[install guide](docs/INSTALL.md)**. (As a pre-release, published artifacts can lag behind `main`
+or miss a platform; `just install` from a fresh checkout is the most reliable way to get the latest.)
 
-> **Heads-up:** the prebuilt **release pipeline is still a work in progress** — published
-> artifacts can lag behind `main` or miss a platform. Until it stabilises, **`just install` from a
-> fresh checkout is the most reliable way to get the latest version.**
-
-Building **from source** (`just install` or `cargo tauri build`) needs these on
-your machine. Prebuilt releases and the container need none of them.
-
-- **Rust** (stable) — the `cargo` toolchain; the workspace pins `rust-version = 1.80`.
-- **[`just`](https://github.com/casey/just)** — the task runner the one-command install uses.
-- **Tauri CLI** (`cargo install tauri-cli`) — only needed to build the **desktop app**.
-- **System build libraries** — a C toolchain plus your platform's webview/GTK dev libraries
-  (Linux), Xcode Command Line Tools (macOS), or MSVC Build Tools + WebView2 (Windows).
-
-Per-OS commands for these are in **[Installing the prerequisites](docs/PREREQS.md)**.
+Building from source needs Rust, [`just`](https://github.com/casey/just), and your platform's
+webview build libraries — see **[Installing the prerequisites](docs/PREREQS.md)**. Prebuilt releases
+and the container need none of them.
 
 ### Choosing your vault
 
-Every client (CLI, MCP, desktop app) acts on **one vault at a time**, resolved in this order:
-
-1. an explicit `--vault <dir>` flag (the CLI/MCP also accept `--remote`/`--socket`);
-2. the `MKB_VAULT` environment variable;
-3. the **default** in your vault registry;
-4. the built-in fallback `~/mkb-vault`.
-
-So you can always be explicit (`mkb search --vault ~/notes "…"`), or set a default once and drop
-the flag entirely (`mkb search "…"`). Naming several vaults and choosing the default lives in the
+Point a client at a folder and go — `mkb search --vault ~/notes "…"` — or set a default once and
+drop the flag (`mkb search "…"`). The resolution order and naming several vaults live in the
 **[configuration guide](docs/CONFIGURATION.md)**.
 
 ### Where your vault lives — local or synced
@@ -80,35 +61,17 @@ need to sync**. How you store it is independent of how you installed mkb.
   home directory, a `~`-relative vault entry in the registry (e.g. `~/OneDrive/notes`) resolves
   correctly everywhere, so one config can be shared.
 
-The reason this is safe: the **index is not in the vault**. The SQLite index, socket, lock, and
-log are machine-local — they live outside the vault (under the OS local-data dir, keyed by a hash
-of the vault's path) and are fully rebuildable from the Markdown. So a synced vault never drags a
-live database between machines (the classic cause of cloud-sync corruption); each machine keeps its
-own index for the same notes. **Never sync the index** — only the Markdown.
-
-If a sync tool produces a conflict copy (e.g. `note (conflicted copy).md` /
-`note-DESKTOP-AB12.md`), mkb deliberately **doesn't index it** and surfaces it via `mkb conflicts
---vault <dir>` so you can merge it back in plain text. The Markdown stays authoritative.
-
-## Core principles
-
-The design follows from a few rules, each stated once in its own block and reused everywhere:
-**Markdown files are the source of truth** and the index is a **rebuildable cache** (above);
-**block = file = page** with `![[embed]]` for live reuse and `[[ref]]` for links (the intro and
-`docs/SPEC.md`); and **one shared core** behind thin clients (the Contributing rules below).
-
-You and the AI **co-manage the same vault** — you in the desktop app, the AI over MCP — and you
-decide what it may change: toggle a block
-**🔒 human-only** from the app and AI clients can read it but never modify it.
+This is safe because mkb's search index lives **outside** the vault, on each machine — so syncing
+the Markdown never drags a live database between machines, and every machine rebuilds its own index
+from the same notes. **Sync only the Markdown, never the index.** (If your sync tool leaves a
+conflict copy, mkb won't index it — `mkb conflicts` surfaces it to merge in plain text.)
 
 ## Using mkb
 
 ### One vault, many interfaces
 
 mkb is one knowledge base with three front-ends, and a full install gives you all of them — reach
-for whichever fits the task. They all
-read and write the same vault *through the daemon*, and **you never start the daemon yourself**:
-each client auto-starts it on first use and it self-reaps when idle.
+for whichever fits the task.
 
 | If you want to… | Use | What it is |
 |---|---|---|
@@ -116,47 +79,27 @@ each client auto-starts it on first use and it self-reaps when idle.
 | Script, search, or pipe from a terminal | **CLI** — `mkb` | `mkb search --vault ~/vault "how do I…"` |
 | Give an AI assistant your notes | **MCP server** — `mkb-mcp` | a set of tools your MCP client calls |
 
-Everything works with AI turned off; semantic search runs entirely on a local model built into the
-daemon (see the **[configuration guide](docs/CONFIGURATION.md)**).
+Everything works with AI turned off; semantic search runs entirely on a local model (see the
+**[configuration guide](docs/CONFIGURATION.md)**).
 
 For a tour of the everyday features — searching, browsing and grouping, human-only blocks, and
 exporting — see the **[usage guide](docs/USAGE.md)**.
 
 ### Command line (`mkb`)
 
-Every `mkb` command targets a vault via the global `--vault <dir>` flag (or `$MKB_VAULT`, or the
-configured registry default) and auto-starts (then reuses) that vault's daemon — the daemon owns
-the one warm index and is the single writer. With a default configured, you can drop `--vault`
-entirely.
+`mkb` is the terminal interface — script, search, and pipe against a vault:
 
 ```sh
-# reads
-mkb list --vault ~/my-vault                            # root blocks: id  title
-mkb search --vault ~/my-vault "how do I restart nginx"
-mkb search --vault ~/my-vault kusto --lang=kusto
-mkb search --vault ~/my-vault "ops" --tag=ops --limit=10
-mkb search --vault ~/my-vault "updated:before:2026-01-01"   # stale blocks (recency filter)
-mkb search --vault ~/my-vault "missing:source"              # blocks lacking a property (metadata gap)
-mkb render --vault ~/my-vault <block-id>               # children inlined
-mkb tags --vault ~/my-vault
-mkb props --vault ~/my-vault <id>                      # a block's properties
-mkb info --vault ~/my-vault <id>                       # created, updated, locked, tags, props
-mkb stats --vault ~/my-vault
-
-# writes (body via stdin where shown)
-echo "# Note" | mkb create --vault ~/my-vault --title="Note"  # prints the new id
-mkb set-tags --vault ~/my-vault <id> ops kusto
-mkb set-props --vault ~/my-vault <id> source=https://x # add/update properties (preserves others)
-mkb unset-props --vault ~/my-vault <id> source         # remove a property
-mkb link --vault ~/my-vault <src> <dst> --embed
+mkb search "how do I restart nginx"   # hybrid keyword + semantic search
 ```
 
-Running from source instead? Use `cargo run -p mkb-cli -- …` in place of `mkb`.
+See the **[usage guide](docs/USAGE.md)** for the CLI in context, and `mkb --help` (or
+`mkb <cmd> --help`) for the full command surface. From a source checkout, use
+`cargo run -p mkb-cli -- …` in place of `mkb`.
 
 ### From an AI client (MCP)
 
-The MCP server (`mkb-mcp`) is a thin client of the daemon; point any MCP client at it and it
-auto-starts a daemon for the given vault.
+Point any MCP client at the `mkb-mcp` server, giving it the vault to work on.
 
 ```jsonc
 // example MCP client config entry
@@ -168,9 +111,11 @@ auto-starts a daemon for the given vault.
 
 ### Desktop app
 
-The desktop app is the human surface — a full **editor and graph browser**, not just a viewer. It
-connects either way: a **local** vault (auto-starting its daemon) or a **remote** TCP daemon
-`host:port` + token, and renders through the shared `mkb-view` layer.
+The desktop app is the human surface — a full **editor and graph browser** (Read / Blocks / Edit
+modes, inline block editing, a `[[` link picker, a force-directed knowledge graph, and per-block
+linked references). You and the AI co-manage one vault: toggle a block **🔒 human-only** and AI
+clients can read it but never modify it. It opens a **local** vault or a **remote** one (`host:port`
++ token); manage vaults from **Settings**. See [`app/mkb-tauri/README.md`](./app/mkb-tauri/README.md).
 
 <table>
   <tr>
@@ -184,22 +129,6 @@ connects either way: a **local** vault (auto-starting its daemon) or a **remote*
     <td align="center"><a href="docs/images/app-tag-search.png"><img src="docs/images/app-tag-search.png" alt="Search results filtered by tag and language" width="300"></a><br><sub>Search — tag &amp; language filters</sub></td>
   </tr>
 </table>
-
-- **Desktop app** (`app/mkb-tauri`) — a Tauri app over the same crates, and a full **editor and
-  graph browser**, not just a viewer. It exposes the same three block modes as the rest of mkb —
-  **Read** (the clean document, embeds dissolved inline), **Blocks** (the working view, each embed
-  an editable card), and **Edit** (raw Markdown with the `[[` picker and **Carve selection**).
-
-  On top of those it adds **inline editing** (click rendered content to edit that block in place;
-  type `[[` for a link/embed picker), a **"references in this block" legend** under the editor
-  (the outgoing links/embeds, each resolved to its target with a preview, click-to-open) and
-  **hover previews** on rendered wikilink chips, **New / Add / Carve / Delete** block actions, a
-  force-directed **knowledge graph** (nodes sized by link degree, computed in `mkb-core`
-  `link_graph`), **linked references** per block, a **lock toggle** that pins a block as
-  **human-only** (🔒 — AI clients can read it but not modify it), and **Settings** — a **vault
-  switcher** (your named vaults, switch live, add or create one, or add a vault it detects already
-  running), a **Remote daemon** option (`host:port` + token), and a daemon restart, no env vars. Add
-  a vault there and go; see [`app/mkb-tauri/README.md`](./app/mkb-tauri/README.md).
 
 Optional, advanced setup — choosing a different embedder and managing multiple vaults — lives in the **[configuration guide](docs/CONFIGURATION.md)**.
 

@@ -1,6 +1,6 @@
 ---
 title: What is mkb
-updated: 2026-07-07T02:53:38Z
+updated: 2026-07-07T04:39:01Z
 ---
 
 mkb is a **modular Markdown knowledge base — a tool, not an agent** — that a human and an
@@ -11,6 +11,6 @@ app, instead of an opaque store you can't see into.
 Knowledge is a **block**: one Markdown file. Blocks *embed* others (`![[id]]`, a live copy) or
 *link* to them (`[[id]]`), so a fact is written once, reused everywhere, and edited in one
 place — memory that stays organized and refactorable as it grows, not a pile of near-duplicates.
-Two equal consumers share one vault: **you**, through the desktop app (or the same UI in a
-browser via `mkb-web`), and **AI clients**, through an MCP server; it works fully with AI turned off. The Markdown files are the single
-source of truth; the index is a rebuildable cache.
+Two equal consumers share one vault: **you** (desktop app or web UI) and **AI clients** (an MCP
+server) — and it works fully with AI turned off. The Markdown files are the single source of truth;
+the index is a rebuildable cache.

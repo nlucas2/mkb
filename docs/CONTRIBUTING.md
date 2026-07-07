@@ -336,6 +336,12 @@ transparently respawns it — at most a brief cold start.
   the UI (only per-group subtree counts in the sidebar and the conflict count). Plumb `stats` through
   `mkb-app-core` → a Tauri command → a small readout (e.g. a status-bar "N blocks" or a Settings stats
   line), so the human sees vault size at a glance. Cheap; blocked only on deciding placement.
+- **Desktop/web UI — find in page (Cmd/Ctrl+F)** *(planned)*: the app has no in-page text find; the
+  browser's native find only reaches the rendered DOM (and is shadowed under Tauri). Add an in-app
+  find bar bound to Cmd/Ctrl+F that searches the current block's rendered content (and ideally the
+  editor textarea), with next/prev match and highlight — distinct from vault-wide `search`, this is
+  the within-the-open-page find users expect. Shared in the one UI so desktop and `mkb-web` both get
+  it.
 - **Approximate-nearest-neighbour (ANN) vector search** *(planned)*: semantic matching is currently
   an exact brute-force cosine scan over every stored embedding (`mkb-index`) — exact, dependency-free,
   and comfortably fast for everything mkb has been used for so far. At large scale the linear scan (and

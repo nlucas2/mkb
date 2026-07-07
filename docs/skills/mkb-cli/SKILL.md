@@ -172,12 +172,6 @@ mkb flatten --vault <vault> <parent> <child>   # inverse of carve: inline parent
 mkb delete --vault <vault> <id>                # delete a block
 ```
 
-### Maintenance
-
-```sh
-mkb rebuild --vault <vault>             # rebuild the index from blocks/ (after external edits)
-```
-
 When a command needs an id, get it from a prior `search`/`list` (or the id `create`/`carve`
 printed) — never guess. Titles also resolve (case-insensitively), but prefer the ULID: it is
 stable and unambiguous.

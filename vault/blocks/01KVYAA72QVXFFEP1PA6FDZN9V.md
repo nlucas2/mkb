@@ -1,18 +1,11 @@
 ---
 title: "README: Choosing your vault"
 tags: [doc/readme]
-updated: 2026-07-02T06:45:46Z
+updated: 2026-07-07T04:37:33Z
 ---
 
 ### Choosing your vault
 
-Every client (CLI, MCP, desktop app) acts on **one vault at a time**, resolved in this order:
-
-1. an explicit `--vault <dir>` flag (the CLI/MCP also accept `--remote`/`--socket`);
-2. the `MKB_VAULT` environment variable;
-3. the **default** in your vault registry;
-4. the built-in fallback `~/mkb-vault`.
-
-So you can always be explicit (`mkb search --vault ~/notes "…"`), or set a default once and drop
-the flag entirely (`mkb search "…"`). Naming several vaults and choosing the default lives in the
+Point a client at a folder and go — `mkb search --vault ~/notes "…"` — or set a default once and
+drop the flag (`mkb search "…"`). The resolution order and naming several vaults live in the
 **[configuration guide](docs/CONFIGURATION.md)**.

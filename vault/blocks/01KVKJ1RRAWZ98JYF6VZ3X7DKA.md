@@ -1,7 +1,7 @@
 ---
 title: README page
 tags: [doc/readme, page, user]
-updated: 2026-07-02T06:45:44Z
+updated: 2026-07-07T04:38:25Z
 ---
 
 # mkb — Modular Knowledge Base
@@ -12,24 +12,20 @@ updated: 2026-07-02T06:45:44Z
   <a href="docs/images/app-read.png"><img src="docs/images/app-read.png" alt="mkb desktop app in Read mode — a block with its embeds dissolved into one clean Markdown document" width="820"></a>
 </p>
 
-> Status: core re-architected to the file-per-block model (parser, transclusion, index,
-> semantic search, daemon, MCP, and the desktop app). Versioned `0.1.0` / pre-release. See
-> **[`docs/architecture.md`](./docs/architecture.md)** for the design and
-> **[`docs/SPEC.md`](./docs/SPEC.md)** for the exact on-disk format.
+> **Pre-release** (`0.1.0`). See **[`docs/architecture.md`](./docs/architecture.md)** for the design
+> and **[`docs/SPEC.md`](./docs/SPEC.md)** for the on-disk format.
 
 ## Getting started
 
 ![[01KVYGC2REQ5D7MG46FRVW5TR0]]
 
-![[01KVYHAT6GF9C0NB8AHPAAKX6Y]]
-
-Per-OS commands for these are in **[Installing the prerequisites](docs/PREREQS.md)**.
+Building from source needs Rust, [`just`](https://github.com/casey/just), and your platform's
+webview build libraries — see **[Installing the prerequisites](docs/PREREQS.md)**. Prebuilt releases
+and the container need none of them.
 
 ![[01KVYAA72QVXFFEP1PA6FDZN9V]]
 
 ![[01KVYAA72YQDAGGSV1NE2F06ZD]]
-
-![[01KVKJ1R428705BJD9VXGTRSDV]]
 
 ## Using mkb
 
