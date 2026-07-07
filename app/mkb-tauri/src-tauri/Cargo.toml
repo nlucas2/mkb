@@ -1,6 +1,6 @@
 [package]
 name = "mkb-tauri"
-version = "0.3.0"
+version = "0.3.1"
 description = "mkb desktop shell (Tauri) — a thin client over mkb-view + the daemon."
 edition = "2021"
 license = "MIT OR Apache-2.0"
