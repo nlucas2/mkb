@@ -3,22 +3,9 @@
 
 ## Local (single machine)
 
-Run the daemon against your vault; it owns the index and a file watcher:
-
-```sh
-mkbd --vault ~/mkb-vault
-```
-
-Then use any client:
-
-- **AI agent (MCP):** point your client at `deploy/mcp-config.example.json` (it runs
-  `mkb-mcp`, which auto-starts the daemon).
-- **CLI:** `mkb search --vault ~/mkb-vault "…"`
-
-The Markdown vault is the source of truth and is the only thing you should sync across
-machines (OneDrive, etc.). The index is machine-local and rebuildable — it lives **outside**
-the vault (under the OS local-data dir, keyed by a hash of the vault path), so a synced vault
-never drags the live index along. Never sync the index.
+You don't need to deploy anything: point any client (the desktop app, `mkb-mcp`, or the CLI) at a
+local folder and it auto-starts the daemon for you. The index lives outside the vault, so you can
+sync the Markdown files safely via OneDrive, Dropbox, etc.
 
 ## In the cluster (k3s/Kubernetes)
 
@@ -43,17 +30,6 @@ Clients connect with `mkbd`'s TCP transport and the token:
 
 - A networked client authenticates first (`authenticate { token }`), then issues requests.
 - Without a valid token, every data request is rejected.
-
-> **Embedding model is compiled in (no runtime download).** The daemon binary has an
-> int8-quantized BGE-small-en-v1.5 ONNX model (~32 MB) compiled directly into it (the default
-> `vendored-model` build), so semantic search runs **fully offline** — no egress to
-> `huggingface.co`, no slow first start, nothing to mount. To use a different model, mount one and
-> point `config.json` at it (`{"embedder":{"kind":"local","path":"…"}}`) or target a remote
-> endpoint (`{"embedder":{"kind":"remote","url":"…"}}`); see the README's "Choosing an embedder"
-> section. If a configured embedder can't load, the daemon logs a warning and degrades to the
-> offline hash embedder (keyword search still works; semantic ranking is weaker). The readiness
-> probe is a plain TCP check, so the pod only reports Ready once the daemon is actually
-> listening.
 
 ### Connecting a UI to the deployed daemon
 
@@ -130,9 +106,3 @@ Cutting a release:
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
 ```
-
-The embedding model is compiled into the daemon by default, so the image always ships with
-semantic search built in (no model files to mount, no runtime download). Building an image
-*without* the embedded model isn't a supported build-arg; it would require editing the
-Dockerfile's `cargo build` to pass `--no-default-features` (the daemon then falls back to the
-offline hash embedder unless `$MKB_BUNDLED_MODEL_DIR` points at a model on disk).

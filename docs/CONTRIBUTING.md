@@ -171,12 +171,6 @@ mkb stats --vault ~/my-vault
 mkb search --vault ~/my-vault "restart the web server"
 ```
 
-The **daemon** owns embedding (clients are thin and need no embedder), and semantic search works
-out of the box: the neural model is compiled into `mkbd` by default, so a plain
-`cargo run -p mkbd` — or any release build — does real semantic embeddings with no model files
-and no download. The offline hash embedder is only a fallback, used when the daemon was built
-without the embedded model (`--no-default-features`).
-
 ## Single daemon per vault
 
 A vault is owned by **at most one daemon at a time**. On startup the daemon takes an

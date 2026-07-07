@@ -1,7 +1,7 @@
 ---
 title: "Config: choosing an embedder"
 tags: [doc/config]
-updated: 2026-07-02T06:45:43Z
+updated: 2026-07-07T05:34:37Z
 ---
 
 ## Choosing an embedder (`config.json`)
@@ -30,6 +30,8 @@ daemon, and any other local model is loaded from disk. The `embedder` block sele
 // 4. force the offline, dependency-free hash embedder (no model)
 { "embedder": { "kind": "hash" } }
 ```
+
+> **Embedding model is compiled in (no runtime download).** The daemon binary has an int8-quantized BGE-small-en-v1.5 ONNX model (~32 MB) compiled directly into it (the default `vendored-model` build), so semantic search runs **fully offline** — no egress to `huggingface.co`, no slow first start, nothing to mount. 
 
 For `bundled`, a model directory on disk **overrides** the compiled-in one: set
 `$MKB_BUNDLED_MODEL_DIR` (or place a `model/` directory beside the binary) to point at a
