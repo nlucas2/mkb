@@ -1,7 +1,7 @@
 ---
 title: "README: Crate & module breakdown"
 tags: [doc/readme]
-updated: 2026-07-02T06:45:43Z
+updated: 2026-07-07T05:54:44Z
 ---
 
 - `mkb-core`:
@@ -39,10 +39,12 @@ updated: 2026-07-02T06:45:43Z
   fail-closed) for remote/cluster clients.
 - `mkb` CLI — a **thin daemon client** (auto-starts `mkbd` for the vault, then dispatches over
   the socket; reads *and* writes, a full equivalent of the MCP surface). Reads: `list`, `render`,
-  `get`, `search`, `tags`, `backlinks`, `links`, `stats`, `conflicts`, `ping`. Writes: `create`,
-  `update`, `set-tags`, `link`, `carve`, `flatten`, `delete`. Maintenance: `rebuild`, `export`.
-- `mkb-mcp` — an MCP server (JSON-RPC 2.0 over stdio) exposing the knowledge base as tools
-  (`search`, `get_block`, `render_block`, `list_blocks`, `list_roots`, `graph`, `list_tags`,
-  `backlinks`, `links_from`, `create_block`, `update_block`, `set_tags`, `delete_block`,
-  `carve_block`, `flatten_block`, `link_blocks`, `stats`, `rebuild`, `conflicts`). A thin client that forwards
-  every call to the daemon and auto-starts `mkbd` if needed.
+  `get`, `search`, `group-by`, `hierarchy`, `tags`, `props`, `info`, `backlinks`, `links`, `stats`,
+  `conflicts`, `assets`, `ping`. Writes: `create`, `update`, `append`, `replace`, `set-tags`,
+  `set-props`, `unset-props`, `link`, `carve`, `flatten`, `delete`. Maintenance: `rebuild`, `export`.
+- `mkb-mcp` — an MCP server (JSON-RPC 2.0 over stdio) exposing the knowledge base as tools. A thin
+  client that forwards every call to the daemon and auto-starts `mkbd` if needed. Default lean tier:
+  `search`, `get_block`, `list_blocks`, `list_tags`, `create_block`, `update_block`, `replace_in_block`,
+  `append_to_block`, `delete_block`, `set_tags`, `link_blocks`. Advanced tier (`MKB_MCP_TOOLS=full`):
+  `set_props`, `unset_props`, `carve_block`, `flatten_block`. (Note: `render_block`, `graph`, `stats`,
+  `conflicts`, `rebuild`, `backlinks`, `links_from`, and `list_roots` are strictly CLI/app-only.)

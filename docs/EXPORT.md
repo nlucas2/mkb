@@ -32,11 +32,12 @@ You can bypass the property-driven export to dump slices of the vault:
 
 - **By tag** — `mkb export --tag ops` dumps every **root** tagged `ops` to `<slug>.md` under `docs-export/`; add `--include-non-root` to include tagged non-root blocks too.
 - **Whole vault** — with no manifest and no `--tag`, `mkb export` dumps every root to `docs-export/`.
-- **A custom manifest** — `mkb export --manifest my.toml` (or a `.json` file) uses your own path → block map instead of the vault's `export.toml`.
+- **A custom manifest** — `mkb export --manifest my.toml` (or a `.json` file) uses your own path → block map instead of the vault's `export.toml`. By default, this *ignores* `path` properties on blocks. To include them alongside the custom manifest, add `--from-props`.
 
-Two modifiers apply to the tag and whole-vault dumps:
+Three modifiers apply:
 
-- `--follow-links` — pull blocks linked *outside* the export into it, so links resolve instead of degrading to plain text.
+- `--follow-links` — pull blocks linked *outside* the export into it, so links resolve instead of degrading to plain text (applies to tag/whole-vault dumps).
 - `--raw` — omit the `<!-- @generated … -->` banner, for publishing to non-mkb readers.
+- `--check` — Verify only; exits with a non-zero code if any file would change (used for CI and git hooks). Writes nothing.
 
 `--root DIR` overrides the output directory (defaults: `docs-export/` for a dump, the current directory for a manifest).

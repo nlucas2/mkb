@@ -1,7 +1,7 @@
 ---
 title: "Usage: browsing & organizing"
 tags: [doc/usage]
-updated: 2026-07-07T04:10:52Z
+updated: 2026-07-07T05:56:25Z
 ---
 
 ## Browsing & organizing
@@ -12,8 +12,14 @@ than by moving files around, so the same block can appear under several grouping
 You can use this UI two ways: the **desktop app**, or the **same UI in a browser** — either start it
 from the app's **Settings → Web UI** (a Launch/Stop button, no terminal needed) or run `mkb-web`
 yourself, then open `http://127.0.0.1:8787`. It is the app as a web page — handy for reaching your
-vault from a phone (the layout adapts to a small screen) or another machine on your network. In
-either, the sidebar's *Group by* selector re-shapes the block list:
+vault from a phone (the layout adapts to a small screen) or another machine on your network. (If
+you run `mkb-web` to reach it from another machine, bind it to all interfaces:
+`mkb-web --bind 0.0.0.0:8787`, but be aware this exposes the UI to your local network without
+authentication.)
+
+Unlike the CLI, `mkb-web` does not take a `--vault` flag. It reads the vaults you configured in the desktop app, and vault selection happens dynamically in the browser tab.
+
+In either UI, the sidebar's *Group by* selector re-shapes the block list:
 
 - **Hierarchy** (default) — the composition tree: root blocks at the top, each expanding into the
   blocks it embeds or links, in authored order.

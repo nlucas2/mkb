@@ -75,8 +75,14 @@ than by moving files around, so the same block can appear under several grouping
 You can use this UI two ways: the **desktop app**, or the **same UI in a browser** — either start it
 from the app's **Settings → Web UI** (a Launch/Stop button, no terminal needed) or run `mkb-web`
 yourself, then open `http://127.0.0.1:8787`. It is the app as a web page — handy for reaching your
-vault from a phone (the layout adapts to a small screen) or another machine on your network. In
-either, the sidebar's *Group by* selector re-shapes the block list:
+vault from a phone (the layout adapts to a small screen) or another machine on your network. (If
+you run `mkb-web` to reach it from another machine, bind it to all interfaces:
+`mkb-web --bind 0.0.0.0:8787`, but be aware this exposes the UI to your local network without
+authentication.)
+
+Unlike the CLI, `mkb-web` does not take a `--vault` flag. It reads the vaults you configured in the desktop app, and vault selection happens dynamically in the browser tab.
+
+In either UI, the sidebar's *Group by* selector re-shapes the block list:
 
 - **Hierarchy** (default) — the composition tree: root blocks at the top, each expanding into the
   blocks it embeds or links, in authored order.
@@ -99,6 +105,30 @@ In the app, any parent node with children in a `/`-nested group tree (the **Tags
 property grouping — at any depth) carries a small **≡** button — click it to *flatten* that subtree
 into one de-duped list of every block under it, without expanding each child in turn; click again to
 return to the nested view.
+
+## Core Commands (CLI)
+
+The CLI offers the full surface of mkb for terminal users and script automation. Here are the core data commands (remember to add `--vault <dir>` if you haven't set a default):
+
+### Reads
+- `mkb list` — list all root blocks.
+- `mkb get <id>` — print the raw Markdown body of a block.
+- `mkb render <id>` — print the block with its `![[embeds]]` resolved inline.
+- `mkb search "query"` — hybrid keyword + semantic search.
+- `mkb tags` — list every tag with its block count.
+- `mkb backlinks <id>` — list blocks that reference or embed `<id>`.
+- `mkb info <id>` — print metadata (created, updated, locked status, tags, and properties).
+
+### Writes
+*Write commands that set a body read from `stdin`.*
+
+- `echo "body" | mkb create --title "Title"` — creates a block and prints the new `<id>`.
+- `mkb update <id> < file.md` — completely overwrites the block's body with the input.
+- `mkb append <id>` — adds text to the end of a block.
+- `mkb replace <id> --old "bad" --new "good"` — surgical targeted edit; fails if the old text isn't a unique match.
+- `mkb set-tags <id> foo bar` — sets the block's frontmatter tags.
+- `mkb set-props <id> author=Alice` — sets the block's frontmatter properties.
+- `mkb delete <id>` — deletes the block.
 
 ## Human-only (locked) blocks
 

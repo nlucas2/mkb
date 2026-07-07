@@ -521,7 +521,7 @@ fn to_json<T: serde::Serialize + ?Sized>(v: &T) -> Result<String, String> {
 /// bodies are cheap, and truncating discards context the agent usually wants; this is only a guard
 /// for pathologically large blocks or large result sets.
 fn search_snippet_enabled() -> bool {
-    std::env::var("MKB_MCP_SEARCH_SNIPPET")
+    std::env::var(mkb_protocol::env::SEARCH_SNIPPET)
         .map(|v| {
             let v = v.trim().to_ascii_lowercase();
             !(v.is_empty() || v == "0" || v == "false" || v == "no")

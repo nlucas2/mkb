@@ -80,6 +80,7 @@ client read (so an override is seen the same everywhere). All are optional.
 | `MKB_READY_TIMEOUT_SECS` | Seconds a client waits for a freshly auto-started daemon to answer its first ping — raise it on slow, network-backed, or CI storage where the initial reconcile is slow. |
 | `MKB_BUNDLED_MODEL_DIR` | Directory holding an on-disk embedding model that overrides the compiled-in one. |
 | `MKB_MCP_TOOLS` | `full` (or `all`) opts the MCP server into the advanced tool tier (`set_props`, `unset_props`, `carve_block`, `flatten_block`); the default is the lean core surface. |
+| `MKB_MCP_SEARCH_SNIPPET` | `1` (or `true`) truncates MCP search hits to a short keyword snippet around the match instead of returning the full body (drastically reducing token usage on broad searches). |
 
 The vault-selection precedence is `--vault` (flag) → `$MKB_VAULT` → the registry default → the
 built-in `~/mkb-vault`; the connection variables (`MKB_REMOTE`/`MKB_TOKEN`/`MKB_SOCKET`) let a

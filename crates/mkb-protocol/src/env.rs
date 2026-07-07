@@ -28,3 +28,7 @@ pub const READY_TIMEOUT_SECS: &str = "MKB_READY_TIMEOUT_SECS";
 
 /// Directory holding an on-disk embedding model that overrides the compiled-in one.
 pub const BUNDLED_MODEL_DIR: &str = "MKB_BUNDLED_MODEL_DIR";
+
+/// Truncate search results to a short snippet instead of returning the full body (MCP server).
+/// Set to `1`, `true`, or `yes`.
+pub const SEARCH_SNIPPET: &str = "MKB_MCP_SEARCH_SNIPPET";

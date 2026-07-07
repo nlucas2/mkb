@@ -116,7 +116,7 @@ enum Command {
         id: String,
     },
     /// Search (keyword + semantic). The query also accepts inline operators
-    /// (tag:<t> #<t> lang:<l> code:<l> created:before:<date> updated:after:<date> has:<k> missing:<k>).
+    /// (tag:`<t>` #`<t>` lang:`<l>` code:`<l>` created:before:`<date>` updated:after:`<date>` has:`<k>` missing:`<k>`).
     Search {
         /// Query text.
         query: String,
@@ -163,7 +163,7 @@ enum Command {
     },
     /// The composition hierarchy (roots → embeds/links) as an indented tree.
     Hierarchy,
-    /// A block's properties (key<TAB>value per line).
+    /// A block's properties (key`TAB`value per line).
     Props {
         /// Block id.
         id: String,
