@@ -176,4 +176,7 @@
     core: { invoke: invoke, convertFileSrc: convertFileSrc },
     event: { listen: listen },
   };
+  // Marks this as the browser build (not the real Tauri desktop shell), so the UI can hide
+  // desktop-only affordances (e.g. the Settings "Web UI" launcher) when running as a web page.
+  window.__MKB_WEB__ = true;
 })();

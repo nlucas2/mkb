@@ -131,6 +131,68 @@ fn cli_exe_name() -> &'static str {
     }
 }
 
+// ----- bundled web UI server (mkb-web) -----
+
+/// The localhost port the desktop app launches / looks for the bundled web UI on.
+const WEB_PORT: u16 = 8787;
+
+/// The `mkb-web` binary's on-disk filename for this platform.
+fn web_exe_name() -> &'static str {
+    if cfg!(windows) {
+        "mkb-web.exe"
+    } else {
+        "mkb-web"
+    }
+}
+
+/// The status the Settings "Web UI" section renders: whether an `mkb-web` server is answering, and
+/// the URL to reach it.
+#[derive(serde::Serialize)]
+struct WebStatus {
+    running: bool,
+    url: String,
+    port: u16,
+}
+
+fn web_status(port: u16) -> WebStatus {
+    WebStatus {
+        running: web_server_running(port),
+        url: format!("http://127.0.0.1:{port}"),
+        port,
+    }
+}
+
+/// Whether an `mkb-web` server is answering on `port`: connect, request the platform shim, and
+/// confirm the response is *ours* (its identifying banner). A bare port check could match any
+/// server, so we look for the shim marker — cheap and specific for a localhost convenience check.
+fn web_server_running(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300))
+    else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(700)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let req = format!(
+        "GET /platform-shim.js HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 4096];
+    let mut got: Vec<u8> = Vec::new();
+    while got.len() < 4096 {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(_) => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&got);
+    text.starts_with("HTTP/1.") && text.contains(" 200") && text.contains("mkb platform shim")
+}
+
 /// Resolve what the user's shell would actually run for `mkb`, following the *real* PATH — the crux
 /// of the diagnostic. On Unix a GUI app's own PATH is a sparse session one (macOS's launchd PATH;
 /// a bare desktop-session PATH on Linux) that may miss `~/.local/bin`, `~/.cargo/bin`, or Homebrew,
@@ -307,7 +369,11 @@ fn install_cli_tools(app: tauri::AppHandle) -> Result<(), String> {
         // One privileged shell command: ensure the dir exists, then (re)create each symlink.
         let mut sh = format!("mkdir -p {CLI_LINK_DIR}");
         for (src, link) in &work {
-            sh.push_str(&format!(" && ln -sf '{}' '{}'", src.display(), link.display()));
+            sh.push_str(&format!(
+                " && ln -sf '{}' '{}'",
+                src.display(),
+                link.display()
+            ));
         }
 
         #[cfg(target_os = "macos")]
@@ -338,9 +404,7 @@ fn install_cli_tools(app: tauri::AppHandle) -> Result<(), String> {
             let out = std::process::Command::new("pkexec")
                 .args(["/bin/sh", "-c", &sh])
                 .output()
-                .map_err(|e| {
-                    format!("Could not launch the authentication prompt (pkexec): {e}")
-                })?;
+                .map_err(|e| format!("Could not launch the authentication prompt (pkexec): {e}"))?;
             if out.status.success() {
                 log_line!("mkb: linked CLI tools into {CLI_LINK_DIR}");
                 return Ok(());
@@ -735,11 +799,9 @@ fn edit_remote_vault(
     Ok(())
 }
 
-/// Reveal a local vault's folder in the OS file manager (manager-only). Native affordance: resolve
-/// the path in core, then spawn the platform opener here. No-op-with-error for a remote vault.
-#[tauri::command]
-fn reveal_vault(name: String) -> Result<(), String> {
-    let path = mkb_app_core::local_vault_path(&name)?;
+/// Open a path or URL with the OS default handler (Finder/Explorer on the desktop; `xdg-open` on
+/// Linux). Shared by reveal-vault and open-external so the platform dispatch lives in one place.
+fn os_open(target: &std::ffi::OsStr) -> Result<(), String> {
     let cmd = if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(target_os = "windows") {
@@ -748,10 +810,101 @@ fn reveal_vault(name: String) -> Result<(), String> {
         "xdg-open"
     };
     std::process::Command::new(cmd)
-        .arg(path.as_os_str())
+        .arg(target)
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("could not open the folder: {e}"))
+        .map_err(|e| format!("could not open {}: {e}", target.to_string_lossy()))
+}
+
+/// Reveal a local vault's folder in the OS file manager (manager-only). Native affordance: resolve
+/// the path in core, then spawn the platform opener here. No-op-with-error for a remote vault.
+#[tauri::command]
+fn reveal_vault(name: String) -> Result<(), String> {
+    let path = mkb_app_core::local_vault_path(&name)?;
+    os_open(path.as_os_str())
+}
+
+/// Open a URL in the OS default browser (used by the Settings "Web UI" section).
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    os_open(url.as_ref())
+}
+
+/// Report whether the bundled web UI server is running, and the URL to reach it.
+#[tauri::command]
+fn web_server_status() -> WebStatus {
+    web_status(WEB_PORT)
+}
+
+/// Launch the bundled `mkb-web` server, **detached** so it outlives the app — the point is reaching
+/// the vault from a phone/browser even with the desktop app closed. A no-op (returns the running
+/// status) if a server is already answering on the port.
+#[tauri::command]
+fn launch_web_server(app: tauri::AppHandle) -> Result<WebStatus, String> {
+    if web_server_running(WEB_PORT) {
+        return Ok(web_status(WEB_PORT));
+    }
+    let bin = bundled_bin_dir(&app)
+        .map(|d| d.join(web_exe_name()))
+        .filter(|p| p.exists())
+        .ok_or("The web UI server (mkb-web) isn't bundled with this app.")?;
+
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.arg("--bind")
+        .arg(format!("127.0.0.1:{WEB_PORT}"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // Detach so the server survives the app exiting (mirrors how the daemon is spawned).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW.
+        cmd.creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000);
+    }
+    cmd.spawn()
+        .map_err(|e| format!("failed to launch mkb-web: {e}"))?;
+
+    // Poll briefly so the UI can immediately reflect "running" (the server binds in well under 2s).
+    for _ in 0..20 {
+        if web_server_running(WEB_PORT) {
+            return Ok(web_status(WEB_PORT));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(web_status(WEB_PORT))
+}
+
+/// Stop the bundled web server by POSTing to its loopback-only `/__shutdown`. Works for a server the
+/// app launched *or* one started from a terminal (it addresses the port, not a child handle). The
+/// endpoint refuses non-loopback callers, so this can't be used to stop a server remotely.
+#[tauri::command]
+fn stop_web_server() -> Result<WebStatus, String> {
+    use std::io::{Read, Write};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], WEB_PORT));
+    if let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300))
+    {
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(700)));
+        let req = format!(
+            "POST /__shutdown HTTP/1.0\r\nHost: 127.0.0.1:{WEB_PORT}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(req.as_bytes());
+        let mut sink = Vec::new();
+        let _ = stream.read_to_end(&mut sink);
+    }
+    // Poll until it's actually gone (the server exits ~150ms after replying).
+    for _ in 0..20 {
+        if !web_server_running(WEB_PORT) {
+            return Ok(web_status(WEB_PORT));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(web_status(WEB_PORT))
 }
 
 /// Switch the active vault to an existing registry entry: make it the default and reconnect live.
@@ -994,6 +1147,10 @@ pub fn run() {
             edit_local_vault,
             edit_remote_vault,
             reveal_vault,
+            open_external,
+            web_server_status,
+            launch_web_server,
+            stop_web_server,
             add_vault,
             add_remote_vault,
             remove_vault,
@@ -1038,8 +1195,12 @@ mod tests {
         let plan = cli_link_plan(&bin, &links);
         // mkb (missing) and mkb-mcp (stale) need work; mkbd (no bundled binary) is skipped.
         assert_eq!(plan.len(), 2, "expected mkb + mkb-mcp, got {plan:?}");
-        assert!(plan.iter().any(|(s, l)| s == &mkb_src && l == &links.join("mkb")));
-        assert!(plan.iter().any(|(s, l)| s == &mcp_src && l == &links.join("mkb-mcp")));
+        assert!(plan
+            .iter()
+            .any(|(s, l)| s == &mkb_src && l == &links.join("mkb")));
+        assert!(plan
+            .iter()
+            .any(|(s, l)| s == &mcp_src && l == &links.join("mkb-mcp")));
         assert!(
             !plan.iter().any(|(_, l)| l == &links.join("mkbd")),
             "mkbd has no bundled binary; it must not be planned"
@@ -1063,7 +1224,10 @@ mod version_tests {
     #[test]
     fn parse_version_extracts_bare_version() {
         assert_eq!(parse_version_output("mkb 0.3.0").as_deref(), Some("0.3.0"));
-        assert_eq!(parse_version_output("mkb 0.3.0\n").as_deref(), Some("0.3.0"));
+        assert_eq!(
+            parse_version_output("mkb 0.3.0\n").as_deref(),
+            Some("0.3.0")
+        );
         assert_eq!(parse_version_output("   ").as_deref(), None);
         assert_eq!(parse_version_output("").as_deref(), None);
     }

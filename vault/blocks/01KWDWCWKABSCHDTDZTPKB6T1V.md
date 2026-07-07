@@ -1,7 +1,7 @@
 ---
 title: "Usage: browsing & organizing"
 tags: [doc/usage]
-updated: 2026-07-07T02:52:28Z
+updated: 2026-07-07T04:10:52Z
 ---
 
 ## Browsing & organizing
@@ -9,10 +9,11 @@ updated: 2026-07-07T02:52:28Z
 Blocks are a flat pool of files; you impose structure by **viewing** them different ways rather
 than by moving files around, so the same block can appear under several groupings at once.
 
-You can use this UI two ways: the **desktop app**, or the **same UI in a browser** — run
-`mkb-web` and open `http://127.0.0.1:8787` (it is the app as a web page, handy for reaching your vault
-from a phone or another machine on your network). In either, the sidebar's *Group by* selector
-re-shapes the block list:
+You can use this UI two ways: the **desktop app**, or the **same UI in a browser** — either start it
+from the app's **Settings → Web UI** (a Launch/Stop button, no terminal needed) or run `mkb-web`
+yourself, then open `http://127.0.0.1:8787`. It is the app as a web page — handy for reaching your
+vault from a phone (the layout adapts to a small screen) or another machine on your network. In
+either, the sidebar's *Group by* selector re-shapes the block list:
 
 - **Hierarchy** (default) — the composition tree: root blocks at the top, each expanding into the
   blocks it embeds or links, in authored order.

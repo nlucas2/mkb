@@ -507,6 +507,29 @@ fn open_in_file_manager(path: &Path) -> Result<(), String> {
 
 // ---------- HTTP handlers ----------
 
+/// `POST /__shutdown` — stop this server. **Loopback-only**: the peer address must be the local
+/// machine (127.0.0.0/8 or ::1), so a client reaching the server over the network — e.g. a phone,
+/// when it's bound to `0.0.0.0` for LAN access — can never shut it down; only something on the same
+/// host (the desktop app's Stop button, or a local `curl`) can. Replies, then exits the process a
+/// beat later so the response is flushed first.
+async fn shutdown(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
+) -> Response {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "shutdown is allowed from localhost only",
+        )
+            .into_response();
+    }
+    tokio::spawn(async {
+        // Give axum a moment to write the 200 back before the process dies.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        std::process::exit(0);
+    });
+    (StatusCode::OK, "shutting down").into_response()
+}
+
 /// Read the target vault name a request declares via the `X-MKB-Vault` header (absent → default).
 fn vault_header(headers: &HeaderMap) -> Option<String> {
     headers
@@ -880,6 +903,7 @@ async fn main() {
         .route("/api/{cmd}", post(api))
         .route("/sse", get(sse))
         .route("/assets", get(assets))
+        .route("/__shutdown", post(shutdown))
         .fallback(static_files)
         .with_state(state);
 
@@ -891,7 +915,10 @@ async fn main() {
         }
     };
     println!("mkb-web: serving the app at http://{}", args.bind);
-    if let Err(e) = axum::serve(listener, app).await {
+    // `into_make_service_with_connect_info` so the shutdown handler can see the peer address and
+    // enforce loopback-only.
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+    if let Err(e) = axum::serve(listener, service).await {
         eprintln!("mkb-web: server error: {e}");
         std::process::exit(1);
     }

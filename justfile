@@ -223,6 +223,14 @@ app: icons
     cp target/release/mkb-mcp {{tauri}}/bin/mkb-mcp
     cp target/release/mkb     {{tauri}}/bin/mkb
     cp target/release/mkb-web {{tauri}}/bin/mkb-web
+    # Clear prior installers from the (git-ignored) bundle output before rebuilding: the version is
+    # in the filename, so a new build lands ALONGSIDE old ones instead of replacing them — they pile
+    # up, waste disk (each 40–100 MB), and once caused the installer to pick the wrong version. Also
+    # nuke bundle_dmg.sh's leftover rw.*.dmg scratch. Tauri regenerates the one current installer.
+    rm -f {{tauri}}/target/release/bundle/dmg/*.dmg \
+          {{tauri}}/target/release/bundle/macos/rw.*.dmg \
+          {{tauri}}/target/release/bundle/deb/*.deb \
+          {{tauri}}/target/release/bundle/appimage/*.AppImage
     cd {{tauri}} && cargo tauri build
 
 [windows]
@@ -238,6 +246,10 @@ app: icons
     # Stage under the real command name so PATH exposes `mkb`, not `mkb-cli`.
     Copy-Item 'target/release/mkb.exe'     '{{tauri}}/bin/mkb.exe'     -Force
     Copy-Item 'target/release/mkb-web.exe' '{{tauri}}/bin/mkb-web.exe' -Force
+    # Clear prior NSIS installers from the (git-ignored) bundle output before rebuilding: the version
+    # is in the filename, so old ones pile up (wasting disk) and once caused the installer to pick the
+    # wrong version. Tauri regenerates the one current setup.exe.
+    Remove-Item -Force '{{tauri}}/target/release/bundle/nsis/*-setup.exe' -ErrorAction SilentlyContinue
     Set-Location '{{tauri}}'
     cargo tauri build
 

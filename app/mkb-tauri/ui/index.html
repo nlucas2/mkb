@@ -80,7 +80,7 @@
       /* The seam: the divider between nav and main. Drag to resize, double-click to auto-fit.
          The pill button on it collapses/expands. It is a sibling of nav so it stays visible
          (to re-open) even when collapsed. */
-      .seam { flex:0 0 6px; position:relative; background:var(--border); cursor:col-resize; }
+      .seam { flex:0 0 6px; position:relative; background:var(--border); cursor:col-resize; touch-action:none; }
       .seam:hover, .seam.dragging { background:var(--accent); }
       /* Widen the drag hit area beyond the visible 6px so it's easy to grab. */
       .seam::before { content:""; position:absolute; top:0; bottom:0; left:-5px; right:-5px; }
@@ -135,7 +135,7 @@
       nav li a:hover { background:var(--hover); }
       nav li.active a { background:var(--accent); color:var(--panel); font-weight:600; }
       /* Sidebar group-by select + grouped tree. */
-      .groupby { appearance:none; -webkit-appearance:none; background:var(--field); color:var(--fg); border:1px solid var(--border); border-radius:5px; padding:.15rem 1.3rem .15rem .4rem; font:inherit; font-size:.8em; cursor:pointer; background-image:linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position:calc(100% - 11px) center, calc(100% - 7px) center; background-size:4px 4px, 4px 4px; background-repeat:no-repeat; }
+      .groupby { appearance:none; -webkit-appearance:none; background:var(--field); color:var(--fg); border:1px solid var(--border); border-radius:5px; padding:.15rem 1.3rem .15rem .4rem; font:inherit; font-size:.8em; line-height:1.4; text-align:left; cursor:pointer; background-image:linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position:calc(100% - 11px) center, calc(100% - 7px) center; background-size:4px 4px, 4px 4px; background-repeat:no-repeat; }
       .groupby:hover { border-color:var(--accent); }
       nav ul.grouped li { display:block; }
       /* A tag/path node row (node = category, whole row toggles expand). */
@@ -506,6 +506,73 @@
       .pk-count { font-size:.8em; }
       .pk-mergewrap { flex:1 1 auto; overflow:auto; padding:.7rem .9rem; display:flex; }
       .pk-merge { flex:1 1 auto; min-height:100%; resize:none; }
+
+      /* ---------- Mobile chrome (hamburger + drawer backdrop) ----------
+         Hidden on desktop; the media query below reveals them. Kept as app-level chrome (not inside
+         the per-view topbar) so they exist in every view without per-view code. */
+      #navtoggle { display:none; position:fixed; top:.55rem; left:.7rem; z-index:42; width:2.2rem; height:2.2rem; align-items:center; justify-content:center; background:var(--panel); border:1px solid var(--border); border-radius:7px; color:var(--fg); font-size:1.15rem; line-height:1; cursor:pointer; }
+      #navbackdrop { display:none; position:fixed; inset:0; z-index:39; background:rgba(0,0,0,.45); }
+
+      /* ---------- Mobile (narrow viewport) layout ----------
+         Applies ONLY below 640px. The desktop layout above this width is untouched. The approach is
+         deliberately STRUCTURAL, not per-element: the sidebar becomes an off-canvas drawer by
+         repositioning the whole <nav> (its internals are never restyled, so anything added to the
+         sidebar just works), and the topbar switches from a fixed row to a wrapping one (new controls
+         wrap on their own). So new UI generally needs no mobile-specific follow-up. */
+      @media (max-width: 640px) {
+        /* Sidebar → full-screen off-canvas drawer. Reposition the whole nav; touch none of its
+           contents. Extra top padding clears the fixed hamburger, which sits in that gap as a close
+           toggle. On a phone the drawer takes the whole viewport (nothing useful shows behind it). */
+        nav {
+          position:fixed; top:0; left:0; bottom:0;
+          width:100vw; max-width:none; flex-basis:auto;
+          padding-top:3.2rem;
+          transform:translateX(-100%); transition:transform .22s ease;
+          z-index:40; box-shadow:2px 0 24px rgba(0,0,0,.4);
+        }
+        .layout.navopen nav { transform:translateX(0); }
+        /* Neutralise the desktop collapse/resize states — the drawer owns positioning on mobile. */
+        nav.collapsed { width:100vw; flex-basis:auto; padding:1rem; padding-top:3.2rem; }
+        .seam { display:none; }
+        main { flex:1 1 100%; }
+
+        #navtoggle { display:flex; }
+        .layout.navopen #navbackdrop { display:block; }
+
+        /* Topbar: wrap instead of stretch, so each control keeps its natural size and any new one
+           just wraps to the next line. Title takes the first line; controls flow below it. Left pad
+           leaves room for the fixed hamburger. */
+        .topbar { flex-wrap:wrap; padding-left:3.3rem; }
+        .topbar .titlewrap { flex:1 1 100%; }
+        .topbar .seg { align-self:flex-start; }
+
+        /* Graph legend: stack the key list above its controls panel. */
+        .glegend-body { flex-direction:column; }
+        .glegend-keys { min-width:0; }
+        .glegend-panel { border-left:none; border-top:1px solid var(--border);
+          padding-left:0; padding-top:.6rem; margin-top:.5rem; min-width:0; }
+
+        /* Roomier tap targets for finger use. The block-list rows and their expand/collapse carets
+           are laid out for a mouse; on touch the caret in particular is too small to hit reliably.
+           Enlarge both the hit area AND the glyph (same shape, same look), and give rows more height. */
+        nav li a { padding:.45rem .55rem; }
+        .gb-row, .gb-hrow { padding-top:.4rem; padding-bottom:.4rem; }
+        .gb-caret { width:2em; min-height:2em; font-size:1.3em; display:inline-flex;
+          align-items:center; justify-content:center; }
+        .gb-flat { font-size:1.15em; padding:.15rem .45rem; }
+
+        /* Group-by (sort) select: the native popup renders its options at the control's font-size,
+           so a small font makes a tiny, hard-to-read list. Use a 16px+ font (also stops iOS zooming
+           the page when it's focused) and a taller, easier-to-tap control. */
+        .groupby { font-size:1rem; padding:.4rem 1.7rem .4rem .6rem;
+          background-position:calc(100% - 12px) center, calc(100% - 7px) center; background-size:6px 6px, 6px 6px; }
+        .navhd { font-size:.85em; }
+
+        /* Popup menus (group-by, context menus) get thumb-sized rows and a wider min-width so the
+           options are comfortably tappable, not a cramped native-style list. */
+        .ctxmenu { min-width:min(15rem, 80vw); }
+        .ctxmenu .ctxitem { padding:.7rem .9rem; font-size:1rem; }
+      }
     </style>
   </head>
   <body>
@@ -521,18 +588,15 @@
       <button id="cliskip" class="clibtn">Not now</button>
     </div>
     <div class="layout">
+      <button id="navtoggle" aria-label="Toggle sidebar" title="Menu">☰</button>
+      <div id="navbackdrop"></div>
       <nav id="nav">
         <input id="search" type="search" placeholder="Search…  (tag:  #tag  lang:rust)" />
         <div class="navbtns">
           <button id="graphbtn"><span class="ico">◎</span><span class="label">Graph</span></button>
         </div>
         <div class="navhd"><span>Blocks</span>
-          <select id="groupby" class="groupby" title="How to organize the block list">
-            <option value="hierarchy" selected>Hierarchy</option>
-            <option value="none">Flat</option>
-            <option value="tags">Tags</option>
-            <option value="path">Path</option>
-          </select>
+          <button id="groupby" class="groupby" type="button" aria-haspopup="menu" title="How to organize the block list"></button>
         </div>
         <ul id="blocks"></ul>
         <button id="newblock" class="addrow" title="New block (⌘↵ to save · Esc to discard)"><span class="ico">+</span> New block</button>
@@ -1151,19 +1215,23 @@
       // Restore persisted state (does NOT touch `fg`, which isn't created yet).
       applyNavWidth(lastWidth);
       if (localStorage.getItem("mkb.navcollapsed") === "1") setCollapsed(true);
-      // The pill button toggles collapse; stop its mousedown from starting a seam drag.
-      seamTab.addEventListener("mousedown", (e) => e.stopPropagation());
+      // The pill button toggles collapse; stop its pointerdown from starting a seam drag.
+      seamTab.addEventListener("pointerdown", (e) => e.stopPropagation());
       seamTab.addEventListener("click", (e) => { e.stopPropagation(); setCollapsed(!isCollapsed()); });
       // Double-click the seam → auto-fit width.
       seamEl.addEventListener("dblclick", (e) => { if (e.target === seamTab) return; fitWidth(); });
-      // Drag the seam → resize (a plain click does nothing now; collapse is the pill's job).
+      // Drag the seam → resize. Uses Pointer Events (mouse + touch + pen) with pointer capture, so a
+      // finger works on mobile too — not just a cursor. A plain click does nothing (collapse is the
+      // pill's job).
       (() => {
         let down = null, dragging = false;
-        seamEl.addEventListener("mousedown", (e) => {
+        seamEl.addEventListener("pointerdown", (e) => {
           down = { x: e.clientX, left: navEl.getBoundingClientRect().left };
-          dragging = false; e.preventDefault();
+          dragging = false;
+          try { seamEl.setPointerCapture(e.pointerId); } catch {}
+          e.preventDefault();
         });
-        window.addEventListener("mousemove", (e) => {
+        seamEl.addEventListener("pointermove", (e) => {
           if (!down) return;
           if (!dragging && Math.abs(e.clientX - down.x) > 4) {
             dragging = true; seamEl.classList.add("dragging");
@@ -1172,12 +1240,35 @@
           }
           if (dragging) applyNavWidth(e.clientX - down.left);
         });
-        window.addEventListener("mouseup", () => {
+        const end = (e) => {
           if (!down) return;
           down = null; dragging = false; seamEl.classList.remove("dragging");
           document.body.style.cursor = ""; document.body.style.userSelect = "";
-        });
+          try { seamEl.releasePointerCapture(e.pointerId); } catch {}
+        };
+        seamEl.addEventListener("pointerup", end);
+        seamEl.addEventListener("pointercancel", end);
       })();
+
+      // Mobile nav drawer: on a narrow viewport the sidebar is an off-canvas overlay (CSS), toggled
+      // by the hamburger and dismissed by the backdrop. `.navopen` on `.layout` drives it; on desktop
+      // that class is inert (the mobile positioning only exists inside the media query). Selecting a
+      // block closes the drawer so the content is visible — wired via a delegated click on the nav's
+      // block list, so it keeps working no matter how the list is rebuilt.
+      const layoutEl = document.querySelector(".layout");
+      const navToggleEl = document.getElementById("navtoggle");
+      const navBackdropEl = document.getElementById("navbackdrop");
+      function closeNavDrawer() { layoutEl.classList.remove("navopen"); }
+      function toggleNavDrawer() { layoutEl.classList.toggle("navopen"); }
+      if (navToggleEl) navToggleEl.addEventListener("click", toggleNavDrawer);
+      if (navBackdropEl) navBackdropEl.addEventListener("click", closeNavDrawer);
+      // Opening a block dismisses the drawer from inside openBlock() (the funnel for every list mode).
+      // These other in-nav funnels swap what's shown in main WITHOUT going through openBlock, so they
+      // dismiss it explicitly. Anything added to the sidebar that opens a block inherits the behaviour.
+      ["graphbtn", "newblock", "gearbtn"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener("click", closeNavDrawer);
+      });
 
       let roots = [];          // current flat sidebar list [{id,title}] (group=none)
       let groupBy = "hierarchy"; // sidebar organization: hierarchy | none | tags | <prop key, e.g. path>
@@ -1639,6 +1730,7 @@
       // The current view (read / blocks / edit) is **sticky**: navigating to another block
       // keeps the mode you're in. Mode only changes via the view tabs or creating a block.
       async function openBlock(id, _keepMode) {
+        closeNavDrawer(); // on mobile, bring the opened block to the front (dismiss the nav drawer)
         active = id;
         currentView = "block";
         hideTip();
@@ -2936,6 +3028,12 @@
             <div id="cliresult" class="cliresult"></div>
             <hr style="border:none;border-top:1px solid var(--border);margin:1.4rem 0"/>
             </div>
+            <div id="websection">
+            <label>Web UI</label>
+            <p class="hint">A convenience helper: it launches the bundled <code>mkb-web</code>, which serves this same UI as a local web page so you can reach your vault from a browser — for example your phone on the same network. It keeps running after you close this app. You can also start it yourself by running <code>mkb-web</code> in a terminal.</p>
+            <div class="row"><button id="weblaunch">Launch</button><button id="webstop" style="display:none">Stop</button><button id="webopen" style="display:none"></button><span class="muted" id="webmsg"></span></div>
+            <hr style="border:none;border-top:1px solid var(--border);margin:1.4rem 0"/>
+            </div>
             <label>Unused images</label>
             <p class="hint">Images under <code>assets/</code> that no block references. Deleting one removes the file from the vault; this is never automatic, since an image can be shared by several blocks.</p>
             <div id="orphans"><span class="muted">Scanning…</span></div>
@@ -3057,6 +3155,56 @@
           b.classList.toggle("on", b.dataset.theme === themePref());
           b.onclick = () => setTheme(b.dataset.theme);
         });
+        // Web UI section (desktop app only — hidden in the browser build via __MKB_WEB__). Shows
+        // whether an mkb-web server is answering on the local port, with an Open button when it is
+        // and a Launch button when it isn't. Launch spawns the bundled, detached server.
+        {
+          const section = mainEl.querySelector("#websection");
+          if (section && window.__MKB_WEB__) {
+            section.style.display = "none";
+          } else if (section) {
+            const msg = section.querySelector("#webmsg");
+            const launchBtn = section.querySelector("#weblaunch");
+            const stopBtn = section.querySelector("#webstop");
+            const openBtn = section.querySelector("#webopen");
+            const paint = (st) => {
+              if (st && st.running) {
+                msg.textContent = `Running at ${st.url}`;
+                launchBtn.style.display = "none";
+                stopBtn.style.display = "";
+                openBtn.style.display = "";
+                openBtn.textContent = `Open ${st.url}`;
+                openBtn.onclick = () => invoke("open_external", { url: st.url }).catch((e) => toast(String(e), "error"));
+              } else {
+                msg.textContent = "Not running.";
+                launchBtn.style.display = "";
+                launchBtn.textContent = "Launch";
+                stopBtn.style.display = "none";
+                openBtn.style.display = "none";
+              }
+            };
+            launchBtn.onclick = async () => {
+              launchBtn.disabled = true; msg.textContent = "Launching…";
+              try {
+                const st = await invoke("launch_web_server");
+                paint(st);
+                if (st && st.running) toast(`Web UI running at ${st.url}`);
+              } catch (e) { msg.textContent = String(e); }
+              launchBtn.disabled = false;
+            };
+            stopBtn.onclick = async () => {
+              stopBtn.disabled = true; msg.textContent = "Stopping…";
+              try {
+                const st = await invoke("stop_web_server");
+                paint(st);
+                if (!st.running) toast("Web UI stopped.");
+                else msg.textContent = "Still running — couldn't stop it.";
+              } catch (e) { msg.textContent = String(e); }
+              stopBtn.disabled = false;
+            };
+            invoke("web_server_status").then(paint).catch(() => {});
+          }
+        }
         loadOrphans();
       }
 
@@ -3125,14 +3273,35 @@
       // embeds/links, the default), Flat (every block), Tags (many-home /-tree), or a property like
       // Path (single-home /-tree). Persisted. Replaces the old Roots/All toggle (Hierarchy collapsed
       // IS "roots").
+      // Group-by control. This is a plain button (styled to look like the old dropdown) that opens the
+      // app's OWN context menu, rather than a native <select>. Reason: on macOS/iOS the native
+      // <select> popup renders its options at an OS-controlled size we can't enlarge, so it stayed
+      // tiny on touch. Reusing showContextMenu gives one code path, a consistent look, and a menu we
+      // can size up for thumbs (see the mobile .ctxmenu rules).
       (() => {
-        const sel = document.getElementById("groupby");
-        const known = ["hierarchy", "none", "tags", "path"];
-        sel.value = known.includes(groupBy) ? groupBy : "path";
-        sel.onchange = () => {
-          groupBy = sel.value;
-          try { localStorage.setItem("mkb.groupBy", groupBy); } catch {}
-          loadBlocks(active, { navOnly: true });
+        const btn = document.getElementById("groupby");
+        const OPTS = [
+          { value: "hierarchy", label: "Hierarchy" },
+          { value: "none", label: "Flat" },
+          { value: "tags", label: "Tags" },
+          { value: "path", label: "Path" },
+        ];
+        const labelFor = (v) => (OPTS.find((o) => o.value === v) || {}).label || v;
+        const paint = () => { btn.textContent = labelFor(groupBy); };
+        paint();
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          if (ctxMenuEl) { closeContextMenu(); return; } // second click on the button closes it
+          const r = btn.getBoundingClientRect();
+          showContextMenu(r.left, r.bottom + 4, OPTS.map((o) => ({
+            label: (o.value === groupBy ? "✓ " : "") + o.label,
+            run: () => {
+              groupBy = o.value;
+              try { localStorage.setItem("mkb.groupBy", groupBy); } catch {}
+              paint();
+              loadBlocks(active, { navOnly: true });
+            },
+          })));
         };
       })();
       window.__mkb = { settings: showSettings };
