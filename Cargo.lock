@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-app-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "mkb-core",
  "mkb-protocol",
@@ -1050,7 +1050,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "mkb-core",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "regex",
  "serde",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-embed"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "fastembed",
  "mkb-core",
@@ -1083,7 +1083,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-index"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "mkb-core",
  "rusqlite",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-mcp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "mkb-core",
@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-protocol"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "base64 0.22.1",
  "interprocess",
@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-view"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "mkb-core",
  "pulldown-cmark",
@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "mkb-web"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "arc-swap",
  "axum",
@@ -1142,7 +1142,7 @@ dependencies = [
 
 [[package]]
 name = "mkbd"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "libc",
