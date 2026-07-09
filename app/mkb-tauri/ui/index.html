@@ -3339,6 +3339,14 @@
         }
         if (window.__MKB_WEB__) return;          // browser build: let normal links work as usual
         if (href.startsWith("#")) return;         // in-page anchor: allow intra-doc scroll
+        // Search results (mkb-view's render_search_html) use a second internal scheme, /block/<id>,
+        // rather than mkb: — open it the same way.
+        if (href.startsWith("/block/")) {
+          e.preventDefault(); e.stopPropagation();
+          const id = decodeURIComponent(href.slice("/block/".length));
+          if (id) openBlock(id);
+          return;
+        }
         if (/^(https?|mailto):/i.test(href)) {    // web/mail: open in the OS browser, not the webview
           e.preventDefault(); e.stopPropagation();
           invoke("open_external", { url: href }).catch(() => {});
