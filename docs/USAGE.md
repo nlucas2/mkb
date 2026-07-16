@@ -106,6 +106,12 @@ property grouping — at any depth) carries a small **≡** button — click it 
 into one de-duped list of every block under it, without expanding each child in turn; click again to
 return to the nested view.
 
+In **Graph** view, the force layout settles and then stops redrawing automatically. Larger visible
+graphs also enter **Freeze** after settling. Freeze pins the layout without turning it into a static
+image: you can still pan, zoom, open blocks, and drag individual nodes to new pinned positions.
+**Resume** releases every node and reheats the layout; if the visible graph is still large enough,
+it auto-freezes again after settling.
+
 ## Core Commands (CLI)
 
 The CLI offers the full surface of mkb for terminal users and script automation. Here are the core data commands (remember to add `--vault <dir>` if you haven't set a default):

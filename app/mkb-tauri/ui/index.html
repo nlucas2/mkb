@@ -796,15 +796,17 @@
         try {
           await invoke("switch_vault", { name });
           closeVaultPopover(); toast(`Switched to ${name}.`);
-          invalidate(); active = null; await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
+          invalidate(true); active = null; await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
         } catch (e) { toast(String(e), "error"); await refreshStatus(); }
       }
       async function forgetVault(name) {
         const ok = await confirmModal(`Forget vault “${name}”? This only removes it from the list — the Markdown files on disk are kept.`, { confirmLabel: "Forget", danger: true });
         if (!ok) return;
         try {
+          const vaults = await invoke("list_vaults");
+          const removingActive = vaults.some((v) => v.name === name && v.active);
           await invoke("remove_vault", { name }); toast(`Removed ${name}.`);
-          invalidate(); active = null; await refreshStatus(); await loadBlocks(); await renderVaultPopover(); refreshVaultManagerIfOpen();
+          invalidate(removingActive); active = null; await refreshStatus(); await loadBlocks(); await renderVaultPopover(); refreshVaultManagerIfOpen();
         } catch (e) { toast(String(e), "error"); }
       }
       async function addLocalVaultFlow() {
@@ -818,7 +820,7 @@
         if (!path) { toast("A folder is required.", "error"); return; }
         try {
           await invoke("add_vault", { name, path, activate: true });
-          toast(`Switched to ${name || path.split("/").filter(Boolean).pop()}.`); invalidate(); active = null;
+          toast(`Switched to ${name || path.split("/").filter(Boolean).pop()}.`); invalidate(true); active = null;
           await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
         } catch (e) { toast(String(e), "error"); await refreshStatus(); }
       }
@@ -834,7 +836,7 @@
         if (!name || !host) { toast("Name and host are required.", "error"); return; }
         try {
           await invoke("add_remote_vault", { name, host, token, activate: true });
-          toast(`Connected to ${name}.`); invalidate(); active = null;
+          toast(`Connected to ${name}.`); invalidate(true); active = null;
           await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
         } catch (e) { toast(String(e), "error"); await refreshStatus(); }
       }
@@ -930,7 +932,7 @@
           if (!host) { toast("Host is required.", "error"); return; }
           try {
             await invoke("edit_remote_vault", { name: v.name, host, token: res.token || "" });
-            toast("Saved."); await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
+            toast("Saved."); invalidate(!!v.active); await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
           } catch (e) { toast(String(e), "error"); await refreshStatus(); }
         } else {
           const res = await formModal(`Edit “${v.name}”`, [
@@ -941,7 +943,7 @@
           if (!path) { toast("Folder is required.", "error"); return; }
           try {
             await invoke("edit_local_vault", { name: v.name, path });
-            toast("Saved."); await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
+            toast("Saved."); invalidate(!!v.active); await refreshStatus(); await loadBlocks(); refreshVaultManagerIfOpen();
           } catch (e) { toast(String(e), "error"); await refreshStatus(); }
         }
       }
@@ -1173,6 +1175,25 @@
       // ---------- sidebar: resize / collapse / responsive ----------
       // Hoisted: relayoutGraph() (called during init below) references fg, so it must exist.
       let fg = null;
+      let graphResizeObserver = null;
+      let graphRenderGeneration = 0; // invalidates async showGraph calls superseded while fetching
+      const graphLayoutMemory = new Map(); // node id -> last settled/visible {x,y}
+      function rememberGraphLayout() {
+        if (!fg) return;
+        const data = fg.graphData();
+        for (const n of (data && data.nodes) || []) {
+          if (Number.isFinite(n.x) && Number.isFinite(n.y)) {
+            graphLayoutMemory.set(n.id, { x: n.x, y: n.y });
+          }
+        }
+      }
+      function retireGraphRenderer(remember = true) {
+        graphRenderGeneration++;
+        if (remember) rememberGraphLayout();
+        if (graphResizeObserver) { graphResizeObserver.disconnect(); graphResizeObserver = null; }
+        if (fg && typeof fg.pauseAnimation === "function") fg.pauseAnimation();
+        fg = null;
+      }
       // The seam between nav and main: drag it to resize, double-click to auto-fit. The pill
       // button on it collapses/expands. Width and collapsed state persist in localStorage.
       const navEl = document.getElementById("nav");
@@ -1351,7 +1372,14 @@
         } catch { dotEl.classList.remove("ok"); statusTextEl.textContent = "no connection"; }
       }
 
-      function invalidate() { graphCache = null; indexCache = null; }
+      function invalidate(resetGraphLayout = false) {
+        graphCache = null;
+        indexCache = null;
+        if (resetGraphLayout) {
+          retireGraphRenderer(false);
+          graphLayoutMemory.clear();
+        }
+      }
 
       async function getIndex(force) {
         if (indexCache && !force) return indexCache;
@@ -1734,6 +1762,7 @@
       // The current view (read / blocks / edit) is **sticky**: navigating to another block
       // keeps the mode you're in. Mode only changes via the view tabs or creating a block.
       async function openBlock(id, _keepMode) {
+        if (currentView === "graph") retireGraphRenderer();
         closeNavDrawer(); // on mobile, bring the opened block to the front (dismiss the nav drawer)
         active = id;
         currentView = "block";
@@ -2610,6 +2639,7 @@
       // Escape or Cancel discards it, so clicking + and changing your mind never leaves a stray
       // empty block. Creation happens on save via create_block.
       function newBlock() {
+        if (currentView === "graph") retireGraphRenderer();
         active = null; currentView = "edit"; renderNav(); mode = "edit"; mainEl.scrollTop = 0;
         mainEl.innerHTML = topbarDraft() + `<div class="pad" id="body"></div>`;
         const body = mainEl.querySelector("#body");
@@ -2742,6 +2772,8 @@
 
       // ---------- graph ----------
       async function showGraph() {
+        retireGraphRenderer();
+        const renderGeneration = graphRenderGeneration;
         active = null; currentView = "graph"; renderNav();
         mainEl.innerHTML = `<div id="graphview"></div>
           <div class="glegend" id="glegend">
@@ -2783,8 +2815,28 @@
             </div>
           </div>`;
         let g;
-        try { g = graphCache || (graphCache = await invoke("graph")); }
-        catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
+        try {
+          if (graphCache) {
+            g = graphCache;
+          } else {
+            const fetched = await invoke("graph");
+            if (renderGeneration !== graphRenderGeneration || currentView !== "graph") return;
+            graphCache = fetched;
+            g = fetched;
+          }
+        } catch (e) {
+          if (renderGeneration === graphRenderGeneration && currentView === "graph") {
+            mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`;
+          }
+          return;
+        }
+        // Keep position memory bounded to IDs that still exist in this vault. Tags are graph nodes
+        // too, so retain their positions while at least one block still carries the tag.
+        const liveGraphIds = new Set(g.nodes.map((n) => n.id));
+        g.nodes.forEach((n) => (n.tags || []).forEach((t) => liveGraphIds.add("tag:" + t)));
+        for (const id of graphLayoutMemory.keys()) {
+          if (!liveGraphIds.has(id)) graphLayoutMemory.delete(id);
+        }
         let tagsOn = true;          // tags shown by default
         let showEmbed = true;       // ![[embed]] edges
         let showRef = true;         // [[reference]] edges
@@ -2825,6 +2877,12 @@
             const tagIds = new Set();
             g.nodes.forEach((n) => { if (vis.has(n.id)) (n.tags || []).forEach((t) => tagIds.add("tag:" + t)); });
             nodes = nodes.concat([...tagIds].map((tid) => ({ id: tid, label: "#" + tid.slice(4), d: (deg[tid] || 0), kind: "tag" })));
+          }
+          // Start surviving nodes where the user last left them. They are deliberately not re-pinned:
+          // changed topology can settle around the remembered layout, then large graphs auto-freeze.
+          for (const n of nodes) {
+            const p = graphLayoutMemory.get(n.id);
+            if (p) { n.x = p.x; n.y = p.y; n.vx = 0; n.vy = 0; }
           }
           neighbors = {};
           links.forEach((l) => {
@@ -2904,10 +2962,11 @@
           .onNodeHover((n) => { hover = n ? n.id : null; el.style.cursor = n ? "pointer" : "default"; })
           .onNodeClick((n) => { if (n.kind !== "tag") openBlock(n.id); })
           .width(el.clientWidth).height(el.clientHeight);
+        const graph = fg; // capture this renderer so retired callbacks cannot mutate a newer graph
         // Make movement explicit: drag the background to pan, scroll to zoom, drag a node to move
         // it. (These are force-graph defaults, but set them explicitly so the canvas owns the
         // gestures rather than the scrollable <main> around it.)
-        fg.enablePanInteraction(true).enableZoomInteraction(true).enableNodeDrag(true);
+        graph.enablePanInteraction(true).enableZoomInteraction(true).enableNodeDrag(true);
         // Layout (single regime, matching a proven d3-force setup). Charge is a strong, constant,
         // long-range repulsion that spreads and untangles the graph; it isn't "always pushing" —
         // the simulation's alpha decays to zero and everything freezes, and a drag/Reheat just
@@ -2921,8 +2980,13 @@
         let gravityK = 0.05;   // Gravity slider: pull toward origin (tighter when higher)
         let chargeK = 1;       // Charge slider: repulsion multiplier
         let frozen = false;    // Freeze toggle: pin every node so forces stop moving them
-        fg.d3Force("charge").strength(() => BASE_CHARGE * spread * chargeK);
-        fg.d3Force("link").distance(() => BASE_LINK * spread);
+        // Nodes cost more than links during layout (collision is pairwise), so weight each visible
+        // node twice. This auto-freezes around 100 sparse nodes, 75 nodes + 50 edges, or
+        // 50 nodes + 100 edges. The score is intentionally simple and easy to tune.
+        const AUTO_FREEZE_COMPLEXITY = 200;
+        const shouldAutoFreeze = () => nodes.length * 2 + links.length >= AUTO_FREEZE_COMPLEXITY;
+        graph.d3Force("charge").strength(() => BASE_CHARGE * spread * chargeK);
+        graph.d3Force("link").distance(() => BASE_LINK * spread);
         // Custom forces — the bundled d3 force factories are minified-away, so we supply our own.
         // Gravity: pull every node toward the origin (≈ forceX(0)+forceY(0)) so components converge.
         // Reads `gravityK` live so the Gravity slider takes effect without rebuilding the force.
@@ -2955,50 +3019,69 @@
           f.initialize = (n) => { ns = n; };
           return f;
         };
-        fg.d3Force("gravity", gravity());
-        fg.d3Force("collision", collision(4));
+        graph.d3Force("gravity", gravity());
+        graph.d3Force("collision", collision(4));
+        // Freeze pins every node at its current position but preserves pan, zoom, click and
+        // individual node dragging. Resume releases the pins and reheats the layout.
+        const stopBtn = document.getElementById("gstop");
+        const setFrozen = (on, automatic = false) => {
+          frozen = on;
+          for (const n of nodes) { if (on) { n.fx = n.x; n.fy = n.y; } else { n.fx = null; n.fy = null; } }
+          stopBtn.textContent = on ? "▶ Resume" : "⏸ Freeze";
+          stopBtn.title = on && automatic
+            ? "Automatically frozen after this large graph settled; drag nodes or Resume the layout"
+            : (on ? "Resume the force layout" : "Freeze all forces so nodes stop moving");
+          stopBtn.classList.toggle("on", on);
+          if (!on) { refitNext = false; graph.d3ReheatSimulation(); }
+        };
         // Re-frame once per requested (re)layout, after it settles.
         let refitNext = true;
-        fg.onEngineStop(() => { if (refitNext) { refitNext = false; fg.zoomToFit(400, 40); } });
+        graph.autoPauseRedraw(true).onEngineStop(() => {
+          if (fg !== graph) return;
+          rememberGraphLayout();
+          if (refitNext) { refitNext = false; graph.zoomToFit(400, 40); }
+          if (!frozen && shouldAutoFreeze()) setFrozen(true, true);
+        });
         // Re-size on the next frame (not synchronously inside the observer) so resizing the
         // canvas can't re-enter this same observer in the current frame — which is what emits
         // the benign "ResizeObserver loop completed with undelivered notifications" warning.
         let roPending = false;
-        const ro = new ResizeObserver(() => {
+        graphResizeObserver = new ResizeObserver(() => {
           if (roPending) return;
           roPending = true;
           requestAnimationFrame(() => {
             roPending = false;
-            if (fg) fg.width(el.clientWidth).height(el.clientHeight);
+            if (fg === graph) graph.width(el.clientWidth).height(el.clientHeight);
           });
         });
-        ro.observe(el);
+        graphResizeObserver.observe(el);
         // Controls. Fit (or double-click) re-frames the graph. Reheat re-runs the layout. Spread
         // scales repulsion + link length so you can pull a dense graph tighter or spread it out.
-        const fit = () => fg.zoomToFit(400, 40);
-        const relayout = () => { if (frozen) return; refitNext = true; fg.d3ReheatSimulation(); };
+        const fit = () => graph.zoomToFit(400, 40);
+        const relayout = () => { if (frozen) return; refitNext = true; graph.d3ReheatSimulation(); };
         document.getElementById("graphfit").onclick = fit;
         el.addEventListener("dblclick", fit);
         document.getElementById("greheat").onclick = relayout;
         document.getElementById("gspread").oninput = (e) => { spread = parseFloat(e.target.value) || 1; relayout(); };
         document.getElementById("ggravity").oninput = (e) => { gravityK = parseFloat(e.target.value) || 0; relayout(); };
         document.getElementById("gcharge").oninput = (e) => { chargeK = parseFloat(e.target.value) || 1; relayout(); };
-        // Freeze: pin every node at its current position so no force can move it (the most robust
-        // "stop all forces"). Resume releases the pins and reheats. While frozen, dropping a dragged
-        // node re-pins it where you left it (force-graph clears fx/fy on drag-end by default).
-        const stopBtn = document.getElementById("gstop");
-        const setFrozen = (on) => {
-          frozen = on;
-          for (const n of nodes) { if (on) { n.fx = n.x; n.fy = n.y; } else { n.fx = null; n.fy = null; } }
-          stopBtn.textContent = on ? "▶ Resume" : "⏸ Freeze";
-          stopBtn.classList.toggle("on", on);
-          if (!on) { refitNext = false; fg.d3ReheatSimulation(); }
-        };
         stopBtn.onclick = () => setFrozen(!frozen);
-        fg.onNodeDragEnd((n) => { if (frozen) { n.fx = n.x; n.fy = n.y; } });
+        graph.onNodeDragEnd((n) => {
+          if (frozen) { n.fx = n.x; n.fy = n.y; }
+          if (Number.isFinite(n.x) && Number.isFinite(n.y)) {
+            graphLayoutMemory.set(n.id, { x: n.x, y: n.y });
+          }
+        });
         // Rebuild the visible graph after a visibility toggle (embeds/refs/tags). buildData() makes
         // fresh node objects, so lift any freeze first and let the new topology lay out.
-        const rebuild = () => { if (frozen) setFrozen(false); buildData(); fg.graphData({ nodes, links }); refitNext = true; fg.d3ReheatSimulation(); };
+        const rebuild = () => {
+          rememberGraphLayout();
+          if (frozen) setFrozen(false);
+          buildData();
+          graph.graphData({ nodes, links });
+          refitNext = true;
+          graph.d3ReheatSimulation();
+        };
         document.getElementById("vRoot").onchange = (e) => { showRoot = e.target.checked; rebuild(); };
         document.getElementById("vLinked").onchange = (e) => { showLinked = e.target.checked; rebuild(); };
         document.getElementById("vEmbed").onchange = (e) => { showEmbed = e.target.checked; rebuild(); };
@@ -3006,7 +3089,7 @@
         document.getElementById("vTags").onchange = (e) => { tagsOn = e.target.checked; rebuild(); };
         // Labels mode just changes painted text (no layout change). Re-setting the node painter
         // accessor marks the canvas dirty so force-graph repaints on the next frame, without a reheat.
-        document.getElementById("vLabels").onchange = (e) => { labelMode = e.target.value; fg.nodeCanvasObject(fg.nodeCanvasObject()); };
+        document.getElementById("vLabels").onchange = (e) => { labelMode = e.target.value; graph.nodeCanvasObject(graph.nodeCanvasObject()); };
         // Collapsible legend cluster. "Legend ▾" collapses the keys list AND hides the controls
         // column. The legend's collapsed state persists.
         const legendBody = document.getElementById("glegendBody");
@@ -3025,6 +3108,7 @@
 
       // ---------- settings ----------
       async function showSettings() {
+        if (currentView === "graph") retireGraphRenderer();
         active = null; currentView = "settings"; renderNav();
         mainEl.innerHTML = `<div class="topbar"><h1>Settings</h1></div>
           <div class="pad form">
@@ -3268,6 +3352,7 @@
       let timer = null;
       async function runSearch(q) {
         if (!q) { if (active) openBlock(active); return; }
+        if (currentView === "graph") retireGraphRenderer();
         active = null; currentView = "search"; renderNav();
         try { mainEl.innerHTML = `<div class="pad" id="sr">${await invoke("search", { query: q })}</div>`; }
         catch (e) { mainEl.innerHTML = `<div class="pad"><p class="muted">${esc(e)}</p></div>`; return; }
@@ -3371,10 +3456,10 @@
         await loadBlocks(active || undefined, { navOnly: true });
         if (currentView === "block" && active) {
           await openBlock(active, true); // re-render the open block so external edits are reflected
+        } else if (currentView === "graph") {
+          await showGraph(); // refetch topology, preserving positions for surviving node IDs
         }
-        // graph / settings / search / empty: leave the main pane as-is. Caches were invalidated
-        // above, so re-entering (or Reheat on the graph) picks up fresh data without yanking the
-        // user away or resetting their graph layout.
+        // settings / search / empty: leave the main pane as-is; caches refresh on re-entry.
       });
 
       // CLI-tools offer (macOS): startup banner. Uses the CHEAP `cli_tools_status` — a pure

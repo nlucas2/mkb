@@ -1,7 +1,7 @@
 ---
 title: "Usage: browsing & organizing"
 tags: [doc/usage]
-updated: 2026-07-07T05:56:25Z
+updated: 2026-07-16T19:22:21Z
 ---
 
 ## Browsing & organizing
@@ -42,3 +42,9 @@ In the app, any parent node with children in a `/`-nested group tree (the **Tags
 property grouping — at any depth) carries a small **≡** button — click it to *flatten* that subtree
 into one de-duped list of every block under it, without expanding each child in turn; click again to
 return to the nested view.
+
+In **Graph** view, the force layout settles and then stops redrawing automatically. Larger visible
+graphs also enter **Freeze** after settling. Freeze pins the layout without turning it into a static
+image: you can still pan, zoom, open blocks, and drag individual nodes to new pinned positions.
+**Resume** releases every node and reheats the layout; if the visible graph is still large enough,
+it auto-freezes again after settling.
