@@ -982,4 +982,21 @@ mod tests {
         assert!(super::embedded_ui("platform-shim.js").is_some_and(|b| !b.is_empty()));
         assert!(super::embedded_ui("does-not-exist.js").is_none());
     }
+
+    #[test]
+    fn embedded_graph_experiments_have_expected_defaults() {
+        let html = std::str::from_utf8(super::embedded_ui("index.html").unwrap()).unwrap();
+        assert!(html.contains("id=\"vHoverEffects\""));
+        assert!(html.contains("id=\"vUncollideLabels\""));
+        assert!(html.contains("let graphHoverEffects = true;"));
+        assert!(html.contains("let graphUncollideLabels = false;"));
+        assert!(html.contains(".nodePointerAreaPaint("));
+        assert!(html.contains("ctx.strokeText("));
+        assert!(html.contains("graph.d3Force(\"label-spacing\", labelSpacing());"));
+        assert!(html.contains("const maxLabelPad = 22 / scale;"));
+        assert!(html.contains("const maxPush = 4 / scale * alpha;"));
+        assert!(html.contains("const dvx = new Float64Array(ns.length)"));
+        assert!(!html.contains("placeGraphLabels"));
+        assert!(!html.contains("graph.d3Force(\"aspect\""));
+    }
 }

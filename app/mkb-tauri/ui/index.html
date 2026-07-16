@@ -415,6 +415,7 @@
       .glegend code { font-size:.9em; }
       .glegend .lgmuted { color:var(--muted); }
       .glegend .lgfoot { font-size:.92em; margin-top:.2rem; padding:0 .15rem; }
+      .glegend .lgexperimental { color:var(--muted); font-size:.86em; margin-top:.25rem; padding:.15rem .15rem 0; text-transform:uppercase; letter-spacing:.04em; }
       .glegend input[type=checkbox] { accent-color:var(--accent); }
       .glegend-panel { border-left:1px solid var(--border); padding-left:.9rem; min-width:15rem; }
       .glegend .gslider { display:flex; align-items:center; justify-content:space-between; gap:.6rem; color:var(--muted); min-height:1.5rem; }
@@ -1178,6 +1179,8 @@
       let graphResizeObserver = null;
       let graphRenderGeneration = 0; // invalidates async showGraph calls superseded while fetching
       const graphLayoutMemory = new Map(); // node id -> last settled/visible {x,y}
+      let graphHoverEffects = true;
+      let graphUncollideLabels = false;
       function rememberGraphLayout() {
         if (!fg) return;
         const data = fg.graphData();
@@ -2786,6 +2789,9 @@
                   <label class="lg lgtoggle"><input type="checkbox" id="vEmbed" checked/><span class="keyL"><span class="edgekey solid" style="border-color:var(--mauve)"></span></span><span>Embeds <code>![[ ]]</code></span></label>
                   <label class="lg lgtoggle"><input type="checkbox" id="vRef" checked/><span class="keyL"><span class="edgekey dashed" style="border-color:var(--accent)"></span></span><span>References <code>[[ ]]</code></span></label>
                   <label class="lg lgtoggle"><input type="checkbox" id="vTags" checked/><span class="keyL"><span class="sw tag" style="background:var(--tag)"></span></span><span>Tags</span></label>
+                  <span class="lgexperimental">Experimental</span>
+                  <label class="lg lgtoggle" title="Emphasize a hovered node, its immediate neighbors and their connecting edges"><input type="checkbox" id="vHoverEffects" ${graphHoverEffects ? "checked" : ""}/><span>Hover effects</span></label>
+                  <label class="lg lgtoggle" title="Include visible label widths when separating nodes during layout"><input type="checkbox" id="vUncollideLabels" ${graphUncollideLabels ? "checked" : ""}/><span>Uncollide labels</span></label>
                   <div class="lgfoot lgmuted">Size = connections · click to open · drag to move · scroll to zoom</div>
                 </div>
               </div>
@@ -2911,6 +2917,36 @@
           const first = String(s).trim().split(/\s+/)[0] || s;
           return first.length < String(s).length ? first + "…" : first;
         };
+        const endpointId = (v) => v && typeof v === "object" ? v.id : v;
+        const touchesHover = (l) => {
+          if (!graphHoverEffects || !hover) return false;
+          return endpointId(l.source) === hover || endpointId(l.target) === hover;
+        };
+        const baseLinkWidth = (l) => {
+          const k = String(l.kind || "").toLowerCase();
+          return k === "transcludes" ? 1.6 : (k === "tag" ? 1.0 : 0.7);
+        };
+        const labelMeasure = document.createElement("canvas").getContext("2d");
+        const labelMeasureCache = new Map();
+        const labelState = (n, scale) => {
+          const isHovered = graphHoverEffects && hover === n.id;
+          const isNeighbor = graphHoverEffects && hover && neighbors[hover] && neighbors[hover].has(n.id);
+          const hot = isHovered || isNeighbor;
+          const show = hot || (labelMode !== "off" && (labelMode !== "auto" || scale > 1.1));
+          const weight = isHovered ? 600 : (isNeighbor ? 500 : 400);
+          const size = isHovered ? 12 : (isNeighbor ? 11.25 : 11);
+          return { isHovered, isNeighbor, hot, show, weight, size, text: labelOf(n) };
+        };
+        const paintedNodeR = (n, state) =>
+          nodeR(n) * (state.isHovered ? 1.25 : (state.isNeighbor ? 1.1 : 1));
+        const measuredLabelWidth = (state) => {
+          const key = `${state.weight}|${state.size}|${state.text}`;
+          if (!labelMeasureCache.has(key)) {
+            labelMeasure.font = `${state.weight} ${state.size}px -apple-system, sans-serif`;
+            labelMeasureCache.set(key, labelMeasure.measureText(state.text).width);
+          }
+          return labelMeasureCache.get(key);
+        };
         fg = ForceGraph()(el)
           .backgroundColor(lightUI ? tc.field : tc.panel)
           .graphData({ nodes, links })
@@ -2921,14 +2957,12 @@
           // Core serializes the kind as PascalCase ("References"/"Transcludes"); compare lowercased.
           .linkColor((l) => {
             const k = String(l.kind || "").toLowerCase();
-            if (k === "tag") return rgba(tagLine, aTag);
-            if (k === "references") return rgba(tc.accent, aRef); // reference (link)
-            return rgba(tc.mauve, aEmbed);                        // embed (transclusion)
+            const colour = k === "tag" ? tagLine : (k === "references" ? tc.accent : tc.mauve);
+            const alpha = k === "tag" ? aTag : (k === "references" ? aRef : aEmbed);
+            if (graphHoverEffects && hover) return rgba(colour, touchesHover(l) ? Math.min(0.85, alpha + 0.15) : 0.16);
+            return rgba(colour, alpha);
           })
-          .linkWidth((l) => {
-            const k = String(l.kind || "").toLowerCase();
-            return k === "transcludes" ? 1.6 : (k === "tag" ? 1.0 : 0.7);
-          })
+          .linkWidth((l) => baseLinkWidth(l) * (touchesHover(l) ? 1.35 : 1))
           .linkLineDash((l) => {
             const k = String(l.kind || "").toLowerCase();
             return k === "references" ? [3, 2] : (k === "tag" ? [1, 3] : null);
@@ -2936,30 +2970,56 @@
           .linkDirectionalArrowLength((l) => l.kind === "tag" ? 0 : 3)
           .nodeCanvasObject((n, ctx, scale) => {
             const r = nodeR(n);
-            const dim = hover && hover !== n.id && !(neighbors[hover] && neighbors[hover].has(n.id));
-            ctx.globalAlpha = dim ? 0.18 : 1;
+            const { isHovered, isNeighbor, hot, show:showLabel, weight, size, text } = labelState(n, scale);
+            const dim = graphHoverEffects && hover && !hot;
+            const paintedR = paintedNodeR(n, { isHovered, isNeighbor });
+            ctx.globalAlpha = dim ? 0.3 : 1;
             if (n.kind === "tag") {
               // Diamond + warm colour so tags never read as blocks.
               ctx.beginPath();
-              ctx.moveTo(n.x, n.y - r); ctx.lineTo(n.x + r, n.y); ctx.lineTo(n.x, n.y + r); ctx.lineTo(n.x - r, n.y); ctx.closePath();
+              ctx.moveTo(n.x, n.y - paintedR); ctx.lineTo(n.x + paintedR, n.y); ctx.lineTo(n.x, n.y + paintedR); ctx.lineTo(n.x - paintedR, n.y); ctx.closePath();
               ctx.fillStyle = tc.tag; ctx.fill();
             } else {
-              ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
+              ctx.beginPath(); ctx.arc(n.x, n.y, paintedR, 0, 2 * Math.PI);
               ctx.fillStyle = n.root ? tc.accent : tc.mauve; ctx.fill();
             }
-            const hot = hover && (hover === n.id || (neighbors[hover] && neighbors[hover].has(n.id)));
-            const showLabel = labelMode === "off" ? false
-              : labelMode === "auto" ? (scale > 1.1 || hot)
-              : true;
+            if (isHovered) {
+              ctx.strokeStyle = tc.fg;
+              ctx.lineWidth = 2 / scale;
+              ctx.stroke();
+            }
             if (showLabel) {
-              ctx.globalAlpha = dim ? 0.25 : 1;
-              ctx.font = `${11/scale}px -apple-system, sans-serif`;
-              ctx.fillStyle = n.kind === "tag" ? tc.tag : tc.fg; ctx.textAlign = "left"; ctx.textBaseline = "middle";
-              ctx.fillText(labelOf(n), n.x + r + 1.5, n.y);
+              ctx.globalAlpha = dim ? 0.35 : 1;
+              ctx.font = `${weight} ${size/scale}px -apple-system, sans-serif`;
+              const lx = n.x + paintedR + 1.5;
+              const ly = n.y;
+              ctx.textAlign = "left";
+              ctx.textBaseline = "middle";
+              ctx.lineWidth = 3 / scale;
+              ctx.lineJoin = "round";
+              ctx.miterLimit = 2;
+              ctx.strokeStyle = rgba(lightUI ? tc.field : tc.panel, 0.85);
+              ctx.strokeText(text, lx, ly);
+              ctx.fillStyle = n.kind === "tag" ? tc.tag : tc.fg;
+              ctx.fillText(text, lx, ly);
             }
             ctx.globalAlpha = 1;
           })
-          .onNodeHover((n) => { hover = n ? n.id : null; el.style.cursor = n ? "pointer" : "default"; })
+          .nodePointerAreaPaint((n, color, ctx) => {
+            const r = Math.max(nodeR(n) + 2, nodeR(n) * 1.3);
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
+            ctx.fill();
+          })
+          .onNodeHover((n) => {
+            const next = graphHoverEffects && n ? n.id : null;
+            if (next !== hover) {
+              hover = next;
+              if (graphHoverEffects) redrawGraph();
+            }
+            el.style.cursor = n ? "pointer" : "default";
+          })
           .onNodeClick((n) => { if (n.kind !== "tag") openBlock(n.id); })
           .width(el.clientWidth).height(el.clientHeight);
         const graph = fg; // capture this renderer so retired callbacks cannot mutate a newer graph
@@ -2996,6 +3056,55 @@
           f.initialize = (n) => { ns = n; };
           return f;
         };
+        // Experimental label spacing: labels stay welded to their nodes. Their measured widths add
+        // only a capped, isotropic amount to a weak collision radius, so local overlaps gently nudge
+        // the whole node+label unit without giving long labels enough leverage to reshape the graph.
+        const labelSpacing = () => {
+          let ns = [];
+          const f = (alpha) => {
+            if (!graphUncollideLabels || alpha <= 0) return;
+            const scale = Math.max(0.1, graph.zoom());
+            const maxLabelPad = 22 / scale; // diminishing return for very long labels
+            const gap = 4 / scale;
+            const maxPush = 4 / scale * alpha; // hard per-node, per-tick displacement cap
+            const states = ns.map((n) => labelState(n, scale));
+            const radii = ns.map((n, i) => {
+              const state = states[i];
+              if (!state.show) return nodeR(n);
+              const width = measuredLabelWidth(state) / scale;
+              return nodeR(n) + gap + Math.min(maxLabelPad, width * 0.28);
+            });
+            const dvx = new Float64Array(ns.length), dvy = new Float64Array(ns.length);
+            for (let i = 0; i < ns.length; i++) {
+              const a = ns[i];
+              for (let j = i + 1; j < ns.length; j++) {
+                if (!states[i].show && !states[j].show) continue;
+                const b = ns[j];
+                let dx = (b.x + b.vx + dvx[j]) - (a.x + a.vx + dvx[i]);
+                let dy = (b.y + b.vy + dvy[j]) - (a.y + a.vy + dvy[i]);
+                let d2 = dx*dx + dy*dy;
+                const target = radii[i] + radii[j];
+                if (d2 >= target*target) continue;
+                if (d2 < 1e-6) {
+                  const angle = ((i * 73856093 ^ j * 19349663) >>> 0) / 0xffffffff * Math.PI * 2;
+                  dx = Math.cos(angle); dy = Math.sin(angle); d2 = 1;
+                }
+                const d = Math.sqrt(d2);
+                const push = (target-d) * 0.14 * alpha;
+                const px = dx/d * push, py = dy/d * push;
+                dvx[i] -= px; dvy[i] -= py; dvx[j] += px; dvy[j] += py;
+              }
+            }
+            for (let i = 0; i < ns.length; i++) {
+              const magnitude = Math.hypot(dvx[i], dvy[i]);
+              const clamp = magnitude > maxPush ? maxPush / magnitude : 1;
+              ns[i].vx += dvx[i] * clamp;
+              ns[i].vy += dvy[i] * clamp;
+            }
+          };
+          f.initialize = (n) => { ns = n; };
+          return f;
+        };
         // Collision: separate only the pairs whose circles actually overlap (radius + padding).
         const collision = (pad) => {
           let ns = [];
@@ -3012,14 +3121,15 @@
                   const push = (r - d) / d * 0.5;
                   dx *= push; dy *= push;
                   b.vx += dx; b.vy += dy; a.vx -= dx; a.vy -= dy;
+                  }
                 }
               }
-            }
           };
           f.initialize = (n) => { ns = n; };
           return f;
         };
         graph.d3Force("gravity", gravity());
+        graph.d3Force("label-spacing", labelSpacing());
         graph.d3Force("collision", collision(4));
         // Freeze pins every node at its current position but preserves pan, zoom, click and
         // individual node dragging. Resume releases the pins and reheats the layout.
@@ -3059,12 +3169,27 @@
         // scales repulsion + link length so you can pull a dense graph tighter or spread it out.
         const fit = () => graph.zoomToFit(400, 40);
         const relayout = () => { if (frozen) return; refitNext = true; graph.d3ReheatSimulation(); };
+        const redrawGraph = () => {
+          graph.nodeCanvasObject(graph.nodeCanvasObject());
+          graph.linkColor(graph.linkColor());
+          graph.linkWidth(graph.linkWidth());
+        };
         document.getElementById("graphfit").onclick = fit;
         el.addEventListener("dblclick", fit);
         document.getElementById("greheat").onclick = relayout;
         document.getElementById("gspread").oninput = (e) => { spread = parseFloat(e.target.value) || 1; relayout(); };
         document.getElementById("ggravity").oninput = (e) => { gravityK = parseFloat(e.target.value) || 0; relayout(); };
         document.getElementById("gcharge").oninput = (e) => { chargeK = parseFloat(e.target.value) || 1; relayout(); };
+        document.getElementById("vHoverEffects").onchange = (e) => {
+          graphHoverEffects = e.target.checked;
+          if (!graphHoverEffects) hover = null;
+          redrawGraph();
+        };
+        document.getElementById("vUncollideLabels").onchange = (e) => {
+          graphUncollideLabels = e.target.checked;
+          if (frozen) { setFrozen(false); refitNext = true; }
+          else relayout();
+        };
         stopBtn.onclick = () => setFrozen(!frozen);
         graph.onNodeDragEnd((n) => {
           if (frozen) { n.fx = n.x; n.fy = n.y; }
@@ -3089,7 +3214,14 @@
         document.getElementById("vTags").onchange = (e) => { tagsOn = e.target.checked; rebuild(); };
         // Labels mode just changes painted text (no layout change). Re-setting the node painter
         // accessor marks the canvas dirty so force-graph repaints on the next frame, without a reheat.
-        document.getElementById("vLabels").onchange = (e) => { labelMode = e.target.value; graph.nodeCanvasObject(graph.nodeCanvasObject()); };
+        document.getElementById("vLabels").onchange = (e) => {
+          labelMode = e.target.value;
+          redrawGraph();
+          if (graphUncollideLabels) {
+            if (frozen) { setFrozen(false); refitNext = true; }
+            else relayout();
+          }
+        };
         // Collapsible legend cluster. "Legend ▾" collapses the keys list AND hides the controls
         // column. The legend's collapsed state persists.
         const legendBody = document.getElementById("glegendBody");

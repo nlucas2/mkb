@@ -112,6 +112,12 @@ image: you can still pan, zoom, open blocks, and drag individual nodes to new pi
 **Resume** releases every node and reheats the layout; if the visible graph is still large enough,
 it auto-freezes again after settling.
 
+The legend also carries two **Experimental** controls. **Hover effects** (on by default) emphasizes
+the hovered node, its immediate neighbors and their connecting edges, and reveals those labels.
+**Uncollide labels** (off by default) keeps each label attached to its node and adds a weak, capped
+spacing nudge for visible labels. It loosens local overlaps while links, charge and gravity remain
+dominant; toggling it reheats the graph so the spacing can settle.
+
 ## Core Commands (CLI)
 
 The CLI offers the full surface of mkb for terminal users and script automation. Here are the core data commands (remember to add `--vault <dir>` if you haven't set a default):
