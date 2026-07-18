@@ -403,6 +403,7 @@
       .glegend-body { display:flex; gap:.9rem; align-items:stretch; }
       .glegend-col { display:flex; flex-direction:column; }
       .glegend-col-body { display:flex; flex-direction:column; gap:.3rem; margin-top:.45rem; }
+      .glegend-col-body[hidden] { display:none; }
       .glegend-keys { min-width:16rem; }
       .glegend-keys .lg { display:flex; align-items:center; gap:.45rem; color:var(--fg); padding:.1rem .15rem; }
       .glegend-keys .lgtoggle { cursor:pointer; border-radius:5px; }
@@ -415,7 +416,12 @@
       .glegend code { font-size:.9em; }
       .glegend .lgmuted { color:var(--muted); }
       .glegend .lgfoot { font-size:.92em; margin-top:.2rem; padding:0 .15rem; }
-      .glegend .lgexperimental { color:var(--muted); font-size:.86em; margin-top:.25rem; padding:.15rem .15rem 0; text-transform:uppercase; letter-spacing:.04em; }
+      .gsection-toggle { background:none; border:0; color:var(--muted); cursor:pointer; font:inherit; padding:.15rem; margin-top:.25rem; display:flex; align-items:center; gap:.35rem; text-align:left; }
+      .gsection-toggle[hidden] { display:none; }
+      .gsection-toggle:hover { color:var(--fg); }
+      .gsection-toggle .chev { width:.75rem; text-align:center; }
+      .gsection-body { display:flex; flex-direction:column; gap:.3rem; }
+      .gsection-body[hidden] { display:none; }
       .glegend input[type=checkbox] { accent-color:var(--accent); }
       .glegend-panel { border-left:1px solid var(--border); padding-left:.9rem; min-width:15rem; }
       .glegend .gslider { display:flex; align-items:center; justify-content:space-between; gap:.6rem; color:var(--muted); min-height:1.5rem; }
@@ -2789,15 +2795,18 @@
                   <label class="lg lgtoggle"><input type="checkbox" id="vEmbed" checked/><span class="keyL"><span class="edgekey solid" style="border-color:var(--mauve)"></span></span><span>Embeds <code>![[ ]]</code></span></label>
                   <label class="lg lgtoggle"><input type="checkbox" id="vRef" checked/><span class="keyL"><span class="edgekey dashed" style="border-color:var(--accent)"></span></span><span>References <code>[[ ]]</code></span></label>
                   <label class="lg lgtoggle"><input type="checkbox" id="vTags" checked/><span class="keyL"><span class="sw tag" style="background:var(--tag)"></span></span><span>Tags</span></label>
-                  <span class="lgexperimental">Experimental</span>
-                  <label class="lg lgtoggle" title="Emphasize a hovered node, its immediate neighbors and their connecting edges"><input type="checkbox" id="vHoverEffects" ${graphHoverEffects ? "checked" : ""}/><span>Hover effects</span></label>
-                  <label class="lg lgtoggle" title="Include visible label widths when separating nodes during layout"><input type="checkbox" id="vUncollideLabels" ${graphUncollideLabels ? "checked" : ""}/><span>Uncollide labels</span></label>
+                  <button class="gsection-toggle" id="gExperimentalToggle" type="button"><span class="chev" id="gExperimentalChevron">▸</span>Experimental</button>
+                  <div class="gsection-body" id="gExperimentalBody" hidden>
+                    <label class="lg lgtoggle" title="Emphasize a hovered node, its immediate neighbors and their connecting edges"><input type="checkbox" id="vHoverEffects" ${graphHoverEffects ? "checked" : ""}/><span>Hover effects</span></label>
+                    <label class="lg lgtoggle" title="Include visible label widths when separating nodes during layout"><input type="checkbox" id="vUncollideLabels" ${graphUncollideLabels ? "checked" : ""}/><span>Uncollide labels</span></label>
+                  </div>
                   <div class="lgfoot lgmuted">Size = connections · click to open · drag to move · scroll to zoom</div>
                 </div>
               </div>
               <div class="glegend-col glegend-panel" id="glegendPanel">
-                <span class="glegend-head">Layout</span>
-                <div class="glegend-col-body" id="glegendPanelBody">
+                <span class="glegend-head" id="gLayoutHeading">Layout</span>
+                <button class="gsection-toggle" id="gLayoutToggle" type="button" style="margin-top:0"><span class="chev" id="gLayoutChevron">▾</span>Layout</button>
+                <div class="glegend-col-body" id="gLayoutBody">
                   <label class="gslider"><span>Labels</span>
                     <select id="vLabels">
                       <option value="auto" selected>Auto (on zoom)</option>
@@ -2815,6 +2824,23 @@
                     <button id="greheat" title="Re-run the layout">↻ Reheat</button>
                     <button id="gstop" title="Freeze all forces so nodes stop moving (toggle)">⏸ Freeze</button>
                     <button id="graphfit" title="Fit the whole graph on screen (or double-click the background)">⤢ Fit</button>
+                  </div>
+                  <button class="gsection-toggle" id="gExportToggle" type="button"><span class="chev" id="gExportChevron">▸</span>Export</button>
+                  <div class="gsection-body" id="gExportBody" hidden>
+                    <label class="gslider"><span>Scope</span>
+                      <select id="gExportScope">
+                        <option value="viewport" selected>Current view</option>
+                        <option value="whole">Whole graph</option>
+                      </select></label>
+                    <label class="gslider"><span>Background</span>
+                      <select id="gExportBackground">
+                        <option value="themed" selected>Themed</option>
+                        <option value="transparent">Transparent</option>
+                      </select></label>
+                    <div class="gpanel-actions">
+                      <button id="gExportPng" title="Export the current graph state as a PNG image">⤓ PNG</button>
+                      <button id="gExportSvg" title="Export the current graph state as a standalone SVG">⤓ SVG</button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -3174,12 +3200,170 @@
           graph.linkColor(graph.linkColor());
           graph.linkWidth(graph.linkWidth());
         };
+        const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+        const exportFilename = (extension) => {
+          const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+          return `mkb-graph-${stamp}.${extension}`;
+        };
+        const browserDownload = (blob, filename) => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url; a.download = filename; a.hidden = true;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 0);
+        };
+        const saveGraphBlob = async (blob, extension) => {
+          const filename = exportFilename(extension);
+          if (window.__MKB_WEB__) {
+            browserDownload(blob, filename);
+            return true;
+          }
+          const data = Array.from(new Uint8Array(await blob.arrayBuffer()));
+          return await invoke("save_graph_export", {
+            suggestedName: filename, extension, data,
+          });
+        };
+        const withExportScope = async (scope, action) => {
+          if (scope !== "whole") return await action();
+          const center = graph.centerAt();
+          const zoom = graph.zoom();
+          graph.zoomToFit(0, 40);
+          await nextFrame(); await nextFrame();
+          try {
+            return await action();
+          } finally {
+            if (center && Number.isFinite(center.x) && Number.isFinite(center.y)) {
+              graph.centerAt(center.x, center.y, 0);
+            }
+            if (Number.isFinite(zoom)) graph.zoom(zoom, 0);
+            await nextFrame();
+          }
+        };
+        const graphCanvasBlob = (themed) => new Promise((resolve, reject) => {
+          const source = el.querySelector("canvas");
+          if (!source) { reject(new Error("Graph canvas is unavailable.")); return; }
+          const output = document.createElement("canvas");
+          output.width = source.width; output.height = source.height;
+          const ctx = output.getContext("2d");
+          if (themed) {
+            ctx.fillStyle = getComputedStyle(source).backgroundColor || (lightUI ? tc.field : tc.panel);
+            ctx.fillRect(0, 0, output.width, output.height);
+          }
+          ctx.drawImage(source, 0, 0);
+          output.toBlob((blob) => blob ? resolve(blob) : reject(new Error("PNG encoding failed.")), "image/png");
+        });
+        const baseLabelState = (n, scale) => {
+          const text = labelOf(n);
+          return {
+            text,
+            show: labelMode !== "off" && (labelMode !== "auto" || scale > 1.1),
+            weight: 400,
+            size: 11,
+          };
+        };
+        const graphBounds = (scale, includeLabels) => {
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const n of nodes) {
+            const r = nodeR(n);
+            minX = Math.min(minX, n.x-r); maxX = Math.max(maxX, n.x+r);
+            minY = Math.min(minY, n.y-r); maxY = Math.max(maxY, n.y+r);
+            const state = baseLabelState(n, scale);
+            if (includeLabels && state.show) {
+              const width = measuredLabelWidth(state) / scale;
+              const height = state.size * 1.25 / scale;
+              minX = Math.min(minX, n.x+r);
+              maxX = Math.max(maxX, n.x+r+1.5+width);
+              minY = Math.min(minY, n.y-height/2);
+              maxY = Math.max(maxY, n.y+height/2);
+            }
+          }
+          if (!Number.isFinite(minX)) return { x:0, y:0, width:1, height:1 };
+          return { x:minX, y:minY, width:Math.max(1,maxX-minX), height:Math.max(1,maxY-minY) };
+        };
+        const graphScene = (scope, themed) => {
+          const width = Math.max(1, el.clientWidth), height = Math.max(1, el.clientHeight);
+          let scale, box;
+          if (scope === "whole") {
+            let bounds = graphBounds(1, false);
+            scale = Math.min(width/(bounds.width+80), height/(bounds.height+80));
+            bounds = graphBounds(Math.max(0.1, scale), true);
+            scale = Math.min(width/(bounds.width+80/Math.max(0.1,scale)), height/(bounds.height+80/Math.max(0.1,scale)));
+            const pad = 40/Math.max(0.1,scale);
+            box = { x:bounds.x-pad, y:bounds.y-pad, width:bounds.width+pad*2, height:bounds.height+pad*2 };
+          } else {
+            const topLeft = graph.screen2GraphCoords(0, 0);
+            const bottomRight = graph.screen2GraphCoords(width, height);
+            box = {
+              x: Math.min(topLeft.x, bottomRight.x),
+              y: Math.min(topLeft.y, bottomRight.y),
+              width: Math.abs(bottomRight.x-topLeft.x),
+              height: Math.abs(bottomRight.y-topLeft.y),
+            };
+            scale = graph.zoom();
+          }
+          scale = Math.max(0.1, scale || 1);
+          return {
+            width, height, view_box:box,
+            background: themed ? (lightUI ? tc.field : tc.panel) : null,
+            nodes:nodes.map((n) => {
+              const r = nodeR(n), state = baseLabelState(n, scale);
+              return {
+                id:n.id, label:state.text, x:n.x, y:n.y, radius:r,
+                shape:n.kind === "tag" ? "diamond" : "circle",
+                fill:n.kind === "tag" ? tc.tag : (n.root ? tc.accent : tc.mauve),
+                opacity:1, show_label:state.show,
+                label_x:n.x+r+1.5, label_y:n.y,
+                label_fill:n.kind === "tag" ? tc.tag : tc.fg,
+                label_stroke:lightUI ? tc.field : tc.panel,
+                label_size:state.size/scale, label_weight:state.weight, label_anchor:"start",
+              };
+            }),
+            edges:links.map((l) => {
+              const kind = String(l.kind || "").toLowerCase();
+              const tag = kind === "tag";
+              return {
+                source:endpointId(l.source), target:endpointId(l.target),
+                stroke:tag ? tagLine : (kind === "references" ? tc.accent : tc.mauve),
+                opacity:tag ? aTag : (kind === "references" ? aRef : aEmbed),
+                width:baseLinkWidth(l)/scale,
+                dash:(kind === "references" ? [3,2] : (tag ? [1,3] : [])).map((v) => v/scale),
+                arrow:!tag, arrow_size:3/scale,
+              };
+            }),
+          };
+        };
+        const exportPng = async () => {
+          const scope = document.getElementById("gExportScope").value;
+          const themed = document.getElementById("gExportBackground").value === "themed";
+          const button = document.getElementById("gExportPng");
+          button.disabled = true;
+          try {
+            const saved = await withExportScope(scope, async () =>
+              await saveGraphBlob(await graphCanvasBlob(themed), "png"));
+            if (saved) toast("Graph PNG exported.");
+          } catch (e) { toast(String(e), "error"); }
+          finally { button.disabled = false; }
+        };
+        const exportSvg = async () => {
+          const scope = document.getElementById("gExportScope").value;
+          const themed = document.getElementById("gExportBackground").value === "themed";
+          const button = document.getElementById("gExportSvg");
+          button.disabled = true;
+          try {
+            const svg = await invoke("graph_svg", { scene:graphScene(scope, themed) });
+            const saved = await saveGraphBlob(new Blob([svg], { type:"image/svg+xml;charset=utf-8" }), "svg");
+            if (saved) toast("Graph SVG exported.");
+          } catch (e) { toast(String(e), "error"); }
+          finally { button.disabled = false; }
+        };
         document.getElementById("graphfit").onclick = fit;
         el.addEventListener("dblclick", fit);
         document.getElementById("greheat").onclick = relayout;
         document.getElementById("gspread").oninput = (e) => { spread = parseFloat(e.target.value) || 1; relayout(); };
         document.getElementById("ggravity").oninput = (e) => { gravityK = parseFloat(e.target.value) || 0; relayout(); };
         document.getElementById("gcharge").oninput = (e) => { chargeK = parseFloat(e.target.value) || 1; relayout(); };
+        document.getElementById("gExportPng").onclick = exportPng;
+        document.getElementById("gExportSvg").onclick = exportSvg;
         document.getElementById("vHoverEffects").onchange = (e) => {
           graphHoverEffects = e.target.checked;
           if (!graphHoverEffects) hover = null;
@@ -3222,6 +3406,42 @@
             else relayout();
           }
         };
+        const wireGraphSection = (toggleId, bodyId, chevronId, storageKey, defaultCollapsed = true) => {
+          const body = document.getElementById(bodyId);
+          const chevron = document.getElementById(chevronId);
+          let collapsed = defaultCollapsed;
+          try {
+            const saved = localStorage.getItem(storageKey);
+            if (saved) collapsed = saved !== "open";
+          } catch {}
+          const apply = () => {
+            body.hidden = collapsed;
+            chevron.textContent = collapsed ? "▸" : "▾";
+          };
+          apply();
+          document.getElementById(toggleId).onclick = () => {
+            collapsed = !collapsed;
+            apply();
+            try { localStorage.setItem(storageKey, collapsed ? "collapsed" : "open"); } catch {}
+          };
+        };
+        const layoutToggle = document.getElementById("gLayoutToggle");
+        const layoutHeading = document.getElementById("gLayoutHeading");
+        const mobileLayout = window.matchMedia("(max-width: 640px)");
+        const applyLayoutMode = () => {
+          if (mobileLayout.matches) {
+            layoutHeading.hidden = true;
+            layoutToggle.hidden = false;
+            wireGraphSection("gLayoutToggle", "gLayoutBody", "gLayoutChevron", "mkb.graphLayout", false);
+          } else {
+            layoutHeading.hidden = false;
+            layoutToggle.hidden = true;
+            document.getElementById("gLayoutBody").hidden = false;
+          }
+        };
+        applyLayoutMode();
+        wireGraphSection("gExperimentalToggle", "gExperimentalBody", "gExperimentalChevron", "mkb.graphExperimental");
+        wireGraphSection("gExportToggle", "gExportBody", "gExportChevron", "mkb.graphExport");
         // Collapsible legend cluster. "Legend ▾" collapses the keys list AND hides the controls
         // column. The legend's collapsed state persists.
         const legendBody = document.getElementById("glegendBody");

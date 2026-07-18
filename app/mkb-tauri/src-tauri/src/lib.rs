@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use mkb_core::{GraphData, GroupTree, HierTree};
+use mkb_core::{GraphData, GraphScene, GroupTree, HierTree};
 use mkb_protocol::{connect, Client, ConnectionConfig, DaemonPaths};
 use tauri::{Emitter, Manager};
 
@@ -525,6 +525,11 @@ fn graph(state: tauri::State<'_, AppState>) -> Result<GraphData, String> {
 }
 
 #[tauri::command]
+fn graph_svg(scene: GraphScene) -> Result<String, String> {
+    mkb_app_core::graph_svg(&scene)
+}
+
+#[tauri::command]
 fn group_blocks(state: tauri::State<'_, AppState>, axis: String) -> Result<GroupTree, String> {
     mkb_app_core::group_blocks(&*state.connected()?, &axis)
 }
@@ -1023,6 +1028,39 @@ async fn pick_vault(app: tauri::AppHandle) -> Result<Option<String>, String> {
         .map(|p| p.display().to_string()))
 }
 
+/// Open a native save dialog and write a graph export. Async for the same event-loop reason as
+/// [`pick_vault`].
+#[tauri::command]
+async fn save_graph_export(
+    app: tauri::AppHandle,
+    suggested_name: String,
+    extension: String,
+    data: Vec<u8>,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (label, extension) = graph_export_file_type(&extension)?;
+    let chosen = app
+        .dialog()
+        .file()
+        .set_file_name(&suggested_name)
+        .add_filter(label, &[extension])
+        .blocking_save_file();
+    let Some(path) = chosen.and_then(|file| file.into_path().ok()) else {
+        return Ok(false);
+    };
+    std::fs::write(&path, data).map_err(|error| format!("writing {}: {error}", path.display()))?;
+    Ok(true)
+}
+
+fn graph_export_file_type(extension: &str) -> Result<(&'static str, &'static str), String> {
+    match extension {
+        "png" => Ok(("PNG image", "png")),
+        "svg" => Ok(("SVG image", "svg")),
+        _ => Err("graph export extension must be png or svg".to_string()),
+    }
+}
+
 /// Entry point used by the generated binary.
 pub fn run() {
     tauri::Builder::default()
@@ -1117,6 +1155,7 @@ pub fn run() {
             block_title_of,
             block_version,
             graph,
+            graph_svg,
             group_blocks,
             hierarchy,
             backlinks,
@@ -1158,6 +1197,7 @@ pub fn run() {
             connection_status,
             restart_daemon,
             pick_vault,
+            save_graph_export,
             cli_tools_status,
             cli_tools_check,
             install_cli_tools,
@@ -1216,7 +1256,7 @@ mod tests {
 
 #[cfg(test)]
 mod version_tests {
-    use super::parse_version_output;
+    use super::{graph_export_file_type, parse_version_output};
 
     // `parse_version_output` reduces a `mkb --version` line to the bare version — the input to the
     // deep check's version_match. Cross-platform (Windows uses the same parse). Covers the normal
@@ -1230,5 +1270,12 @@ mod version_tests {
         );
         assert_eq!(parse_version_output("   ").as_deref(), None);
         assert_eq!(parse_version_output("").as_deref(), None);
+    }
+
+    #[test]
+    fn graph_export_file_types_are_restricted() {
+        assert_eq!(graph_export_file_type("png").unwrap(), ("PNG image", "png"));
+        assert_eq!(graph_export_file_type("svg").unwrap(), ("SVG image", "svg"));
+        assert!(graph_export_file_type("html").is_err());
     }
 }

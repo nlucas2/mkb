@@ -1,6 +1,6 @@
 ---
 title: "Usage: Core Commands (CLI)"
-updated: 2026-07-07T05:55:43Z
+updated: 2026-07-17T23:28:52Z
 ---
 
 ## Core Commands (CLI)
@@ -15,6 +15,7 @@ The CLI offers the full surface of mkb for terminal users and script automation.
 - `mkb tags` — list every tag with its block count.
 - `mkb backlinks <id>` — list blocks that reference or embed `<id>`.
 - `mkb info <id>` — print metadata (created, updated, locked status, tags, and properties).
+- `mkb graph --format svg --output graph.svg` — export a deterministic headless graph. SVG is the default; JSON emits the positioned scene and DOT delegates layout/rendering to Graphviz. Basic options control dimensions, theme, labels, tags, and transparency. This CLI layout is reproducible rather than a copy of an open UI tab.
 
 ### Writes
 *Write commands that set a body read from `stdin`.*

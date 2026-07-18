@@ -247,6 +247,10 @@ fn dispatch(state: &AppState, key: &str, cmd: &str, body: &Value) -> Result<Valu
             &arg::<String>(body, "id")?,
         )?),
         "graph" => ok(core::graph(&state.live_client(key))?),
+        "graph_svg" => {
+            let scene: mkb_core::GraphScene = arg(body, "scene")?;
+            ok(core::graph_svg(&scene)?)
+        }
         "group_blocks" => ok(core::group_blocks(
             &state.live_client(key),
             &arg::<String>(body, "axis")?,
@@ -988,6 +992,13 @@ mod tests {
         let html = std::str::from_utf8(super::embedded_ui("index.html").unwrap()).unwrap();
         assert!(html.contains("id=\"vHoverEffects\""));
         assert!(html.contains("id=\"vUncollideLabels\""));
+        assert!(html.contains("id=\"gExperimentalBody\" hidden"));
+        assert!(html.contains("id=\"gLayoutBody\""));
+        assert!(html.contains("id=\"gLayoutHeading\""));
+        assert!(html.contains("\"mkb.graphLayout\", false"));
+        assert!(html.contains(".glegend-col-body[hidden] { display:none; }"));
+        assert!(html.contains(".gsection-toggle[hidden] { display:none; }"));
+        assert!(html.contains("const mobileLayout = window.matchMedia(\"(max-width: 640px)\")"));
         assert!(html.contains("let graphHoverEffects = true;"));
         assert!(html.contains("let graphUncollideLabels = false;"));
         assert!(html.contains(".nodePointerAreaPaint("));
@@ -998,5 +1009,16 @@ mod tests {
         assert!(html.contains("const dvx = new Float64Array(ns.length)"));
         assert!(!html.contains("placeGraphLabels"));
         assert!(!html.contains("graph.d3Force(\"aspect\""));
+    }
+
+    #[test]
+    fn embedded_graph_export_uses_native_png_and_shared_svg() {
+        let html = std::str::from_utf8(super::embedded_ui("index.html").unwrap()).unwrap();
+        assert!(html.contains("id=\"gExportPng\""));
+        assert!(html.contains("id=\"gExportSvg\""));
+        assert!(html.contains("id=\"gExportBody\" hidden"));
+        assert!(html.contains("output.toBlob("));
+        assert!(html.contains("invoke(\"graph_svg\""));
+        assert!(html.contains("invoke(\"save_graph_export\""));
     }
 }

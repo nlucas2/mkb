@@ -1,7 +1,7 @@
 ---
 title: "Usage: browsing & organizing"
 tags: [doc/usage]
-updated: 2026-07-16T20:51:52Z
+updated: 2026-07-18T01:04:53Z
 ---
 
 ## Browsing & organizing
@@ -49,8 +49,11 @@ image: you can still pan, zoom, open blocks, and drag individual nodes to new pi
 **Resume** releases every node and reheats the layout; if the visible graph is still large enough,
 it auto-freezes again after settling.
 
-The legend also carries two **Experimental** controls. **Hover effects** (on by default) emphasizes
+Expand the legend's **Experimental** section for two optional controls. **Hover effects** (on by default) emphasizes
 the hovered node, its immediate neighbors and their connecting edges, and reveals those labels.
 **Uncollide labels** (off by default) keeps each label attached to its node and adds a weak, capped
 spacing nudge for visible labels. It loosens local overlaps while links, charge and gravity remain
 dominant; toggling it reheats the graph so the spacing can settle.
+
+
+Expand the legend's **Export** section to preserve the current visible filters and settled node positions. Choose **Current view** to preserve the current pan/zoom framing or **Whole graph** for a fitted overview; choose a themed or transparent background, then export **PNG** (an exact raster snapshot of the live canvas) or **SVG** (a standalone vector rendering produced by the shared core renderer). The browser downloads the file directly; the desktop app opens a native save dialog.

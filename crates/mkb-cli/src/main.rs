@@ -16,10 +16,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use mkb_core::export::{ExportRequest, SlugSelection};
-use mkb_core::{BlockId, GroupAxis, GroupNode, HierEdge, HierNode, SearchQuery};
+use mkb_core::{
+    layout_graph_scene, render_graph_dot, render_graph_json, render_graph_svg, BlockId,
+    GraphLabels, GraphLayoutOptions, GraphTheme, GroupAxis, GroupNode, HierEdge, HierNode,
+    SearchQuery,
+};
 use mkb_protocol::{
     connect_resolved, resolve_client, resolve_target, Client, ClientInputs, EnvSnapshot, Registry,
     ResolvedTarget,
@@ -185,6 +189,8 @@ enum Command {
     },
     /// Index statistics.
     Stats,
+    /// Export the knowledge graph as deterministic SVG, JSON, or Graphviz DOT.
+    Graph(GraphArgs),
     /// Cloud-sync conflict files.
     Conflicts,
     /// List orphaned assets (files under `assets/` no block references); `--prune` deletes them.
@@ -324,6 +330,55 @@ struct ExportArgs {
     from_props: bool,
 }
 
+/// `graph` export flags.
+#[derive(Args)]
+struct GraphArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = GraphFormat::Svg)]
+    format: GraphFormat,
+    /// Write to a file instead of stdout.
+    #[arg(short, long, value_name = "PATH")]
+    output: Option<PathBuf>,
+    /// Output width in pixels (SVG/JSON).
+    #[arg(long, default_value_t = 1600.0)]
+    width: f64,
+    /// Output height in pixels (SVG/JSON).
+    #[arg(long, default_value_t = 900.0)]
+    height: f64,
+    /// Export palette.
+    #[arg(long, value_enum, default_value_t = GraphThemeArg::Dark)]
+    theme: GraphThemeArg,
+    /// Label policy.
+    #[arg(long, value_enum, default_value_t = GraphLabelsArg::Full)]
+    labels: GraphLabelsArg,
+    /// Exclude synthetic tag nodes and tag-membership edges.
+    #[arg(long)]
+    no_tags: bool,
+    /// Omit the SVG/scene background.
+    #[arg(long)]
+    transparent: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum GraphFormat {
+    Svg,
+    Json,
+    Dot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum GraphThemeArg {
+    Dark,
+    Light,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum GraphLabelsArg {
+    Full,
+    Truncate,
+    Off,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli) {
@@ -381,6 +436,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Backlinks { id } => cmd_links(g, &id, true),
         Command::Links { id } => cmd_links(g, &id, false),
         Command::Stats => cmd_stats(g),
+        Command::Graph(args) => cmd_graph(g, &args),
         Command::Conflicts => cmd_conflicts(g),
         Command::Assets { prune } => cmd_assets(g, prune),
         Command::Create { title } => cmd_create(g, title.as_deref()),
@@ -807,6 +863,52 @@ fn cmd_stats(g: &GlobalArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_graph(g: &GlobalArgs, args: &GraphArgs) -> Result<(), String> {
+    let client = g.connect()?;
+    let data = client.graph().map_err(|e| e.to_string())?;
+    let output = match args.format {
+        GraphFormat::Dot => render_graph_dot(&data),
+        GraphFormat::Svg | GraphFormat::Json => {
+            if !args.width.is_finite()
+                || !args.height.is_finite()
+                || args.width <= 0.0
+                || args.height <= 0.0
+            {
+                return Err("--width and --height must be positive finite numbers".to_string());
+            }
+            let scene = layout_graph_scene(
+                &data,
+                GraphLayoutOptions {
+                    width: args.width,
+                    height: args.height,
+                    theme: match args.theme {
+                        GraphThemeArg::Dark => GraphTheme::Dark,
+                        GraphThemeArg::Light => GraphTheme::Light,
+                    },
+                    labels: match args.labels {
+                        GraphLabelsArg::Full => GraphLabels::Full,
+                        GraphLabelsArg::Truncate => GraphLabels::Truncate,
+                        GraphLabelsArg::Off => GraphLabels::Off,
+                    },
+                    include_tags: !args.no_tags,
+                    transparent: args.transparent,
+                },
+            );
+            match args.format {
+                GraphFormat::Svg => render_graph_svg(&scene)?,
+                GraphFormat::Json => render_graph_json(&scene)?,
+                GraphFormat::Dot => unreachable!(),
+            }
+        }
+    };
+    if let Some(path) = &args.output {
+        std::fs::write(path, output).map_err(|error| format!("writing {}: {error}", path.display()))
+    } else {
+        print!("{output}");
+        Ok(())
+    }
+}
+
 fn cmd_conflicts(g: &GlobalArgs) -> Result<(), String> {
     let c = g.connect()?;
     let files = c.conflicts().map_err(|e| e.to_string())?;
@@ -1154,5 +1256,44 @@ fn cmd_export(g: &GlobalArgs, args: &ExportArgs) -> Result<(), String> {
     } else {
         println!("exported {} doc(s) ({wrote} written)", docs.len());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graph_export_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "mkb",
+            "graph",
+            "--format",
+            "json",
+            "--width",
+            "1200",
+            "--height",
+            "800",
+            "--theme",
+            "light",
+            "--labels",
+            "truncate",
+            "--no-tags",
+            "--transparent",
+            "--output",
+            "graph.json",
+        ])
+        .unwrap();
+        let Command::Graph(args) = cli.command else {
+            panic!("expected graph command");
+        };
+        assert_eq!(args.format, GraphFormat::Json);
+        assert_eq!(args.width, 1200.0);
+        assert_eq!(args.height, 800.0);
+        assert_eq!(args.theme, GraphThemeArg::Light);
+        assert_eq!(args.labels, GraphLabelsArg::Truncate);
+        assert!(args.no_tags);
+        assert!(args.transparent);
+        assert_eq!(args.output.as_deref(), Some(Path::new("graph.json")));
     }
 }

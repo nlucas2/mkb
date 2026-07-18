@@ -206,6 +206,11 @@ pub fn graph(client: &Client) -> Result<GraphData, String> {
     client.graph().map_err(|e| e.to_string())
 }
 
+/// Render a positioned graph scene as standalone SVG.
+pub fn graph_svg(scene: &mkb_core::GraphScene) -> Result<String, String> {
+    mkb_core::render_graph_svg(scene)
+}
+
 /// Group blocks by an axis into a `/`-nested tree for the sidebar group-by view. `axis` is
 /// `"tags"` or `"prop:<key>"` (e.g. `"prop:path"`); anything else is treated as a property key.
 pub fn group_blocks(client: &Client, axis: &str) -> Result<GroupTree, String> {

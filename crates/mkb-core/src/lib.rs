@@ -14,6 +14,7 @@ pub mod conflict;
 pub mod dirs;
 pub mod embed;
 pub mod export;
+pub mod graph_export;
 pub mod id;
 pub mod index;
 pub mod link;
@@ -29,6 +30,11 @@ pub use embed::{
     bytes_to_vector, cosine_similarity, vector_to_bytes, EmbedError, Embedder, HashEmbedder,
 };
 pub use export::{plan_doc, plan_exports, ExportEntry, Manifest, PlannedDoc, GENERATED_MARKER};
+pub use graph_export::{
+    layout_graph_scene, render_graph_dot, render_graph_json, render_graph_svg, GraphLabels,
+    GraphLayoutOptions, GraphNodeShape, GraphScene, GraphSceneEdge, GraphSceneNode,
+    GraphTextAnchor, GraphTheme, GraphViewBox,
+};
 pub use id::{BlockId, IdCodec, IdError, MarkerMatch, NativeIdCodec};
 pub use index::{
     block_links, group_blocks_by, hierarchy_tree, link_graph, reciprocal_rank_fusion,
